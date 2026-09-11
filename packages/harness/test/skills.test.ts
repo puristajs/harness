@@ -1,173 +1,131 @@
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { z } from 'zod'
-import { afterEach, expect, it } from 'vitest'
-import { defineHarness, discoverSkills } from '../src/index.js'
-import { loadSkills, mountSkillsOnce } from '../src/skills/index.js'
-import { SkillManifestError } from '../src/errors/index.js'
-import { inMemorySandbox } from '../src/sandbox/index.js'
-import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
+import { pathToFileURL } from 'node:url'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { defineSkill } from '../src/definitions/skill.js'
+import { OperationCancelledError, SkillManifestError } from '../src/errors/index.js'
+import { bashSandbox, inMemorySandbox } from '../src/sandbox/index.js'
+import { createReadSkillBinding, loadSkillSnapshots } from '../src/skills/runtime.js'
+import { defineAgent } from '../src/definitions/agent.js'
+import { FakeSandbox } from '../src/testing/fakeSandbox.js'
+import { localDirectorySandbox } from '../src/local/local-sandbox.js'
 
-const tempDirs: string[] = []
-
+const roots: string[] = []
 afterEach(async () => {
-  await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })))
+	vi.restoreAllMocks()
+	await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true })))
 })
 
-async function makeTempRoot(prefix: string): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix))
-  tempDirs.push(dir)
-  return dir
+async function skill(name: string, body = 'Use concise answers.', extra = ''): Promise<ReturnType<typeof defineSkill>> {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), 'h4-skill-'))
+	roots.push(root)
+	const directory = path.join(root, name)
+	await fs.mkdir(path.join(directory, 'scripts'), { recursive: true })
+	await fs.writeFile(path.join(directory, 'SKILL.md'), `---\nname: ${name}\ndescription: Explain the selected capability.\n${extra}---\n${body}`)
+	await fs.writeFile(path.join(directory, 'notes.txt'), 'snapshot one')
+	await fs.writeFile(path.join(directory, 'scripts', 'run.sh'), 'printf changed > /skills/demo/notes.txt')
+	return defineSkill(name, { directory: pathToFileURL(directory) })
 }
 
-async function makeSkill(root: string, name: string, frontmatter?: string, body = 'Use this skill for tests.') {
-  const dir = path.join(root, name)
-  await fs.mkdir(dir, { recursive: true })
-  await fs.writeFile(path.join(dir, 'SKILL.md'), frontmatter ?? `---\nname: ${name}\ndescription: Use this skill when testing skill activation.\n---\n${body}`)
-  return dir
+async function open(adapter: ReturnType<typeof inMemorySandbox> | ReturnType<typeof bashSandbox>) {
+	const owner = { namespace: 'skill-test', id: 'skill', instanceId: '01J00000000000000000000000' }
+	const scope = { owner, partition: { kind: 'shared' as const }, lifetime: 'session' as const }
+	await adapter.registerOwner({ owner, mode: 'create' })
+	return (await adapter.open({ scope, mode: 'create' })).session
 }
 
-it('parses strict SKILL.md YAML frontmatter and preserves optional fields', async () => {
-  const root = await makeTempRoot('skills-')
-  const dir = await makeSkill(root, 'demo-skill', `---
-name: demo-skill
-description: |
-  Use this skill when tests need a realistic skill fixture.
-license: Apache-2.0
-compatibility: Works with PURISTA harness tests.
-allowed-tools: read, bash
-metadata:
-  owner: qa
----
-body`)
+describe('v4 Agent Skill snapshots', () => {
+	it('loads once, keeps a detached snapshot, and exposes a confined read_skill binding', async () => {
+		const definition = await skill('demo', 'Use concise answers.', 'allowed-tools: bash write\nmetadata:\n  owner: docs\n')
+		const loaded = await loadSkillSnapshots([definition])
+		expect(loaded.demo.manifest).toMatchObject({ 'allowed-tools': 'bash write', metadata: { owner: 'docs' } })
+		await fs.writeFile(path.join(new URL(definition.directory).pathname, 'notes.txt'), 'changed later')
+		const reader = createReadSkillBinding(defineAgent('readerAgent', { model: 'chat', instructions: 'Read.' }), loaded)!
+		expect(reader.id).toBe('read_skill')
+		expect(reader.implementationKind).toBe('read-skill')
+		expect(Object.isFrozen(reader)).toBe(true)
+		await expect(reader.invokeValidated(undefined, { skill: 'demo', path: 'notes.txt' })).resolves.toEqual({ skill: 'demo', path: 'notes.txt', content: 'snapshot one' })
+		expect(await reader.input['~standard'].validate({ skill: 'other' })).toHaveProperty('issues')
+		expect(() => loaded.demo.readText('../secret')).toThrow(expect.objectContaining({ constructor: SkillManifestError, meta: expect.objectContaining({ reason: 'invalid_skill_path', path: '../secret' }) }))
+	})
 
-  const skills = await loadSkills({ 'demo-skill': { directory: dir } })
-  expect(skills['demo-skill']).toMatchObject({
-    name: 'demo-skill',
-    description: 'Use this skill when tests need a realistic skill fixture.',
-    license: 'Apache-2.0',
-    compatibility: 'Works with PURISTA harness tests.',
-    allowedTools: 'read, bash',
-    metadata: { owner: 'qa' },
-    mountPath: '/skills/demo-skill',
-    trust: 'trusted'
-  })
-  expect(skills['demo-skill'].location).toBe(path.join(dir, 'SKILL.md'))
-})
+	it('validates strict current frontmatter without exposing file contents', async () => {
+		const definition = await skill('demo', 'SECRET_BODY', 'unknown: field\n')
+		let caught: unknown
+		try { await loadSkillSnapshots([definition]) } catch (error) { caught = error }
+		expect(caught).toBeInstanceOf(SkillManifestError)
+		expect(caught).toMatchObject({ meta: { reason: 'invalid_frontmatter', skill_id: 'demo', path: 'SKILL.md' } })
+		expect(String(caught)).not.toContain('SECRET_BODY')
+	})
 
-it('rejects invalid strict frontmatter without exposing skill body content', async () => {
-  const root = await makeTempRoot('skills-')
-  const dir = await makeSkill(root, 'bad-skill', `---
-name: Bad Skill
-description: Use this invalid skill when testing failures.
----
-SECRET_SKILL_BODY`)
+	it('rejects non-file URLs, symlink roots, invalid UTF-8, and cancellation', async () => {
+		await expect(loadSkillSnapshots([defineSkill('remote', { directory: new URL('https://example.test/skill') })])).rejects.toMatchObject({ meta: { reason: 'invalid_skill_url' } })
+		const definition = await skill('demo')
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'h4-link-')); roots.push(root)
+		const link = path.join(root, 'demo'); await fs.symlink(new URL(definition.directory), link)
+		await expect(loadSkillSnapshots([defineSkill('demo', { directory: pathToFileURL(link) })])).rejects.toMatchObject({ meta: { reason: 'unsafe_skill_entry' } })
+		await fs.writeFile(path.join(new URL(definition.directory).pathname, 'SKILL.md'), new Uint8Array([0xff, 0xfe]))
+		await expect(loadSkillSnapshots([definition])).rejects.toMatchObject({ meta: { reason: 'invalid_skill_encoding' } })
+		const controller = new AbortController(); controller.abort('caller detail')
+		await expect(loadSkillSnapshots([definition], controller.signal)).rejects.toBeInstanceOf(OperationCancelledError)
+	})
 
-  await expect(loadSkills({ 'bad-skill': { directory: dir } })).rejects.toBeInstanceOf(SkillManifestError)
-  await expect(loadSkills({ 'bad-skill': { directory: dir } })).rejects.not.toThrow('SECRET_SKILL_BODY')
-})
+	it('rejects Skill allocation limits from lstat metadata before reading file contents', async () => {
+		const oversizedManifestRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'h4-large-manifest-')); roots.push(oversizedManifestRoot)
+		const oversizedManifestDirectory = path.join(oversizedManifestRoot, 'demo')
+		await fs.mkdir(oversizedManifestDirectory)
+		await fs.writeFile(path.join(oversizedManifestDirectory, 'SKILL.md'), new Uint8Array(256 * 1024 + 1))
+		const manifestRead = vi.spyOn(fs, 'readFile')
+		await expect(loadSkillSnapshots([defineSkill('demo', { directory: pathToFileURL(oversizedManifestDirectory) })])).rejects.toMatchObject({ meta: { reason: 'skill_file_too_large', path: 'SKILL.md' } })
+		expect(manifestRead).not.toHaveBeenCalled()
+		manifestRead.mockRestore()
 
-it('supports lenient scalar repair and reports diagnostics', async () => {
-  const root = await makeTempRoot('skills-')
-  const dir = await makeSkill(root, 'lenient-skill', `---
-name: lenient-skill
-description: Use this skill when: scalar values contain colons
----
-body`)
+		const oversizedSkillRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'h4-large-skill-')); roots.push(oversizedSkillRoot)
+		const oversizedSkillDirectory = path.join(oversizedSkillRoot, 'large')
+		await fs.mkdir(oversizedSkillDirectory)
+		const file = await fs.open(path.join(oversizedSkillDirectory, '00-large.bin'), 'w')
+		try { await file.truncate(100 * 1024 * 1024 + 1) } finally { await file.close() }
+		await fs.writeFile(path.join(oversizedSkillDirectory, 'SKILL.md'), '---\nname: large\ndescription: Large fixture.\n---\n')
+		const totalRead = vi.spyOn(fs, 'readFile')
+		await expect(loadSkillSnapshots([defineSkill('large', { directory: pathToFileURL(oversizedSkillDirectory) })])).rejects.toMatchObject({ meta: { reason: 'scan_limit_reached', path: '00-large.bin' } })
+		expect(totalRead).not.toHaveBeenCalled()
+	})
 
-  const skills = await loadSkills({ 'lenient-skill': { directory: dir, validationMode: 'lenient' } })
-  expect(skills['lenient-skill'].description).toBe('Use this skill when: scalar values contain colons')
-  expect(skills['lenient-skill'].diagnostics.some((item) => item.code === 'invalid_frontmatter' && item.level === 'warn')).toBe(true)
-})
+	it('keeps guidance-only Skills unmounted and enforces runtime Skill immutability through APIs and child commands', async () => {
+		const guidance = await skill('guide')
+		const loadedGuide = await loadSkillSnapshots([guidance])
+		const memorySession = await open(inMemorySandbox())
+		await loadedGuide.guide.mountReadOnly(memorySession)
+		expect(await memorySession.exists('/skills/guide/SKILL.md')).toBe(false)
 
-it('discovers trusted project skills and skips untrusted project roots', async () => {
-  const projectRoot = await makeTempRoot('project-skills-')
-  const dir = await makeSkill(path.join(projectRoot, '.agents', 'skills'), 'incident-skill')
+		const base = await skill('demo')
+		const runtimeDefinition = defineSkill('demo', { directory: base.directory, runtimes: ['shell'] as const })
+		const loaded = await loadSkillSnapshots([runtimeDefinition])
+		const unsupported = new Proxy(memorySession, { get(target, property, receiver) { return property === 'mountReadOnly' ? undefined : Reflect.get(target, property, receiver) } })
+		await expect(loaded.demo.mountReadOnly(unsupported)).rejects.toMatchObject({ meta: { reason: 'readonly_mount_unsupported' } })
+		const session = await open(bashSandbox())
+		await loaded.demo.mountReadOnly(session)
+		await expect(session.write('/skills/demo/notes.txt', 'changed')).rejects.toBeInstanceOf(Error)
+		await expect(session.remove('/skills/demo', { recursive: true })).rejects.toBeInstanceOf(Error)
+		await expect(session.mount(new Map([['other', 'x']]), '/skills')).rejects.toBeInstanceOf(Error)
+		await expect(session.exec("printf changed > /skills/demo/notes.txt")).rejects.toBeInstanceOf(Error)
+		expect(await session.readText('/skills/demo/notes.txt')).toBe('snapshot one')
+	})
 
-  const untrusted = await discoverSkills({ projectRoot, includeProjectAgentsDir: true })
-  expect(untrusted.skills['incident-skill']).toBeUndefined()
-  expect(untrusted.diagnostics.some((item) => item.code === 'untrusted_project_skill')).toBe(true)
-
-  const trusted = await discoverSkills({ projectRoot, trustedProjectRoots: [projectRoot], includeProjectAgentsDir: true })
-  expect(trusted.skills['incident-skill']?.directory).toBe(dir)
-})
-
-it('reports discovery collisions without merging skill directories', async () => {
-  const projectRoot = await makeTempRoot('project-skills-')
-  await makeSkill(path.join(projectRoot, '.agents', 'skills'), 'shared-skill')
-  await makeSkill(path.join(projectRoot, '.codex', 'skills'), 'shared-skill')
-
-  const discovered = await discoverSkills({
-    projectRoot,
-    clientName: 'codex',
-    trustedProjectRoots: [projectRoot],
-    includeProjectAgentsDir: true,
-    includeProjectClientDir: true
-  })
-
-  expect(discovered.skills['shared-skill']).toBeDefined()
-  expect(discovered.diagnostics.some((item) => item.code === 'collision_shadowed')).toBe(true)
-})
-
-it('mounts skill directories to /skills/<name> once per session', async () => {
-  const root = await makeTempRoot('skills-')
-  const dir = await makeSkill(root, 'example-skill')
-  await fs.mkdir(path.join(dir, 'scripts'))
-  await fs.writeFile(path.join(dir, 'scripts', 'run.sh'), 'echo hi')
-  const skills = await loadSkills({ 'example-skill': { directory: dir } })
-  const session = await inMemorySandbox().open({ sessionId: 's', runId: 'r' })
-  const mounted = new Set<string>()
-
-  await mountSkillsOnce(session, mounted, skills, ['example-skill'])
-  await mountSkillsOnce(session, mounted, skills, ['example-skill'])
-
-  expect(await session.readText('/skills/example-skill/SKILL.md')).toContain('name: example-skill')
-  expect(await session.readText('/skills/example-skill/scripts/run.sh')).toBe('echo hi')
-  expect(mounted).toEqual(new Set(['example-skill']))
-})
-
-it('runs a direct harness agent through compact catalog and read-tool activation', async () => {
-  const root = await makeTempRoot('skills-')
-  const dir = await makeSkill(root, 'answer-skill', undefined, 'Always answer with "skill used".')
-  const model = new FakeModelProvider()
-  model.enqueue({
-    object: {},
-    toolCalls: [{ id: 'read-skill', name: 'read', arguments: { path: '/skills/answer-skill/SKILL.md' } }],
-    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-    finishReason: 'tool_calls'
-  })
-  model.enqueue({ object: 'skill used', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
-
-  const harness = defineHarness()
-    .sandbox(inMemorySandbox())
-    .models({ fast: { provider: model, model: 'fake', capabilities: ['object', 'tool_use'] } })
-    .skills({ 'answer-skill': { directory: dir } })
-    .agents({ a1: { model: 'fast', input: z.string(), output: z.string(), instructions: 'Use relevant skills.', skills: ['answer-skill'] } })
-    .build()
-
-  const session = await harness.getSession('s1')
-  await expect(session.agents.a1.prompt('hello')).resolves.toBe('skill used')
-  expect(model.requests[0]?.messages?.[0]?.content).toContain('Location: /skills/answer-skill/SKILL.md')
-  expect(model.requests[0]?.messages?.[0]?.content).not.toContain('Always answer')
-})
-
-it('fails before model IO when a default-loop skill agent cannot use read', async () => {
-  const root = await makeTempRoot('skills-')
-  const dir = await makeSkill(root, 'read-required')
-  const model = new FakeModelProvider()
-
-  const harness = defineHarness()
-    .sandbox(inMemorySandbox())
-    .models({ fast: { provider: model, model: 'fake', capabilities: ['object'] } })
-    .skills({ 'read-required': { directory: dir } })
-    .agents({ a1: { model: 'fast', output: z.string(), instructions: 'x', skills: ['read-required'], builtinTools: false } })
-    .build()
-
-  const session = await harness.getSession('s1')
-  await expect(session.agents.a1.prompt('hello')).rejects.toMatchObject({
-    constructor: SkillManifestError,
-    meta: { reason: 'skill_read_tool_missing', agent_id: 'a1' }
-  })
-  expect(model.requests).toHaveLength(0)
+	it('publishes explicit frozen runtime metadata and rejects inference-prone configurations', async () => {
+		const fake = new FakeSandbox({ runtimes: ['shell', 'python'] })
+		expect(fake.runtimes).toEqual(['python', 'shell'])
+		expect(Object.isFrozen(fake.runtimes)).toBe(true)
+		expect(() => new FakeSandbox({ executor: 'unavailable', runtimes: ['python'] })).toThrow()
+		expect(() => new FakeSandbox({ runtimes: ['shell', 'shell'] })).toThrow()
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'h4-local-')); roots.push(root)
+		expect(() => localDirectorySandbox({ root, runtimes: ['python'] })).toThrow()
+		const local = localDirectorySandbox({ root, exec: {}, runtimes: ['python'] })
+		expect(local.runtimes).toEqual(['python'])
+		expect(local.capabilities).not.toContain('sandbox.readonly_mount')
+		expect(inMemorySandbox().runtimes).toEqual([])
+		expect(bashSandbox().runtimes).toEqual(['shell'])
+		expect(bashSandbox({ python: true }).runtimes).toEqual(['python', 'shell'])
+	})
 })

@@ -1,0 +1,74 @@
+reuse_inventory_version: 1
+inspected_revision: c378607de9e7
+discovery_revision: c378607de9e7
+assets:
+  - asset_id: REUSE-SANDBOX-PORT
+    path: packages/harness/src/sandbox/index.ts
+    kind: public_port
+    public_export: "@purista/harness Sandbox"
+    public_exports: [Sandbox, SandboxSessionBase, SandboxSessionFor, SnapshotCapableSandbox, ResumeCapableSandbox, HibernateCapableSandbox]
+    owner: harness_core
+    stability: versioned_public
+    consumers: [harness_core, sandbox_adapters, applications]
+    extension_policy: evolve the one Sandbox interface through a concise clean break
+    decision: one_lifecycle_interface
+  - asset_id: REUSE-STORAGE-PORT
+    path: packages/harness/src/storage/index.ts
+    kind: public_port
+    public_export: "@purista/harness HarnessStorage"
+    public_exports: [HarnessStorage]
+    owner: harness_core
+    stability: versioned_public
+    consumers: [harness_core, storage_adapters]
+    extension_policy: strengthen session incarnation and conditional writes without sandbox lifecycle storage
+    decision: evolve_session_integrity_only
+  - asset_id: REUSE-WORKSPACE-PORT
+    path: packages/harness/src/ports/workspace.ts
+    kind: public_port
+    public_export: "@purista/harness DurableWorkspace"
+    public_exports: [DurableWorkspace, WorkspaceHandle, WorkspaceCheckpoint]
+    owner: harness_core
+    stability: versioned_public
+    consumers: [harness_core, workspace_adapters]
+    extension_policy: reuse approved resume and sandbox-binding semantics
+    decision: reuse_unchanged
+  - asset_id: REUSE-IDENTITY
+    path: packages/harness/src/identity/index.ts
+    kind: public_type
+    public_export: "@purista/harness HarnessIdentity"
+    public_exports: [HarnessIdentity]
+    owner: harness_core
+    stability: versioned_public
+    consumers: [sessions, memory, purista_core]
+    extension_policy: reuse exact optional session binding
+    decision: reuse_unchanged
+  - asset_id: REUSE-CONTRACTS
+    path: packages/harness/src/testing/sandboxContract.ts
+    kind: testing_contract
+    public_export: "@purista/harness/testing sandboxContract"
+    public_exports: [sandboxContract]
+    owner: harness_testing
+    stability: versioned_testing
+    consumers: [sandbox_adapters]
+    extension_policy: add lifecycle coverage and a sibling multi-client contract
+    decision: evolve_base_and_add_sibling_contract
+  - asset_id: REUSE-LOCAL
+    path: packages/harness/src/local/local-sandbox.ts
+    kind: local_adapter
+    public_export: "@purista/harness localDirectorySandbox"
+    public_exports: [localDirectorySandbox]
+    owner: harness_core
+    stability: versioned_public
+    consumers: [localDurableExecution]
+    extension_policy: rewrite both variants in place to the new lifecycle while preserving host authority and localDurableExecution recovery; no old-layout adoption
+    decision: direct_clean_break_no_compatibility_layer
+  - asset_id: REUSE-SANDBOX-FAKES
+    path: packages/harness/src/testing
+    kind: testing_fixture
+    public_export: "@purista/harness/testing FakeSandbox and fakeSnapshotSandbox"
+    public_exports: [FakeSandbox, fakeSnapshotSandbox, sandboxSnapshotContract]
+    owner: harness_testing
+    stability: versioned_testing
+    consumers: [harness_tests, adapter_tests, applications]
+    extension_policy: rewrite the existing doubles and suites against the single Sandbox contract; do not retain legacy variants
+    decision: direct_clean_break_no_compatibility_layer

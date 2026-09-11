@@ -1,0 +1,755 @@
+import { z } from 'zod'
+
+import { defineAgent, defineMcpServer, defineSkill, defineTool, defineWorkflow } from '../src/definitions/index.js'
+import { defineCatalog } from '../src/definitions/catalog.js'
+import { defineHarness } from '../src/definitions/harness.js'
+import type { HarnessCatalogDefinition, HarnessCatalogView } from '../src/definitions/catalog.js'
+import type { AnyAgentDefinition } from '../src/definitions/types.js'
+import type {
+	HarnessTargetContract,
+	HarnessTargetInferenceFor,
+	HarnessUpdateFor,
+	ToolRequirements,
+} from '../src/definitions/index.js'
+import { builtInTools } from '../src/tools/index.js'
+import { agentGuardrailsBinding } from '../src/agents/guardrails.js'
+import type { AgentExecutionRequirements } from '../src/harness/agent-requirements.js'
+import type {
+	AgentModelResponse,
+	HarnessTargetInput,
+	HarnessTargetOutput,
+	HarnessTargetStream,
+	HarnessValidatedTargetInput,
+	ModelSchema,
+} from '../src/index.js'
+import type { AnyHarnessTargetContract, HarnessTargetInterrupt } from '../src/ports/target-dispatcher.js'
+import type { JsonValue } from '../src/models/json.js'
+
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
+type Expect<T extends true> = T
+
+const publicTextModelResponse: AgentModelResponse = { content: 'ok', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }
+const publicObjectModelResponse: AgentModelResponse = { object: { ok: true }, toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }
+void publicTextModelResponse
+void publicObjectModelResponse
+
+const input = z.object({ message: z.string() })
+const output = z.object({ answer: z.string() })
+const transformedInput = z.string().transform(value => value.length)
+type _ObjectSnapshotIsExactlyJsonValue = Expect<Equal<HarnessUpdateFor<typeof output, 'object-snapshot'>, JsonValue>>
+
+type ExactTargetInference = HarnessTargetInferenceFor<
+	{ readonly wire: string },
+	{ readonly validated: number },
+	{ readonly answer: string },
+	'object-snapshot',
+	readonly ['external-wait']
+>
+declare const exactTargetInference: ExactTargetInference
+// @ts-expect-error wire input is invariant rather than structurally widened
+const widenedWireInference: HarnessTargetInferenceFor<JsonValue, { readonly validated: number }, { readonly answer: string }, 'object-snapshot', readonly ['external-wait']> = exactTargetInference
+// @ts-expect-error wire input cannot be replaced with never
+const neverWireInference: HarnessTargetInferenceFor<never, { readonly validated: number }, { readonly answer: string }, 'object-snapshot', readonly ['external-wait']> = exactTargetInference
+// @ts-expect-error validated input is invariant rather than structurally widened
+const widenedValidatedInference: HarnessTargetInferenceFor<{ readonly wire: string }, JsonValue, { readonly answer: string }, 'object-snapshot', readonly ['external-wait']> = exactTargetInference
+// @ts-expect-error output is invariant rather than structurally widened
+const widenedOutputInference: HarnessTargetInferenceFor<{ readonly wire: string }, { readonly validated: number }, JsonValue, 'object-snapshot', readonly ['external-wait']> = exactTargetInference
+// @ts-expect-error output cannot be narrowed to a structural subtype
+const narrowedOutputInference: HarnessTargetInferenceFor<{ readonly wire: string }, { readonly validated: number }, { readonly answer: 'fixed' }, 'object-snapshot', readonly ['external-wait']> = exactTargetInference
+// @ts-expect-error update kind is part of the invariant target tuple
+const changedUpdateInference: HarnessTargetInferenceFor<{ readonly wire: string }, { readonly validated: number }, { readonly answer: string }, 'text-delta', readonly ['external-wait']> = exactTargetInference
+// @ts-expect-error interrupt tuple is part of the invariant target tuple
+const changedInterruptInference: HarnessTargetInferenceFor<{ readonly wire: string }, { readonly validated: number }, { readonly answer: string }, 'object-snapshot', readonly []> = exactTargetInference
+void widenedWireInference
+void neverWireInference
+void widenedValidatedInference
+void widenedOutputInference
+void narrowedOutputInference
+void changedUpdateInference
+void changedInterruptInference
+
+declare const transportedInputSchema: ModelSchema<{ readonly wire: string }, { readonly wire: string }>
+declare const transportedOutputSchema: ModelSchema<{ readonly answer: string }, { readonly answer: string }>
+type RemoteInference = HarnessTargetInferenceFor<
+	{ readonly wire: string },
+	{ readonly validated: number },
+	{ readonly answer: string },
+	'object-snapshot',
+	readonly ['external-wait']
+>
+type RemoteTarget = HarnessTargetContract<
+	'agent', 'remoteTarget', typeof transportedInputSchema, typeof transportedOutputSchema,
+	'object-snapshot', readonly ['external-wait'], RemoteInference
+>
+type BadRemoteOutputInference = HarnessTargetInferenceFor<
+	{ readonly wire: string }, { readonly validated: number }, { readonly wrong: true },
+	'object-snapshot', readonly ['external-wait']
+>
+// @ts-expect-error remote output inference must match the contract output schema exactly
+type BadRemoteOutputTarget = HarnessTargetContract<'agent', 'badRemoteOutput', typeof transportedInputSchema, typeof transportedOutputSchema, 'object-snapshot', readonly ['external-wait'], BadRemoteOutputInference>
+type BadRemoteUpdateInference = HarnessTargetInferenceFor<
+	{ readonly wire: string }, { readonly validated: number }, { readonly answer: string },
+	'text-delta', readonly ['external-wait']
+>
+// @ts-expect-error remote update inference must match the contract update discriminant exactly
+type BadRemoteUpdateTarget = HarnessTargetContract<'agent', 'badRemoteUpdate', typeof transportedInputSchema, typeof transportedOutputSchema, 'object-snapshot', readonly ['external-wait'], BadRemoteUpdateInference>
+type BadRemoteInterruptInference = HarnessTargetInferenceFor<
+	{ readonly wire: string }, { readonly validated: number }, { readonly answer: string },
+	'object-snapshot', readonly []
+>
+// @ts-expect-error remote interrupt inference must match the contract interrupt tuple exactly
+type BadRemoteInterruptTarget = HarnessTargetContract<'agent', 'badRemoteInterrupt', typeof transportedInputSchema, typeof transportedOutputSchema, 'object-snapshot', readonly ['external-wait'], BadRemoteInterruptInference>
+type _RemoteWire = Expect<Equal<RemoteTarget['$infer']['input'], { readonly wire: string }>>
+type _RemoteIsCommonTarget = Expect<RemoteTarget extends AnyHarnessTargetContract ? true : false>
+type _RemoteValidated = Expect<Equal<RemoteTarget['$infer']['validatedInput'], { readonly validated: number }>>
+type _RemoteOutput = Expect<Equal<RemoteTarget['$infer']['output'], { readonly answer: string }>>
+type _DispatcherRemoteWire = Expect<Equal<HarnessTargetInput<RemoteTarget>, { readonly wire: string }>>
+type _DispatcherRemoteValidated = Expect<Equal<HarnessValidatedTargetInput<RemoteTarget>, { readonly validated: number }>>
+type _DispatcherRemoteOutput = Expect<Equal<HarnessTargetOutput<RemoteTarget>, { readonly answer: string }>>
+type _DispatcherRemoteInterrupt = Expect<Equal<HarnessTargetInterrupt<RemoteTarget>, RemoteTarget['$infer']['interrupt']>>
+declare const readableInference: Pick<RemoteInference, 'input' | 'validatedInput' | 'output' | 'update' | 'interrupt'>
+// @ts-expect-error the hidden invariant witness prevents handwritten inference objects
+const handwrittenInference: RemoteInference = readableInference
+void handwrittenInference
+void (0 as unknown as BadRemoteOutputTarget)
+void (0 as unknown as BadRemoteUpdateTarget)
+void (0 as unknown as BadRemoteInterruptTarget)
+
+const lookup = defineTool('lookup', {
+	description: 'Look up a message.', input, output,
+	async handler(context, value) {
+		const message: string = value.message
+		const signal: AbortSignal = context.signal
+		// @ts-expect-error an undeclared tool requirement does not expose memory
+		context.memory
+		// @ts-expect-error an undeclared tool requirement does not expose a sandbox
+		context.sandbox
+		return { answer: message + String(signal.aborted) }
+	},
+})
+
+const transformedTool = defineTool('transformed', {
+	description: 'Use a transformed input.', input: transformedInput, output: z.number(),
+	async handler(_context, value) {
+		const validated: number = value
+		return validated
+	},
+})
+type _TransformedToolInput = Expect<Equal<typeof transformedTool.$infer.input, string>>
+type _TransformedToolValidatedInput = Expect<Equal<typeof transformedTool.$infer.validatedInput, number>>
+type _BuiltinToolDefinitionInference = Expect<Equal<typeof builtInTools.read.$infer.input, { path: string; encoding?: 'utf-8' | undefined }>>
+
+const stateful = defineTool('stateful', {
+	description: 'Use declared state and execution.', input, output,
+	requires: { memory: ['memory.kv', 'memory.delete'], sandbox: ['sandbox.exec'] },
+	async handler(context, value) {
+		await context.memory.session.write('message', value.message)
+		await context.memory.session.delete('message')
+		await context.sandbox.exec('echo ok')
+		// @ts-expect-error memory.list was not declared
+		await context.memory.session.list()
+		return { answer: value.message }
+	},
+})
+const resourceToolAgent = defineAgent('resourceToolAgent', { model: 'chat', instructions: 'Use the stateful tool.', tools: [stateful] })
+const resourceToolHarness = defineHarness({ name: 'resourceToolHarness' }).addAgent(resourceToolAgent)
+const resourceToolSandboxRequired: true = resourceToolHarness.$infer.requirements.sandbox.required
+type _ResourceToolSandbox = Expect<Equal<typeof resourceToolHarness.$infer.requirements.sandbox.capabilities[number], 'sandbox.exec'>>
+void resourceToolSandboxRequired
+
+defineTool('filesystemOnly', {
+	description: 'Read one file.', input, output, requires: { sandbox: ['sandbox.fs'] },
+	async handler(context, value) {
+		await context.sandbox.readText('/workspace/input.txt')
+		// @ts-expect-error sandbox.exec was not declared
+		await context.sandbox.exec('echo unsafe')
+		// @ts-expect-error tool handlers cannot close the runtime-owned sandbox lifecycle
+		await context.sandbox.close()
+		return { answer: value.message }
+	},
+})
+
+defineTool('executionOnly', {
+	description: 'Execute one command.', input, output, requires: { sandbox: ['sandbox.exec'] },
+	async handler(context, value) {
+		await context.sandbox.exec('echo ok')
+		// @ts-expect-error sandbox.fs was not declared
+		await context.sandbox.readText('/workspace/input.txt')
+		// @ts-expect-error tool handlers cannot close the runtime-owned sandbox lifecycle
+		await context.sandbox.close()
+		return { answer: value.message }
+	},
+})
+
+defineTool('textSearchOnly', {
+	description: 'Search sandbox text.', input, output, requires: { sandbox: ['sandbox.text_search'] },
+	async handler(context, value) {
+		void context.sandbox.searchText
+		// @ts-expect-error sandbox.fs was not declared
+		void context.sandbox.readText
+		// @ts-expect-error sandbox.exec was not declared
+		void context.sandbox.exec
+		// @ts-expect-error tool handlers cannot close the runtime-owned sandbox lifecycle
+		void context.sandbox.close
+		return { answer: value.message }
+	},
+})
+
+defineTool('spawnOnly', {
+	description: 'Spawn one process.', input, output, requires: { sandbox: ['sandbox.spawn'] },
+	async handler(context, value) {
+		void context.sandbox.spawn
+		// @ts-expect-error sandbox.fs was not declared
+		void context.sandbox.readText
+		// @ts-expect-error sandbox.exec was not declared
+		void context.sandbox.exec
+		// @ts-expect-error tool handlers cannot close the runtime-owned sandbox lifecycle
+		void context.sandbox.close
+		return { answer: value.message }
+	},
+})
+
+// @ts-expect-error tool sandbox requirements accept sandbox capability ids only
+const storageRequirement: ToolRequirements = { sandbox: ['storage.persistent'] }
+void storageRequirement
+
+// @ts-expect-error tool handler output must satisfy the output schema input
+defineTool('badToolOutput', { description: 'bad', input, output, async handler() { return { answer: 1 } } })
+// @ts-expect-error unknown tool definition fields are rejected
+defineTool('badToolField', { description: 'bad', input, output, extra: true, async handler() { return { answer: 'ok' } } })
+
+const skill = defineSkill('support-policy', { directory: new URL('./support-policy/', import.meta.url) })
+const runtimeSkill = defineSkill('runtime-policy', {
+	directory: new URL('./runtime-policy/', import.meta.url), runtimes: ['python', 'shell'],
+})
+type _SkillDefinitionInference = Expect<Equal<typeof runtimeSkill.$infer.runtimes, readonly ['python', 'shell']>>
+// @ts-expect-error Skill runtimes are a closed union
+defineSkill('bad-runtime', { directory: new URL('./bad/', import.meta.url), runtimes: ['ruby'] })
+// @ts-expect-error unknown Skill definition fields are rejected
+defineSkill('bad-field', { directory: new URL('./bad/', import.meta.url), install: 'npm install' })
+
+const mcp = defineMcpServer('knowledge', {
+	tools: {
+		searchKnowledge: { remoteName: 'search_knowledge', description: 'Search.', input, output },
+		fetchKnowledge: { remoteName: 'fetch_knowledge', description: 'Fetch.', input, output },
+	},
+})
+const mcpToolId: 'searchKnowledge' = mcp.tools.searchKnowledge.id
+type _McpInput = Expect<Equal<typeof mcp.tools.searchKnowledge.$infer.input, { message: string }>>
+type _McpOutput = Expect<Equal<typeof mcp.tools.searchKnowledge.$infer.output, { answer: string }>>
+type _McpServerInference = Expect<Equal<typeof mcp.$infer.tools.searchKnowledge, typeof mcp.tools.searchKnowledge.$infer>>
+void mcpToolId
+// @ts-expect-error the owning server id is private type metadata
+mcp.tools.searchKnowledge.serverId
+// @ts-expect-error MCP definitions never contain runtime transport
+defineMcpServer('badMcp', { url: 'https://example.com', tools: { search: { remoteName: 'search', description: 'Search.', input, output } } })
+
+const textAgent = defineAgent('assistant', { model: 'chat', instructions: 'Help.', tools: [lookup], skills: [skill] })
+type _TextInput = Expect<typeof textAgent.contract.$infer.input extends string ? true : false>
+type _TextOutput = Expect<typeof textAgent.contract.$infer.output extends string ? true : false>
+type _AgentDefinitionInference = Expect<Equal<typeof textAgent.$infer, typeof textAgent.contract.$infer>>
+const agentId: 'assistant' = textAgent.id
+const agentKind: 'agent' = textAgent.kind
+const chatModel: 'chat' = textAgent.model
+void agentId
+void agentKind
+void chatModel
+
+const structuredAgent = defineAgent('classify', {
+	model: 'chat',
+	input, output, instructions: 'Classify.', tools: [lookup, mcp.tools.searchKnowledge], skills: [skill],
+	prompt: value => ({ role: 'user', content: value.message }),
+})
+type _StructuredInput = Expect<typeof structuredAgent.contract.$infer.input extends { message: string } ? true : false>
+type _StructuredOutput = Expect<typeof structuredAgent.contract.$infer.output extends { answer: string } ? true : false>
+
+const transformedAgent = defineAgent('measure', {
+	model: 'chat',
+	input: transformedInput, instructions: 'Measure.', prompt: value => ({ role: 'user', content: String(value) }),
+})
+type _TransformedAgentInput = Expect<typeof transformedAgent.contract.$infer.input extends string ? true : false>
+type _TransformedAgentValidatedInput = Expect<typeof transformedAgent.contract.$infer.validatedInput extends number ? true : false>
+
+const explicitStringOutput = defineAgent('extractText', { model: 'chat', output: z.string(), instructions: 'Extract.' })
+const textUpdates: 'text-delta' = explicitStringOutput.contract.updates
+void textUpdates
+// @ts-expect-error a structured output cannot select text mode
+defineAgent('incompatibleResponseMode', { model: 'chat', output, instructions: 'Reject.', responseMode: 'text' })
+const ambiguousResponseOutput = z.union([z.string(), output])
+defineAgent('explicitAmbiguousResponseMode', { model: 'chat', output: ambiguousResponseOutput, instructions: 'Choose.', responseMode: 'text' })
+
+const parent = defineAgent('parent', {
+	model: 'chat',
+	instructions: 'Delegate.',
+	subagents: { helper: textAgent, reviewer: { agent: structuredAgent, description: 'Review classifications.' } },
+})
+const helperId: 'assistant' = parent.subagents.helper.id
+const reviewerId: 'classify' = parent.subagents.reviewer.agent.id
+void helperId
+void reviewerId
+
+defineAgent('defaultStructuredPrompt', { model: 'chat', input, instructions: 'allowed' })
+// @ts-expect-error media capabilities require an explicit prompt mapper
+defineAgent('missingMediaPrompt', { model: 'chat', instructions: 'bad', inputCapabilities: ['vision_input'] })
+// @ts-expect-error agents do not accept custom execution handlers
+defineAgent('customAgent', { model: 'chat', instructions: 'bad', async handler() { return 'bad' } })
+// @ts-expect-error agent definitions reject unknown fields
+defineAgent('unknownAgentField', { model: 'chat', instructions: 'bad', temperature: 0 })
+// @ts-expect-error instructions are static strings
+defineAgent('callbackInstructions', { model: 'chat', instructions: () => 'bad' })
+// @ts-expect-error update modes are derived from the output contract
+defineAgent('manualUpdates', { model: 'chat', instructions: 'bad', updates: 'none' })
+// @ts-expect-error tools use definition references
+defineAgent('stringTool', { model: 'chat', instructions: 'bad', tools: ['lookup'] })
+// @ts-expect-error Skills use definition references
+defineAgent('stringSkill', { model: 'chat', instructions: 'bad', skills: ['support-policy'] })
+// @ts-expect-error subagents use direct definitions
+defineAgent('stringSubagent', { model: 'chat', instructions: 'bad', subagents: { helper: 'assistant' } })
+// @ts-expect-error structural lookalikes are not definition references
+defineAgent('structuralTool', { model: 'chat', instructions: 'bad', tools: [{ kind: 'tool', id: 'lookup', description: 'bad', input, output, handler: lookup.handler }] })
+defineAgent('badPromptRole', {
+	model: 'chat',
+	input, instructions: 'bad',
+	// @ts-expect-error prompt messages can only have the user role
+	prompt: value => ({ role: 'system', content: value.message }),
+})
+defineAgent('undeclaredImage', {
+	model: 'chat',
+	input, instructions: 'bad',
+	// @ts-expect-error image content requires vision_input
+	prompt: () => ({ role: 'user', content: [{ kind: 'image_url', url: 'https://example.com/a.png' }] }),
+})
+defineAgent('visionAgent', {
+	model: 'chat',
+	input, instructions: 'See.', inputCapabilities: ['vision_input'],
+	prompt: () => ({ role: 'user', content: [{ kind: 'image_url', url: 'https://example.com/a.png' }] }),
+})
+
+const workflow = defineWorkflow('resolveCase', {
+	input, output, agents: [structuredAgent],
+	models: { embeddings: { capabilities: ['embeddings'] } },
+	async handler(context) {
+		const child = await context.agents.classify.run(context.input, { callId: 'classify' })
+		const embedding = await context.models.embeddings.embed({ input: 'text' }, { callId: 'embedding' })
+		// @ts-expect-error workflow model calls require a stable callId
+		await context.models.embeddings.embed({ input: 'text' })
+		const task = await context.childTasks.start('classify', context.input, { callId: 'classifyTask' })
+		await task.result()
+		// @ts-expect-error undeclared agents are unavailable
+		context.agents.assistant
+		// @ts-expect-error undeclared models are unavailable
+		context.models.fast
+		// @ts-expect-error workflow direct agent calls require a stable callId
+		await context.agents.classify.run(context.input)
+		// @ts-expect-error workflow direct agent calls cannot override the target model
+		await context.agents.classify.run(context.input, { callId: 'badModel', model: 'fast' })
+		// @ts-expect-error workflow child tasks require a stable callId
+		await context.childTasks.start('classify', context.input)
+		// @ts-expect-error workflow child tasks cannot override the target model
+		await context.childTasks.start('classify', context.input, { callId: 'badTaskModel', model: 'fast' })
+		// @ts-expect-error workflow memory is not implicitly available
+		context.memory
+		// @ts-expect-error workflow output is not a writable context slot
+		context.output
+		return { answer: child.answer + String(embedding.embeddings.length) }
+	},
+})
+const sandboxedChildWorkflow = defineWorkflow('sandboxedChild', {
+	input, output, agents: [structuredAgent], childTaskSandboxGroups: ['reviewers'] as const,
+	async handler(context) {
+		const task = await context.childTasks.start('classify', context.input, { callId: 'review', sandbox: { group: 'reviewers' } })
+		// @ts-expect-error child-task group overrides use only the workflow-declared vocabulary
+		await context.childTasks.start('classify', context.input, { callId: 'typo', sandbox: { group: 'admins' } })
+		return task.result()
+	},
+})
+const sandboxedChildHarness = defineHarness({ name: 'sandboxedChildHarness' }).addWorkflow(sandboxedChildWorkflow)
+type _ChildSandboxGroup = Expect<Equal<typeof sandboxedChildHarness.$infer.requirements.sandbox.requiredGroups[number], 'reviewers'>>
+void sandboxedChildHarness
+type _WorkflowInput = Expect<typeof workflow.contract.$infer.input extends { message: string } ? true : false>
+type _WorkflowOutput = Expect<typeof workflow.contract.$infer.output extends { answer: string } ? true : false>
+const workflowUpdates: 'none' = workflow.contract.updates
+void workflowUpdates
+
+const transformedWorkflow = defineWorkflow('transformInput', {
+	input: transformedInput, output: z.number(),
+	async handler(context) {
+		const validated: number = context.input
+		return validated
+	},
+})
+type _TransformedWorkflowInput = Expect<typeof transformedWorkflow.contract.$infer.input extends string ? true : false>
+type _TransformedWorkflowValidatedInput = Expect<typeof transformedWorkflow.contract.$infer.validatedInput extends number ? true : false>
+
+defineWorkflow('defaultInput', { output: z.string(), async handler({ input }) { return input } })
+defineWorkflow('defaultOutput', { input: z.string(), async handler({ input }) { return input } })
+// @ts-expect-error workflow handler is required
+defineWorkflow('missingHandler', { input, output })
+// @ts-expect-error workflow handler output must satisfy its schema input
+defineWorkflow('badWorkflowOutput', { input, output, async handler() { return { answer: 1 } } })
+// @ts-expect-error workflow definitions reject unknown fields
+defineWorkflow('badWorkflowField', { input, output, retries: 3, async handler() { return { answer: 'ok' } } })
+
+void workflow
+
+const catalog = defineCatalog('supportAi', {
+	tools: [lookup], skills: [skill], mcpServers: [mcp], agents: [structuredAgent], workflows: [workflow],
+})
+const catalogToolId: 'lookup' = catalog.tools.lookup.id
+const catalogAgentId: 'classify' = catalog.agents.classify.id
+const catalogWorkflowId: 'resolveCase' = catalog.workflows.resolveCase.id
+const catalogContractId: 'classify' = catalog.contracts.agents.classify.id
+void catalogToolId
+void catalogAgentId
+void catalogWorkflowId
+void catalogContractId
+// @ts-expect-error exact catalog maps reject unknown definition ids
+catalog.agents.unknown
+// @ts-expect-error MCP tools remain nested under their owning server
+catalog.tools.searchKnowledge
+// @ts-expect-error catalogs accept definitions rather than structural string references
+defineCatalog('invalidCatalog', { agents: ['classify'] })
+
+const emptyLeafCatalog = defineCatalog('emptyLeafCatalog', {})
+const toolsOnlyCatalog = defineCatalog('toolsOnlyCatalog', { tools: [lookup] })
+const skillsOnlyCatalog = defineCatalog('skillsOnlyCatalog', { skills: [skill] })
+const mcpOnlyCatalog = defineCatalog('mcpOnlyCatalog', { mcpServers: [mcp] })
+const combinedLeafCatalog = defineCatalog('combinedLeafCatalog', { tools: [lookup], skills: [skill], mcpServers: [mcp] })
+void emptyLeafCatalog
+void toolsOnlyCatalog
+void skillsOnlyCatalog
+void mcpOnlyCatalog
+void combinedLeafCatalog
+// @ts-expect-error empty catalogs cannot supply executable Harness roots
+defineHarness({ name: 'emptyLeafConsumer' }).use(emptyLeafCatalog)
+// @ts-expect-error tools-only catalogs cannot supply executable Harness roots
+defineHarness({ name: 'toolsOnlyConsumer' }).use(toolsOnlyCatalog)
+// @ts-expect-error skills-only catalogs cannot supply executable Harness roots
+defineHarness({ name: 'skillsOnlyConsumer' }).use(skillsOnlyCatalog)
+// @ts-expect-error MCP-only catalogs cannot supply executable Harness roots
+defineHarness({ name: 'mcpOnlyConsumer' }).use(mcpOnlyCatalog)
+// @ts-expect-error combined leaf-only catalogs cannot supply executable Harness roots
+defineHarness({ name: 'combinedLeafConsumer' }).use(combinedLeafCatalog)
+
+const durableRootWorkflow = defineWorkflow('durableRootWorkflow', {
+	durable: true,
+	async handler({ input }) { return input },
+})
+const agentRootCatalog = defineCatalog('agentRootCatalog', { tools: [lookup], agents: [structuredAgent] })
+const workflowRootCatalog = defineCatalog('workflowRootCatalog', { skills: [skill], workflows: [durableRootWorkflow] })
+const agentRootHarness = defineHarness({ name: 'agentRootConsumer' }).use(agentRootCatalog)
+const workflowRootHarness = defineHarness({ name: 'workflowRootConsumer', revision: 'v1' }).use(workflowRootCatalog)
+type _AgentRootCatalogInference = Expect<Equal<keyof typeof agentRootHarness.$infer.agents, 'classify'>>
+type _AgentRootCatalogHasNoWorkflow = Expect<Equal<keyof typeof agentRootHarness.$infer.workflows, never>>
+type _WorkflowRootCatalogInference = Expect<Equal<keyof typeof workflowRootHarness.$infer.workflows, 'durableRootWorkflow'>>
+type _WorkflowRootCatalogHasNoAgent = Expect<Equal<keyof typeof workflowRootHarness.$infer.agents, never>>
+
+const widenedEmptyAgentCatalog = defineCatalog('widenedEmptyAgentCatalog', {
+	agents: [] as readonly AnyAgentDefinition[],
+})
+declare const broadCatalog: HarnessCatalogDefinition<string, HarnessCatalogView>
+declare const catalogBranch: boolean
+const mixedLeafRootCatalog = catalogBranch ? emptyLeafCatalog : agentRootCatalog
+// @ts-expect-error a widened empty agent array does not prove an executable root
+defineHarness({ name: 'widenedEmptyAgentConsumer' }).use(widenedEmptyAgentCatalog)
+// @ts-expect-error a broad catalog view has indeterminate string keys rather than a proven root
+defineHarness({ name: 'broadCatalogConsumer' }).use(broadCatalog)
+// @ts-expect-error every member of a catalog union must prove an executable root
+defineHarness({ name: 'mixedLeafRootConsumer' }).use(mixedLeafRootCatalog)
+
+const disjointRootedCatalog = catalogBranch ? agentRootCatalog : workflowRootCatalog
+const rootedUnionBase = defineHarness({ name: 'rootedUnionConsumer', revision: 'v1' })
+const exactAgentRootHarness = rootedUnionBase.use(agentRootCatalog)
+const exactWorkflowRootHarness = rootedUnionBase.use(workflowRootCatalog)
+const disjointRootedHarness = rootedUnionBase.use(disjointRootedCatalog)
+type _DisjointRootedContracts = Expect<Equal<
+	typeof disjointRootedHarness.contracts,
+	typeof exactAgentRootHarness.contracts | typeof exactWorkflowRootHarness.contracts
+>>
+type _DisjointRootedRequirements = Expect<Equal<
+	typeof disjointRootedHarness.requirements,
+	typeof exactAgentRootHarness.requirements | typeof exactWorkflowRootHarness.requirements
+>>
+type _DisjointRootedInference = Expect<Equal<
+	typeof disjointRootedHarness.$infer,
+	typeof exactAgentRootHarness.$infer | typeof exactWorkflowRootHarness.$infer
+>>
+type RootInterruptTuples<Contracts> = Contracts extends {
+	readonly agents: infer Agents extends Readonly<Record<string, { readonly interrupts: readonly string[] }>>
+	readonly workflows: infer Workflows extends Readonly<Record<string, { readonly interrupts: readonly string[] }>>
+} ? Agents[keyof Agents]['interrupts'] | Workflows[keyof Workflows]['interrupts'] : never
+type _DisjointRootedInterrupts = Expect<Equal<
+	RootInterruptTuples<typeof disjointRootedHarness.contracts>,
+	readonly [] | readonly ['external-wait']
+>>
+
+const directHarness = defineHarness({ name: 'support' }).addAgent(structuredAgent).addWorkflow(workflow)
+const usedHarness = defineHarness({ name: 'support' }).use(catalog)
+const reusedCatalogHarness = usedHarness.use(catalog)
+const governedAgent = defineAgent('governedAgent', {
+	model: 'chat',
+	instructions: 'Apply the declared policy.',
+	tools: [lookup],
+	governance: ({ native, rule }) => ({
+		policies: [native({
+			id: 'lookupPolicy',
+			rules: [rule({
+				id: 'denyEmptyLookup',
+				tools: ['lookup'],
+				effect: 'deny',
+				when: context => context.input.message.length === 0,
+			})],
+		})],
+	}),
+})
+const governedHarness = defineHarness({ name: 'governed' }).addAgent(governedAgent)
+const memoryAgent = defineAgent('memoryAgent', {
+	model: 'chat',
+	instructions: 'Remember.',
+	memory: {
+		capabilities: ['memory.kv', 'memory.vector_search'],
+		embedding: { model: 'embeddings' },
+		summary: { model: 'summary' },
+	},
+})
+const knowledgeAgent = defineAgent('knowledgeAgent', { model: 'chat', instructions: 'Search.', tools: [mcp.tools.searchKnowledge] })
+const inferredHarness = defineHarness({ name: 'inferred' }).addAgent(memoryAgent).addAgent(knowledgeAgent)
+type _HarnessAgentInput = Expect<typeof directHarness.$infer.agents.classify.input extends { message: string } ? true : false>
+type _HarnessWorkflowOutput = Expect<typeof usedHarness.$infer.workflows.resolveCase.output extends { answer: string } ? true : false>
+type _MemoryCapabilities = Expect<Equal<
+	typeof inferredHarness.$infer.requirements.memory.capabilities[number],
+	'memory.kv' | 'memory.vector_search'
+>>
+type _MemoryModelAliases = Expect<Equal<
+	typeof inferredHarness.$infer.requirements.memory.modelAliases[number],
+	'embeddings' | 'summary'
+>>
+type _McpServerIds = Expect<Equal<typeof inferredHarness.$infer.requirements.mcpServers[number], 'knowledge'>>
+type _InferredModelAliases = Expect<Equal<keyof typeof inferredHarness.$infer.requirements.models, 'chat' | 'embeddings' | 'summary'>>
+// @ts-expect-error Harness definitions expose roots, never catalog exports
+directHarness.catalog
+
+const fullRequirementsAgent = defineAgent('fullRequirementsAgent', {
+	model: 'chat',
+	instructions: 'Guard.', tools: [lookup], workspace: true, durable: true,
+	permissions: { bash: 'require_approval' },
+	guardrails: { [agentGuardrailsBinding]: {
+		id: 'fullRequirements', requirements: {
+			tools: ['lookup'], models: [{ alias: 'guardModel', capabilities: ['text'] }],
+			memory: ['memory.text_search'], sandbox: ['sandbox.fs'], skillRuntimes: ['node'],
+			durable: true, workspace: true, artifacts: true,
+		},
+	} },
+})
+const exactPermission: 'require_approval' = fullRequirementsAgent.permissions.bash
+const exactGuardModelAlias: 'guardModel' = fullRequirementsAgent.guardrails[agentGuardrailsBinding].requirements.models[0].alias
+const exactWorkspace: true = fullRequirementsAgent.workspace
+const exactDurable: true = fullRequirementsAgent.durable
+void exactPermission
+void exactGuardModelAlias
+void exactWorkspace
+void exactDurable
+
+const invalidGuardrailMemory: AgentExecutionRequirements = {
+	// @ts-expect-error Guardrail memory requirements use the closed MemoryCapability vocabulary
+	memory: ['memory.unknown'],
+}
+const invalidGuardrailSandbox: AgentExecutionRequirements = {
+	// @ts-expect-error Guardrail sandbox requirements use sandbox capability ids only
+	sandbox: ['storage.persistent'],
+}
+const invalidGuardrailRuntime: AgentExecutionRequirements = {
+	// @ts-expect-error Guardrail Skill runtimes use the closed runtime vocabulary
+	skillRuntimes: ['ruby'],
+}
+const invalidGuardrailFlag: AgentExecutionRequirements = {
+	// @ts-expect-error presence flags can only be literal true
+	durable: false,
+}
+void invalidGuardrailMemory
+void invalidGuardrailSandbox
+void invalidGuardrailRuntime
+void invalidGuardrailFlag
+
+const durableWorkflow = defineWorkflow('durableWorkflow', {
+	input, output, workspace: true, durable: true,
+	models: { media: { alias: 'media', capabilities: ['image_generation'] } },
+	async handler({ input: value }) { return { answer: value.message } },
+})
+const exactDurableWorkflowWorkspace: true = durableWorkflow.workspace
+const exactDurableWorkflowFlag: true = durableWorkflow.durable
+const workspaceWorkflowHarness = defineHarness({ name: 'workspaceWorkflowHarness', revision: 'v1' }).addWorkflow(durableWorkflow)
+const workflowSandboxRequired: true = workspaceWorkflowHarness.$infer.requirements.sandbox.required
+type _WorkflowWorkspaceSandbox = Expect<Equal<typeof workspaceWorkflowHarness.$infer.requirements.sandbox.capabilities[number], 'sandbox.workspace_binding'>>
+void workflowSandboxRequired
+void exactDurableWorkflowWorkspace
+void exactDurableWorkflowFlag
+const featureHarness = defineHarness({ name: 'featureHarness' }).addAgent(fullRequirementsAgent).addWorkflow(durableWorkflow)
+const durableRequired: true = featureHarness.$infer.requirements.storage.durable
+const workspaceRequired: true = featureHarness.$infer.requirements.workspace
+const artifactsRequired: true = featureHarness.$infer.requirements.artifacts
+type _GuardMemoryCapability = Expect<Equal<typeof featureHarness.$infer.requirements.memory.capabilities[number], 'memory.text_search'>>
+type _GuardSandboxCapability = Expect<Equal<typeof featureHarness.$infer.requirements.sandbox.capabilities[number], 'sandbox.fs' | 'sandbox.workspace_binding'>>
+type _GuardSkillRuntime = Expect<Equal<typeof featureHarness.$infer.requirements.skillRuntimes[number], 'node'>>
+type _GuardModelCapability = Expect<Equal<typeof featureHarness.$infer.requirements.models.guardModel.capabilities[number], 'text'>>
+const emptyRequirementsHarness = defineHarness({ name: 'emptyRequirements' })
+const durableNotRequired: false = emptyRequirementsHarness.$infer.requirements.storage.durable
+const workspaceNotRequired: false = emptyRequirementsHarness.$infer.requirements.workspace
+const artifactsNotRequired: false = emptyRequirementsHarness.$infer.requirements.artifacts
+void durableRequired
+void workspaceRequired
+void artifactsRequired
+void durableNotRequired
+void workspaceNotRequired
+void artifactsNotRequired
+
+const bashTool = defineTool('bash', {
+	description: 'Run a command.', input, output,
+	async handler(_context, value) { return { answer: value.message } },
+})
+const approvalAgent = defineAgent('approvalAgent', {
+	model: 'chat',
+	instructions: 'Ask first.', tools: [bashTool], permissions: { bash: 'require_approval' },
+})
+const approvalDurable: true = defineHarness({ name: 'approvalHarness' })
+	.addAgent(approvalAgent).$infer.requirements.storage.durable
+void approvalDurable
+
+const plainInterruptAgent = defineAgent('plainInterruptAgent', { model: 'chat', instructions: 'Plain.' })
+const approvalInterruptChild = defineAgent('approvalInterruptChild', {
+	model: 'chat',
+	instructions: 'Approve.', tools: [bashTool], permissions: { bash: 'require_approval' },
+})
+const approvalInterruptParent = defineAgent('approvalInterruptParent', {
+	model: 'chat',
+	instructions: 'Delegate.', subagents: { child: approvalInterruptChild },
+})
+const nonDurableInterruptWorkflow = defineWorkflow('nonDurableInterruptWorkflow', {
+	input, output, agents: [approvalInterruptParent], async handler({ input: value }) { return { answer: value.message } },
+})
+const durableInterruptWorkflow = defineWorkflow('durableInterruptWorkflow', {
+	input, output, durable: true, agents: [approvalInterruptParent], async handler({ input: value }) { return { answer: value.message } },
+})
+type _PlainAgentInterrupts = Expect<Equal<typeof plainInterruptAgent.contract.interrupts, readonly []>>
+type _DescendantAgentInterrupts = Expect<Equal<typeof approvalInterruptParent.contract.interrupts, readonly ['tool-approval']>>
+type _NonDurableWorkflowInterrupts = Expect<Equal<typeof nonDurableInterruptWorkflow.contract.interrupts, readonly ['tool-approval']>>
+type _DurableWorkflowInterrupts = Expect<Equal<typeof durableInterruptWorkflow.contract.interrupts, readonly ['tool-approval', 'external-wait']>>
+
+const dependencyOnlyTool = defineTool('dependencyOnlyTool', {
+	description: 'Dependency-only tool.', input, output, requires: { sandbox: ['sandbox.exec'] },
+	async handler(_context, value) { return { answer: value.message } },
+})
+const dependencyOnlySkill = defineSkill('dependency-only-skill', {
+	directory: new URL('./dependency-only-skill/', import.meta.url), runtimes: ['python'],
+})
+const dependencyOnlyAgent = defineAgent('dependencyOnlyAgent', {
+	instructions: 'Use private dependencies.', model: 'dependencyModel', tools: [dependencyOnlyTool], skills: [dependencyOnlySkill],
+})
+const rootWithPrivateDependency = defineAgent('rootWithPrivateDependency', {
+	model: 'chat',
+	instructions: 'Delegate.', subagents: { child: dependencyOnlyAgent },
+})
+const privateClosureHarness = defineHarness({ name: 'privateClosureHarness' }).addAgent(rootWithPrivateDependency)
+type _PrivateClosureModel = Expect<Equal<keyof typeof privateClosureHarness.$infer.requirements.models, 'chat' | 'dependencyModel'>>
+type _PrivateClosureSkill = Expect<Equal<typeof privateClosureHarness.$infer.requirements.skillRuntimes[number], 'python'>>
+type _PrivateClosureTool = Expect<'sandbox.exec' extends typeof privateClosureHarness.$infer.requirements.sandbox.capabilities[number] ? true : false>
+
+const runtimeWorkflow = defineWorkflow('runtimeWorkflow', {
+	input,
+	output,
+	async handler({ input: value }) { return { answer: value.message } },
+})
+const runtimeHarness = defineHarness({ name: 'runtimeHarness' }).addWorkflow(runtimeWorkflow)
+const runtimeInstancePromise = runtimeHarness.getInstance({})
+declare const typedModelProvider: import('../src/ports/model-provider.js').ModelProvider
+declare const typedSandbox: import('../src/sandbox/index.js').Sandbox
+const groupedAgent = defineAgent('groupedRuntimeAgent', { model: 'chat', instructions: 'Reply.', sandbox: { group: 'banking' } })
+const groupedRuntimeHarness = defineHarness({ name: 'groupedRuntimeHarness' }).addAgent(groupedAgent)
+type _GraphSandboxGroup = Expect<Equal<typeof groupedRuntimeHarness.$infer.requirements.sandbox.requiredGroups[number], 'banking'>>
+const groupedRuntimeInstance = groupedRuntimeHarness.getInstance({
+	models: { chat: { provider: typedModelProvider, model: 'model' } }, sandbox: typedSandbox,
+	sandboxBinding: { groups: ['banking'] as const, defaultPolicy: { group: 'banking' } },
+})
+const additionalGroupRuntimeInstance = groupedRuntimeHarness.getInstance({
+	models: { chat: { provider: typedModelProvider, model: 'model' } }, sandbox: typedSandbox,
+	sandboxBinding: { groups: ['banking', 'support'] as const, defaultPolicy: { group: 'support' } },
+})
+// @ts-expect-error every graph-required group must be present in the configured tuple
+groupedRuntimeHarness.getInstance({ models: { chat: { provider: typedModelProvider, model: 'model' } }, sandbox: typedSandbox, sandboxBinding: { groups: ['support'] as const } })
+// @ts-expect-error default policy cannot widen the configured group tuple
+groupedRuntimeHarness.getInstance({ models: { chat: { provider: typedModelProvider, model: 'model' } }, sandbox: typedSandbox, sandboxBinding: { groups: ['banking'] as const, defaultPolicy: { group: 'typo' } } })
+void groupedRuntimeInstance
+void additionalGroupRuntimeInstance
+type InferredRuntimeInstance = Awaited<ReturnType<typeof directHarness.getInstance>>
+declare const inferredRuntimeInstance: InferredRuntimeInstance
+declare const dynamicTargetId: string
+async function checkRuntimeSurface() {
+	const instance = await runtimeInstancePromise
+	const session = await instance.getSession('typedSession')
+	// @ts-expect-error sandbox-free graphs do not accept caller-supplied sandbox owners
+	await instance.getSession('typedSession', { sandboxOwner: { namespace: 'external', id: 'owner', instanceId: '01ARZ3NDEKTSV4RRFFQ69G5FAV' } })
+	const completed = await session.workflows.runtimeWorkflow.run({ message: 'hello' })
+	if (completed.status === 'completed') {
+		const answer: string = completed.output.answer
+		void answer
+	}
+	for await (const event of session.workflows.runtimeWorkflow.stream({ message: 'hello' })) {
+		const sequence: number = event.sequence
+		void sequence
+	}
+	const targetStream = session.workflows.runtimeWorkflow.stream({ message: 'hello' })
+	await targetStream.cancel('typed transport disconnect')
+	type _CanonicalTargetStream = Expect<typeof targetStream extends HarnessTargetStream<typeof workflow.contract> ? true : false>
+	// @ts-expect-error unknown targets are not present on the exact definition-keyed map
+	session.workflows.unknown
+	// @ts-expect-error target inputs are inferred from the selected workflow contract
+	await session.workflows.runtimeWorkflow.run({ message: 1 })
+	// @ts-expect-error host-only context cannot enter standalone invoke options
+	await session.workflows.runtimeWorkflow.run({ message: 'hello' }, { hostContext: {} })
+	// @ts-expect-error target maps are readonly
+	session.workflows.runtimeWorkflow = session.workflows.runtimeWorkflow
+
+	const inferredSession = await inferredRuntimeInstance.getSession('typedAgentSession')
+	const agentCompleted = await inferredSession.agents.classify.run({ message: 'hello' })
+	if (agentCompleted.status === 'completed') {
+		const answer: string = agentCompleted.output.answer
+		void answer
+	}
+	const task = await inferredSession.childTasks.get('task-id')
+	if (task !== undefined) {
+		const status = await task.status()
+		const workflowInvocationId: string = status.descriptor.workflowInvocationId
+		const callId: string = status.descriptor.callId
+		const modelAlias: string = status.descriptor.modelAlias
+		void workflowInvocationId
+		void callId
+		void modelAlias
+	}
+	// @ts-expect-error unknown agents are not present on the exact definition-keyed map
+	inferredSession.agents.unknown
+	// @ts-expect-error standalone sessions have no ambiguous singular agent registry
+	inferredSession.agent
+	// @ts-expect-error standalone sessions have no string lookup service locator
+	inferredSession.getAgent('classify')
+	// @ts-expect-error arbitrary string indexing cannot bypass the exact target map
+	inferredSession.agents[dynamicTargetId]
+}
+void checkRuntimeSurface
+
+// @ts-expect-error catalog composition requires the hidden catalog identity
+defineHarness({ name: 'copiedCatalog' }).use({ ...catalog })
+// @ts-expect-error Harness structural copies do not retain the hidden definition brand
+const copiedHarness: typeof directHarness = { ...directHarness }
+void copiedHarness
+// @ts-expect-error a Harness name is required
+defineHarness({})
+// @ts-expect-error immutable composition has no terminal define step
+directHarness.define()
+// @ts-expect-error Harness definitions are not string lookup registries
+directHarness.getAgent('classify')
+// @ts-expect-error leaf composition methods do not exist
+directHarness.addTool
+// @ts-expect-error leaf composition methods do not exist
+directHarness.addSkill
+// @ts-expect-error leaf composition methods do not exist
+directHarness.addMcpServer

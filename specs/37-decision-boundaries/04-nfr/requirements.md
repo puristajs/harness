@@ -1,0 +1,11 @@
+# Nonfunctional requirements
+
+Privacy/security: operational evidence/error/audit projection is allowlisted and excludes input, prose, metadata, reviewer identity and opaque provider content. Use sentinel tests across event stream, persisted events, logger and telemetry spans. Configured IDs and reason codes are application-owned non-content dimensions; syntax alone is not a privacy guarantee. No approval grants application authorization or overrides denial. No guardrail promises interception of direct model calls or opaque encrypted reasoning.
+
+Resilience: one decision deadline helper, one enclosing tool timer, deterministic cleanup, at-most-once callback invocation, no callback retries, no late continuation. Test pre-abort, own timeout, enclosing timeout, noncooperative success/rejection, equal deadlines and listener/timer baselines with fake clocks. Existing run retry/lease/checkpoint behavior remains intact. Application claim/receipt handles external effect uncertainty explicitly.
+
+Performance: reduction is O(number of decisions); no sorts to compute precedence, no extra schema parsing of unchanged inputs or handler outputs, no redundant input deep copies per policy. Recursively freeze once at prepared boundaries. Preflight and callback counts, maxParallelToolCalls and no duplicate LLM accounting are deterministic test assertions; no hardware-dependent latency threshold. Hashing processes only bounded identity tuples, never content. JSON validation detects cycles safely.
+
+Integrity: strict closed shape validation at runtime, exact storage projections and terminal wait type; cross-tool input type narrowing; stable identity across replay and distinct concurrent occurrences. No new schema generator, table or alternate authority. Test in-memory/SQLite parity with existing contracts.
+
+Operations/release: dependency-neutral clean source cut; no old-reader path, dual write, alias, storage migration or deletion. Existing active runs must finish under their original deployment before new code is deployed. Release/deployment is outside implementation tickets. Existing licenses, SBOM and vulnerability processes remain unchanged. Frontend UI/a11y/responsiveness are not applicable; existing documentation layout/routes are retained.

@@ -1,0 +1,57 @@
+tickets:
+  TICKET-001:
+    path: wave_01_contracts/tickets/TICKET-001-contracts.md
+    wave: 1
+    lifecycle: accepted
+  TICKET-002:
+    path: wave_02_private_catalogs/tickets/TICKET-002-local_catalog.md
+    wave: 2
+    lifecycle: accepted
+  TICKET-003:
+    path: wave_02_private_catalogs/tickets/TICKET-003-docker_catalog.md
+    wave: 2
+    lifecycle: accepted
+  TICKET-014:
+    path: wave_02_private_catalogs/tickets/TICKET-014-docker_durable_catalog.md
+    wave: 2
+    lifecycle: planned
+  TICKET-004:
+    path: wave_03_port_cutover/tickets/TICKET-004-port_cutover.md
+    wave: 3
+    lifecycle: planned
+  TICKET-005:
+    path: wave_04_sharing/tickets/TICKET-005-sharing.md
+    wave: 4
+    lifecycle: planned
+  TICKET-006:
+    path: wave_05_durable_partitions/tickets/TICKET-006-durable_partitions.md
+    wave: 5
+    lifecycle: planned
+  TICKET-007:
+    path: wave_06_retention/tickets/TICKET-007-retention.md
+    wave: 6
+    lifecycle: planned
+  TICKET-008:
+    path: wave_07_replay/tickets/TICKET-008-replay.md
+    wave: 7
+    lifecycle: planned
+  TICKET-009:
+    path: wave_08_purista/tickets/TICKET-009-purista.md
+    wave: 8
+    lifecycle: planned
+  TICKET-010:
+    path: wave_09_conformance/tickets/TICKET-010-conformance.md
+    wave: 9
+    lifecycle: planned
+  TICKET-011:
+    path: wave_10_docs/tickets/TICKET-011-docs.md
+    wave: 10
+    lifecycle: planned
+  TICKET-012:
+    path: wave_11_release_review/tickets/TICKET-012-release_review.md
+    wave: 11
+    lifecycle: planned
+  TICKET-013:
+    path: wave_02_private_catalogs/tickets/TICKET-013-packed_verification.md
+    wave: 2
+    lifecycle: accepted

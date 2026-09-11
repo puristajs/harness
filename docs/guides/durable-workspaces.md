@@ -1,247 +1,114 @@
-# Durable Workspaces
+# Durable Execution and Workspaces
 
-Durable workspaces are the production replay surface for runs that need to
-pause, resume, retry, or recover with workspace state intact.
+Durable execution lets a workflow resume from committed checkpoints after a
+retry or process restart. A durable workspace links those checkpoints to
+persistent files.
 
-Sandbox snapshot support and durable workspace replay are different guarantees:
+## Start locally
 
-| Capability | Meaning |
-|---|---|
-| `sandbox.snapshot` | A sandbox adapter can capture one sandbox session. |
-| `sandbox.resume` | A sandbox adapter can reopen a captured sandbox session. |
-| `runtime.persistent` | Runtime checkpoints, leases, and terminal state survive process exit. |
-| `workspace_store.durable` | A workspace store implements the durable workspace lifecycle. |
-| `workspace_store.persistent` | Workspace checkpoints survive process exit. |
-| `workspace_store.retention` | The store reports effective expiry and cleanup policy. |
-| `workspace_store.encrypted_storage` | The store encrypts checkpoint payloads, snapshots, files, and metadata at rest. |
-| `workspace_store.quota` | The store enforces workspace size, file, age, and concurrency limits. |
-
-Use durable workspaces for long-running agent workflows, offline eval jobs,
-dataset backfills, optimization jobs, and production measurement runs where a
-fresh sandbox restart would lose useful execution state.
-
-## Local Durable Execution
-
-For local development and single-host deployments, start with the built-in
-SQLite + host-directory bundle:
+`localDurableExecution` provides SQLite storage, a local sandbox, and a local
+workspace adapter that share one coordinator:
 
 ```ts
-import { defineHarness, localDurableExecution } from '@purista/harness'
+import {
+  defineHarness,
+  defineWorkflow,
+  localDurableExecution,
+} from '@purista/harness'
 
 const local = localDurableExecution({
-  root: '.purista/harness',
-  exec: false
+  root: '.purista/durable',
+  exec: false,
 })
 
-const harness = defineHarness()
-  .state(local.state)
-  .runtime(local.runtime)
-  .sandbox(local.sandbox)
-  .workspaceStore(local.workspaceStore)
-  .checkpoints(local.checkpoints)
-  .requires([
-    'runtime.persistent',
-    'runtime.workspace_checkpoint',
-    'workspace_store.persistent',
-    'workspace_store.checkpoint',
-    'workspace_store.resume',
-    'context_checkpoint.persistent',
-  ])
-  .models(models)
-  .agents(agents)
-  .workflows(workflows)
-  .build()
-```
+const report = defineWorkflow('report', {
+  input,
+  output,
+  durable: true,
+  workspace: true,
+  async handler(ctx) {
+    const outline = await ctx.step('outline', async () => createOutline(ctx.input))
+    return ctx.step('render', async () => renderReport(outline))
+  },
+})
 
-`localDurableExecution` stores run state, durable runtime checkpoints, context
-checkpoints, and workspace snapshots under the configured root. The sandbox maps
-virtual `/workspace` to the active durable workspace. Host command execution is
-disabled by default; enabling `exec` is a trust decision because this adapter is
-a host-directory persistence adapter, not a Docker or microVM isolation layer.
+const definition = defineHarness({
+  name: 'reports',
+  revision: '2026-09-07',
+}).addWorkflow(report)
 
-When `exec` is enabled, commands never run through a shell: the command line is
-tokenized and spawned as an argv array, unquoted shell metacharacters are
-rejected when `allowCommands` is configured, captured output is capped at
-10 MiB per stream, and the per-command timeout falls back to the harness
-`toolTimeoutMs`. Files-only mode (`exec: false`) advertises
-`['sandbox.fs', 'sandbox.persistent_fs']`; enabling `exec` adds `sandbox.exec`.
-
-## Configuration Shape
-
-```ts
-const harness = defineHarness()
-  .runtime(durableRuntime)
-  .workspaceStore(durableWorkspace)
-  .requires([
-    'runtime.persistent',
-    'runtime.workspace_checkpoint',
-    'workspace_store.durable',
-    'workspace_store.persistent',
-    'workspace_store.checkpoint',
-    'workspace_store.resume',
-    'workspace_store.cleanup',
-    'workspace_store.retention',
-    'workspace_store.encrypted_storage',
-    'workspace_store.quota',
-  ])
-  .models(models)
-  .agents(agents)
-  .build()
-```
-
-`.requires(...)` is the fail-fast guard. The harness never silently downgrades
-from durable replay to ephemeral execution.
-
-## Out-of-the-box Store
-
-`inMemoryDurableWorkspaceStore()` is included for local development, examples,
-and tests:
-
-```ts
-import { defineHarness, inMemoryDurableWorkspaceStore } from '@purista/harness'
-
-const harness = defineHarness()
-  .workspaceStore(inMemoryDurableWorkspaceStore())
-  .requires(['workspace_store.durable', 'workspace_store.checkpoint', 'workspace_store.resume'])
-  .models(models)
-  .agents(agents)
-  .build()
-```
-
-The in-memory store is process-local. It is not a production persistence layer
-and does not survive process restart.
-
-## Running a durable workflow
-
-Durable execution is opt-in **per call** and applies to workflow runs only.
-Mark replayable boundaries in the handler with `ctx.step(...)`, then invoke the
-workflow with a stable `durable.runId`:
-
-```ts
-const harness = defineHarness()
-  .runtime(durableRuntime)              // an executable DurableRuntime, e.g. inMemoryDurableRuntime()
-  .workspaceStore(durableWorkspace)     // optional; enables workspace checkpoints
-  .models(models)
-  .agents(agents)
-  .workflows({
-    research: {
-      input: z.object({ topic: z.string() }),
-      output: z.string(),
-      delegation: { agents: ['outline', 'write'] },
-      handler: async (ctx) => {
-        // Each step is checkpointed; on resume it replays its stored output
-        // without re-running the body.
-                  const outline = await ctx.step('outline', () => ctx.agents.outline(ctx.input.topic), {
-                    retry: { maxAttempts: 3, minDelayMs: 250, maxDelayMs: 2_000 }
-                  })
-                  const draft = await ctx.step('draft', () => ctx.agents.write(outline))
-                  return draft
-      },
-    },
-  })
-  .build()
-
-const session = await harness.getSession('user-42')
-// First call runs both steps. If the process crashes after "outline" commits,
-// re-invoking with the same runId replays "outline" and only runs "draft".
-const result = await session.workflows.research.prompt(
-  { topic: 'durable execution' },
-  { durable: { runId: 'research-2026-06-09-user-42' } },
-)
-```
-
-Behavior (see [spec 21 §16.1](../../specs/21-durable-workspaces.md)):
-
-- The harness acquires a runtime lease for `durable.runId`, injects a durable
-  `ctx.step`, and finalizes the runtime (`finishRun`) on success/cancel. A
-  terminal `failed` status is recorded with its sanitized error and releases the
-  lease, but only `succeeded` and `cancelled` block resume — a failed run stays
-  resumable by a retry with the same `runId`.
-- With a workspace store configured, it starts (or resumes) the durable
-  workspace, writes a workspace checkpoint before each runtime checkpoint, and —
-  when the store's retention `cleanupMode` is `adapter_automatic` — cleans up on
-  terminal success. Cancellation aborts the workspace; a non-cancel failure
-  leaves it resumable for a retry with the same `runId`.
-- `ctx.step(..., { retry })` retries the step body before checkpoint commit.
-  Replayed committed steps return the stored output without re-running the body
-  or retry policy.
-- Without `durable`, `ctx.step(...)` is a transparent pass-through that still
-  honors short retry options, so the same workflow body runs ephemerally with no
-  code change.
-- Supplying `durable` without an executable `.runtime(...)` throws
-  `HarnessConfigError{reason:'durable_runtime_required'}`; supplying it on an
-  agent run throws `ValidationError`.
-
-For workflows that may outlive one deployment, include an application
-`workflowVersion` in workflow input or invoke metadata, keep durable step output
-schemas backward-compatible, and start a new durable run when a major migration
-needs a new code path. Store the previous run id in metadata so audit and UI
-views can link the logical process across versions.
-
-Resume across an actual process restart additionally requires
-`runtime.persistent` and `workspace_store.persistent`. The in-memory adapters
-are local/test only; `localDurableExecution(...)` is the built-in persistent
-single-host option.
-
-## Context Checkpoints
-
-Use `ctx.checkpoints` for explicit long-horizon handoff records:
-
-```ts
-await ctx.checkpoints.write({
-  sequence: 1,
-  kind: 'summary',
-  payload: { completed: ['outline'], next: 'draft' }
+const instance = await definition.getInstance({
+  storage: local.storage,
+  sandbox: local.sandbox,
+  workspace: local.workspace,
 })
 ```
 
-The harness never auto-summarizes or rewrites prompts. Context checkpoints are
-typed JSON records that your workflow or agent writes deliberately. They are
-stored by the configured checkpoint adapter and traced without raw payload
-content.
+`revision` identifies the deployed definition used for replay. Change it when
+a release changes durable behavior.
 
-## Replay Boundary
-
-At a replay boundary, workspace state is written first and the runtime
-checkpoint referencing it is committed second. If the workspace write succeeds
-and the runtime checkpoint fails, the workspace checkpoint is an orphan and can
-be cleaned. If the runtime checkpoint succeeds and the process crashes before
-the caller receives the result, retrying with the same idempotency key returns
-the same checkpoint references.
-
-## Policy Ownership
-
-Harness core owns the generic adapter contract. Applications and product layers
-own concrete policy values:
-
-- retention durations;
-- encryption key scope and rotation;
-- tenant/project quotas;
-- cleanup scheduling;
-- product records, UI, billing, and usage reports.
-
-CloudGrid can use durable workspace stores for production replay while still
-owning datasets, evaluation runs, result records, comparisons, and promotion
-evidence outside harness core.
-
-## Privacy
-
-Workspace references are returned to callers and stored in checkpoint records,
-but logs, spans, and metrics emit only hashed references. Workspace file
-content, checkpoint payload content, prompts, completions, tool inputs, tool
-outputs, provider credentials, tokens, raw headers, and attachments are not
-emitted by harness telemetry.
-
-## Testing
-
-Stores must pass the durable workspace contract suite:
+## Invoke with a stable run id
 
 ```ts
-import { durableWorkspaceStoreContract } from '@purista/harness/testing'
-
-durableWorkspaceStoreContract(() => makeDurableWorkspaceStore())
+const session = await instance.getSession('report-session')
+const outcome = await session.workflows.report.run(input, {
+  durable: { runId: 'report-42' },
+  idempotencyKey: 'report-42',
+})
 ```
 
-Application tests should cover missing capabilities, resume from a committed
-checkpoint, cleanup retry, quota exceeded behavior, and explicit ephemeral
-non-durable restart policy when the application declares `required:false`.
+The session id identifies conversation state. The durable run id identifies one
+workflow execution and its checkpoints.
+
+## Write replay-safe steps
+
+`ctx.step(stepId, handler)` stores one JSON-compatible result. Use stable step
+ids and put each external side effect behind its own step. A retry returns the
+committed value instead of executing the handler again.
+
+Do not hide multiple unrelated effects inside one step. If the process can fail
+between two writes, make them separate steps or use an application-owned
+transactional outbox.
+
+## Use a workspace
+
+A workflow with `workspace: true` receives a sandbox bound to its durable
+workspace lifecycle. The graph requires:
+
+- a `HarnessStorage` with persistent durability;
+- a sandbox advertising `sandbox.workspace_binding`;
+- a `DurableWorkspace` adapter.
+
+The workspace adapter checkpoints, restores, retains, and cleans workspace
+state. The sandbox owns file and process operations. Their responsibilities are
+separate even when one local helper creates both.
+
+## Pause and resume
+
+Tool approval and `ctx.externalWait.wait(...)` return an `interrupted`
+outcome. Persist the run id and interrupt revision. After an authenticated and
+authorized decision, signal the wait or pass a correlated approval resume and
+invoke the same durable run again.
+
+Invalid, expired, duplicate, or mismatched decisions fail closed.
+
+## Production adapters
+
+Use `@purista/harness-storage-postgres` for distributed state. Combine it with
+a sandbox and workspace implementation that provide the durability guarantees
+your deployment needs. Kubernetes deployments can use
+`@purista/harness-sandbox-kubernetes`.
+
+Verify adapter capability metadata at startup and run the exported storage and
+sandbox conformance suites for custom adapters.
+
+## Shut down
+
+```ts
+await session.release()
+await instance.close()
+await local.close()
+```
+
+The instance closes Harness-owned resources. Close application-owned adapter
+bundles separately when their factory exposes a close method.

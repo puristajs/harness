@@ -17,8 +17,8 @@ describe('bank governance example', () => {
     expect(result.balances['checking']).toBe(3_500)
     expect(result.balances['brokerage']).toBe(1_500)
     expect(result.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'approval.requested', ruleId: 'large-transfer-approval' }),
-      expect.objectContaining({ type: 'approval.finished', decision: 'approved', approverId: 'branch-manager' })
+      expect.objectContaining({ type: 'approval.requested' }),
+      expect.objectContaining({ type: 'approval.responded', approved: true })
     ]))
   })
 
@@ -28,7 +28,7 @@ describe('bank governance example', () => {
     expect(result.balances['checking']).toBe(5_000)
     expect(result.balances['brokerage']).toBe(0)
     expect(result.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'policy.evaluated', effect: 'deny', ruleId: 'hard-transfer-limit' })
+      expect.objectContaining({ type: 'tool.finished', error: expect.objectContaining({ code: 'POLICY_DENIED' }) })
     ]))
   })
 
@@ -38,7 +38,7 @@ describe('bank governance example', () => {
     expect(result.balances['savings']).toBe(2_500)
     expect(result.balances['brokerage']).toBe(0)
     expect(result.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'policy.evaluated', effect: 'deny', ruleId: 'insufficient-funds' })
+      expect.objectContaining({ type: 'tool.finished', error: expect.objectContaining({ code: 'POLICY_DENIED' }) })
     ]))
   })
 })

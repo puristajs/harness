@@ -13,7 +13,7 @@ flowchart TB
   end
 
   subgraph Harness["@purista/harness"]
-    Builder["defineHarness builder"]
+    Definition["Immutable Harness definition"]
     Session["Session"]
     Agent["Agent loop: LLM conversation + tools"]
     Workflow["Workflow handler: orchestration"]
@@ -22,9 +22,9 @@ flowchart TB
 
   subgraph Adapters["Infrastructure adapters"]
     Model["ModelProvider"]
-    State["StateStore"]
+    State["HarnessStorage"]
     Sandbox["SandboxSession"]
-    Workspace["DurableWorkspaceStore"]
+    Workspace["DurableWorkspace"]
     Telemetry["Logger + OTel"]
   end
 
@@ -36,7 +36,7 @@ flowchart TB
   end
 
   UI --> Session
-  Builder --> Session
+  Definition --> Session
   Session --> Agent
   Session --> Workflow
   Workflow --> Agent
@@ -58,14 +58,15 @@ flowchart TB
 
 | Concept | What It Does | User Decision |
 |---|---|---|
-| `Harness` | Compiled definition of models, tools, skills, agents, workflows, defaults, and adapters. | What capabilities exist? |
+| Harness definition | Immutable executable roots plus the recursively referenced tools, Skills, MCP servers, agents, workflows, and defaults. | Which agent and workflow targets are callable? |
+| Harness instance | A definition bound to live models, storage, memory, sandbox, MCP transports, and telemetry. | Which infrastructure runs this graph? |
 | `Session` | Isolated operational context with memory, history, sandbox, and one active run at a time. | What user/thread/tenant is this run for? |
 | `Agent` | A typed LLM conversation loop. It prepares messages, calls the model, executes tool invocations, appends tool results, repeats until the model returns, validates output, and emits events. | What single model-driven job should this loop perform? |
 | `Workflow` | Application-owned orchestration around one or more agent invocations. It can sequence, branch, fan out, reflect, judge, request human approval, and perform durable writes. | What business process or multi-step flow must happen around agents? |
 | `Tool` | Callable capability exposed to an agent: built-in, TypeScript, or MCP. | What can the agent do besides model calls? |
-| `Skill` | Mounted instruction directory with `SKILL.md` frontmatter. | What reusable method or domain guidance should the agent follow? |
+| `Skill` | Reviewed instruction directory disclosed on demand through `read_skill`; runtime-bearing Skills also require a read-only sandbox mount. | What reusable method or domain guidance should the agent follow? |
 | `Sandbox` | Filesystem and optional command execution boundary. | Can this run execute commands, and with what isolation? |
-| `DurableWorkspaceStore` | Production replay boundary that links runtime checkpoints to persisted workspace state. | Must this run resume from committed workspace state after retry or restart? |
+| `DurableWorkspace` | Production replay boundary that links runtime checkpoints to persisted workspace state. | Must this run resume from committed workspace state after retry or restart? |
 
 ## Agents Versus Workflows
 
@@ -85,7 +86,7 @@ flowchart TB
     W1["Validate request"]
     W2["Invoke agent A"]
     W3["Invoke agent B or run in parallel"]
-    W4["Apply policy / review gate"]
+    W4["Apply policy / application review task"]
     W5["Write artifact or state"]
     W1 --> W2 --> W3 --> W4 --> W5
   end
@@ -142,10 +143,11 @@ flowchart LR
 
 ## Event And Trace Shape
 
-Session streaming APIs emit run events. Applications can render these events in
-a chat UI, run inspector, logs, or tests. Model stream chunks consumed inside a
-workflow or custom agent handler stay internal unless that model stream call
-opts in with `{ emitRunEvents: true }`.
+Session target `stream()` APIs emit the public execution event contract.
+Browser chat endpoints should project that stream through
+`@purista/harness-ai-sdk-ui/v1`; ordinary AI SDK clients can then render text,
+status, tool calls, and approval requests. Persisted run summaries and telemetry
+serve operator views through a separate application endpoint.
 
 ```mermaid
 flowchart TD
@@ -174,5 +176,5 @@ default `UNSET` status.
 Persisted run events never store prompts, model outputs, tool inputs/results,
 memory, files, or user data. They may store operational metadata such as ids,
 counts, dimensions, status, serialized errors, and token usage. Telemetry
-content capture controls span content only; it does not change StateStore audit
+content capture controls span content only; it does not change HarnessStorage audit
 retention.

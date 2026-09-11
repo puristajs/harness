@@ -51,13 +51,15 @@ Recommended output schema:
 
 ```ts
 z.object({
-  answer: z.string(),
-  citations: z.array(z.object({
-    id: z.string(),
-    quoteOrSummary: z.string(),
-    confidence: z.enum(['low', 'medium', 'high'])
-  })),
-  confidenceNotes: z.array(z.string())
+	answer: z.string(),
+	citations: z.array(
+		z.object({
+			id: z.string(),
+			quoteOrSummary: z.string(),
+			confidence: z.enum(['low', 'medium', 'high']),
+		}),
+	),
+	confidenceNotes: z.array(z.string()),
 })
 ```
 
@@ -73,41 +75,43 @@ evidence to a normal object-output agent.
 
 ```ts
 const queryEmbedding = await ctx.models.retrieval.embed({
-  input: ctx.input.question
-})
+	input: ctx.input.question,
+}, { callId: 'embedQuery' })
 
 const candidates = await vectorIndex.search(queryEmbedding.embeddings[0].vector)
 
 const ranked = await ctx.models.ranker.rerank({
-  query: ctx.input.question,
-  documents: candidates.map((doc) => ({
-    id: doc.id,
-    text: doc.text,
-    metadata: { source: doc.source }
-  })),
-  topN: 5
-})
+	query: ctx.input.question,
+	documents: candidates.map(doc => ({
+		id: doc.id,
+		text: doc.text,
+		metadata: { source: doc.source },
+	})),
+	topN: 5,
+}, { callId: 'rerankCandidates' })
 ```
 
-The harness owns provider calls, timeout/cancellation, usage metadata, and run
-observation. The vector database, retrieval policy, and final prompt assembly
+The harness owns provider calls, timeout/cancellation, usage metadata, and
+execution events. The vector database, retrieval policy, and final prompt assembly
 stay in application code.
 
-## Human-In-The-Loop Review
+## Application-Owned Human Review
 
-Use a workflow when proposed changes should not be applied until a human
-approves them. The proposal agent drafts the change; the workflow owns the gate
-and decides whether a write tool may run.
+Use tool approval when a prepared model tool call needs a human decision before
+its handler runs. Harness returns a resumable interruption and checkpoints the
+exact call. Use a durable workflow external wait for a broader business review.
+In both cases, the application owns the review record, user interface,
+authenticated reviewer, authorization, expiry, and decision persistence.
 
 ```mermaid
 flowchart LR
   Source["Source / request"] --> Agent["Proposal agent"]
-  Agent --> Review["ReviewRequest"]
+  Agent --> Review["Approval interruption or external wait"]
   Review --> UI["Questionnaire UI"]
   UI --> Decision["ReviewDecision"]
   Decision --> Apply{"Approved?"}
   Apply -- "Yes" --> Write["Write tool"]
-  Apply -- "Revise" --> Followup["Follow-up run"]
+  Apply -- "Revise" --> Followup["Reject and start a new request"]
   Apply -- "Reject" --> Log["Audit log"]
 ```
 
@@ -115,7 +119,7 @@ Required behavior:
 
 - no mutation before approval;
 - visible review questions and recommended answers;
-- immediate answer capture when a user selects an option;
+- standard approval parts in the client stream;
 - idempotent final decision submission;
 - stale run/review ids fail with a clear error.
 
@@ -198,7 +202,7 @@ The Living Wiki Jaeger example combines:
 - decision memo workflow;
 - architecture review workflow;
 - wiki audit workflow;
-- human review gate;
+- application-owned human review task;
 - SSE run inspector;
 - Jaeger trace links;
 - Mermaid, draw.io XML, JSON panels, and Three.js graph.

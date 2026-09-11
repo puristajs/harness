@@ -1,0 +1,57 @@
+plan_manifest_version: 1
+content_digest: sha256:a5841b6d4849575fb90a1681653d8c765471386d3acfa5867fd50147d714c009
+source_spec_manifest_digest: sha256:b5323335237da8fac896a1d42efeac1df47f9438f48cebdc8241565ede67724f
+artifacts:
+  - path: _dependencies.yaml
+    sha256: sha256:1cd017533c3e6d841acd2d69668a0b51c98a13c91eb5509705ad48795e324c29
+  - path: _registry.yaml
+    sha256: sha256:7d8efbc6a4e0cb25fb733e4979627e3a83dfff7ad4037df1d97f95a638b1044b
+  - path: _scope.yaml
+    sha256: sha256:b6e26ff36d2bf77b5df11deda6434bfb4381645721f6015c9a6a293e24209342
+  - path: _status.yaml
+    sha256: sha256:204b330e41d30de74ef584d5cff8e6209d2b6b4444c27acb5d7c7df9af6e76da
+  - path: implementation-plan.md
+    sha256: sha256:75a39f08ce548fb7f94256b1cdd03ebf82dd51faad1b9cd54ab19fa2d62f1995
+  - path: wave_01_foundation/plan.md
+    sha256: sha256:78dbf22aaf8d4426bd5186695f679e14ccd5dc09dc830d082beb3cbc37bb68fd
+  - path: wave_01_foundation/tickets/TICKET-001-foundation.md
+    sha256: sha256:7a81e6409bbaa0579d984e1e1ced535edff96d504e8910726e6373540ee327ec
+  - path: wave_02_governance/plan.md
+    sha256: sha256:4ab86c06216b8174f799b791cb79a29a4d804a3b38e717c463ca72857e95dacd
+  - path: wave_02_governance/tickets/TICKET-002-governance.md
+    sha256: sha256:feeffe608e035f9b41b3052ed9f1ae59cb105476b7b45aa4dbe62efbbbb1439f
+  - path: wave_03_providers/plan.md
+    sha256: sha256:f2ef79936bf1a66203065b1a8d2f7aaab7e46c6cd82d9e4ac18987c9f571ff0b
+  - path: wave_03_providers/tickets/TICKET-003-providers.md
+    sha256: sha256:a1422b4e819657ec5ed41a9cae36fe6c0eed2a624ab1f036d7336173887c4824
+  - path: wave_04_tools/plan.md
+    sha256: sha256:f86ffc79c804c9a239c052742b62177d286146f6fc62426458a6ad30bf212b07
+  - path: wave_04_tools/tickets/TICKET-004-tools.md
+    sha256: sha256:5b9000dbdb4c5b1c780e8a6f3a83e2db742cb62711107173a9f8dca9f96fee3f
+  - path: wave_05_rails/plan.md
+    sha256: sha256:98f2c17fa8f5890ed243f319cdeed1fc3b1825607537d0581aacfcf0bc6afefb
+  - path: wave_05_rails/tickets/TICKET-005-rails.md
+    sha256: sha256:820345099c7327018da168a1b596458b318b9968e6fdd6d08b881540dfcca5f5
+  - path: wave_06_waits/plan.md
+    sha256: sha256:91f2b9e8757b0a960bb542b5ea62f68b5cc385d11d9ae3bb367f45db12342f99
+  - path: wave_06_waits/tickets/TICKET-006-waits.md
+    sha256: sha256:6f5f122cc25ed54665dee537c1eb914b5500b4d815b862bc464aa64d30752ba4
+  - path: wave_07_review/plan.md
+    sha256: sha256:b6d39772f441f2212e968c9c809918175823cceeadfb31ada3ac33c4190a489c
+  - path: wave_07_review/tickets/TICKET-007-review.md
+    sha256: sha256:bf6b3fdc1c6e2c0abaf3bcaf04d1c0ed9f65d680b3d973aae951619c91911c2c
+  - path: wave_08_consumers/plan.md
+    sha256: sha256:8e5f86668693ad2bcc09103a0317b92a42a0348e2601da7a85eeb9fb8f71cb0f
+  - path: wave_08_consumers/tickets/TICKET-008-consumers.md
+    sha256: sha256:9e758221e6fcbd32df3a07eda9189444aff1a1914a8d42dbe6978aeb53a9cd89
+  - path: wave_09_docs/plan.md
+    sha256: sha256:15e061d632c0448918983152139f8144088521a2a5feba2cafa9ed37ee5a40a3
+  - path: wave_09_docs/tickets/TICKET-009-docs.md
+    sha256: sha256:36c661348715c98672cf810cc736da6783a57e7cc60b5b09781e1fa0a8799ba2
+  - path: wave_10_cleanup/plan.md
+    sha256: sha256:9feeea592debf8e243e7005bf2276240429e4bd46fcd69499223321097f09733
+  - path: wave_10_cleanup/tickets/TICKET-010-cleanup.md
+    sha256: sha256:624bf53316563d740116e435937687198ec9ebd522d3d69412611a75dce9e146
+provenance:
+  generated_at: 2026-08-26T13:38:16.326Z
+  generator: plan-manifest/v1

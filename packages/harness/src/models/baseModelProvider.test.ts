@@ -3,11 +3,16 @@ import { describe, expect, it, vi } from 'vitest'
 import { HarnessConfigError, ModelError, OperationCancelledError, OperationTimeoutError, serializeError } from '../errors/index.js'
 import { JsonLogger, type Logger } from '../logger/index.js'
 import { BaseModelProvider } from '../ports/base-model-provider.js'
-import type { ObjectRequest, ObjectResponse, ObjectStreamChunk, TextRequest, TextStreamChunk } from '../ports/model-provider.js'
+import type {
+  EmbeddingRequest, EmbeddingResponse, ImageProviderResponse, ImageRequest, ObjectRequest, ObjectResponse,
+  ObjectStreamChunk, RerankRequest, RerankResponse, SpeechProviderResponse, SpeechRequest, TextRequest,
+  TextResponse, TextStreamChunk, VideoProviderResponse, VideoProviderStreamChunk, VideoRequest,
+} from '../ports/model-provider.js'
 import type { TelemetryShim } from '../telemetry/index.js'
 import type { HarnessAdapterContext } from '../ports/harness-context.js'
 
 class TestProvider extends BaseModelProvider {
+  public declare readonly object: NonNullable<BaseModelProvider['object']>
   public error: unknown
   public errors: unknown[] = []
   public delayMs = 0
@@ -39,6 +44,8 @@ class TestProvider extends BaseModelProvider {
 }
 
 class TestStreamProvider extends BaseModelProvider {
+  public declare readonly textStream: NonNullable<BaseModelProvider['textStream']>
+  public declare readonly objectStream: NonNullable<BaseModelProvider['objectStream']>
   /** Errors thrown before the first chunk, one per attempt. */
   public errorsBeforeFirstChunk: unknown[] = []
   /** Error thrown after the first chunk was yielded. */
@@ -88,6 +95,32 @@ class TestStreamProvider extends BaseModelProvider {
   }
 }
 
+class AllOperationsProvider extends BaseModelProvider {
+  public constructor() { super({ id: 'all', genAiSystem: 'test' }) }
+  protected override async doText(_req: TextRequest): Promise<TextResponse> { throw new Error('unused') }
+  protected override async *doTextStream(_req: TextRequest): AsyncIterable<TextStreamChunk> { throw new Error('unused') }
+  protected override async doObject<T extends import('./json.js').JsonValue>(_req: ObjectRequest<T>): Promise<ObjectResponse<T>> { throw new Error('unused') }
+  protected override async *doObjectStream<T extends import('./json.js').JsonValue>(_req: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>> { throw new Error('unused') }
+  protected override async doEmbed(_req: EmbeddingRequest): Promise<EmbeddingResponse> { throw new Error('unused') }
+  protected override async doRerank(_req: RerankRequest): Promise<RerankResponse> { throw new Error('unused') }
+  protected override async doImage(_req: ImageRequest): Promise<ImageProviderResponse> { throw new Error('unused') }
+  protected override async doSpeech(_req: SpeechRequest): Promise<SpeechProviderResponse> { throw new Error('unused') }
+  protected override async doVideo(_req: VideoRequest): Promise<VideoProviderResponse> { throw new Error('unused') }
+  protected override async *doVideoStream(_req: VideoRequest): AsyncIterable<VideoProviderStreamChunk> { throw new Error('unused') }
+}
+
+class ClassFieldProvider extends BaseModelProvider {
+  public declare readonly text: NonNullable<BaseModelProvider['text']>
+  protected override doText = async (_req: TextRequest): Promise<TextResponse> => ({
+    content: 'class field', usage: { inputTokens: 0, outputTokens: 1, totalTokens: 1 }, finishReason: 'stop',
+  })
+
+  public constructor() {
+    super({ id: 'class-field', genAiSystem: 'test' })
+    this.finalizeOperations()
+  }
+}
+
 async function collect<T>(stream: AsyncIterable<T>): Promise<T[]> {
   const chunks: T[] = []
   for await (const chunk of stream) chunks.push(chunk)
@@ -111,6 +144,24 @@ function harnessContext(logger: Logger, telemetry: TelemetryShim, modelTimeoutMs
 }
 
 describe('BaseModelProvider', () => {
+  it('exposes every optional provider operation exactly when its protected implementation is callable', () => {
+    const methods = ['text', 'textStream', 'object', 'objectStream', 'embed', 'rerank', 'image', 'speech', 'video', 'videoStream'] as const
+    const objectOnly = new TestProvider()
+    expect(methods.filter(method => typeof objectOnly[method] === 'function')).toEqual(['object'])
+    const streamsOnly = new TestStreamProvider()
+    expect(methods.filter(method => typeof streamsOnly[method] === 'function')).toEqual(['textStream', 'objectStream'])
+    const all = new AllOperationsProvider()
+    expect(methods.filter(method => typeof all[method] === 'function')).toEqual(methods)
+  })
+
+  it('finalizes protected class-field operations after derived initialization', async () => {
+    const provider = new ClassFieldProvider()
+    expect(typeof provider.text).toBe('function')
+    expect('object' in provider).toBe(false)
+    await expect(provider.text({ model: 'demo', messages: [], signal: new AbortController().signal }))
+      .resolves.toMatchObject({ content: 'class field' })
+  })
+
   it('normalizes raw provider failures into ModelError', async () => {
     const provider = new TestProvider()
     provider.error = Object.assign(new Error('provider failed'), {

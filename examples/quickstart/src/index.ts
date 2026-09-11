@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { defineHarness, JsonLogger, type ModelProvider } from '@purista/harness'
+import { defineAgent, defineHarness, type ModelProvider } from '@purista/harness'
 import { openai } from '@purista/harness-openai'
 import { z } from 'zod'
 
@@ -32,51 +32,29 @@ function requireOpenAiKey(): string {
   return apiKey
 }
 
+const assistant = defineAgent('assistant', {
+  model: 'chat',
+  input: quickstartInput,
+  output: quickstartOutput,
+  instructions: 'Return a concise answer matching the output schema.',
+  prompt: input => ({ role: 'user', content: `Explain ${input.topic}.` }),
+})
+
 export function createQuickstartHarness(provider?: ModelProvider) {
   const model = process.env['OPENAI_MODEL'] ?? 'gpt-5-mini'
   const modelProvider = provider ?? openai({ apiKey: requireOpenAiKey() })
-
-  return defineHarness()
-    .logger(new JsonLogger({ level: 'info' }))
-    .models({
-      assistant: {
-        provider: modelProvider,
-        model,
-        capabilities: ['object'],
-        retry: true
-      }
-    })
-    .agents(({ agent }) => ({
-      assistant: agent({
-        model: 'assistant',
-        input: quickstartInput,
-        output: quickstartOutput,
-        builtinTools: false,
-        instructions: 'Return JSON matching { "answer": string }. Keep the answer concise.'
-      })
-    }))
-    .workflows(({ workflow }) => ({
-      explain_quickstart: workflow({
-        input: quickstartInput,
-        output: quickstartOutput,
-        delegation: { agents: ['assistant'] },
-        handler: async (ctx) => {
-          ctx.metrics.counter('quickstart.workflow.started', 1, { workflow: 'explain_quickstart' })
-          await ctx.memory.session.write('last_topic', { topic: ctx.input.topic })
-          return ctx.metrics.duration('quickstart.workflow.duration', { workflow: 'explain_quickstart' }, () => ctx.agents.assistant(ctx.input))
-        }
-      })
-    }))
-    .build()
+  return defineHarness({ name: 'quickstart' }).addAgent(assistant).getInstance({
+    models: { chat: { provider: modelProvider, model, retry: true } },
+  })
 }
 
 export async function runQuickstart(): Promise<void> {
-  const harness = createQuickstartHarness()
+  const harness = await createQuickstartHarness()
   const session = await harness.getSession('quickstart')
-  const response = await session.workflows.explain_quickstart.prompt({ topic: 'enterprise agent harnesses' })
-
-  console.log(response.answer)
-  await harness.shutdown()
+  const response = await session.agents.assistant.run({ topic: 'enterprise agent harnesses' })
+  if (response.status !== 'completed') throw new Error('Assistant run was interrupted.')
+  console.log(response.output.answer)
+  await harness.close()
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

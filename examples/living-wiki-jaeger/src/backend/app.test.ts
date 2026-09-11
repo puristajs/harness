@@ -1,38 +1,258 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { describe, expect, test, vi } from 'vitest'
-import { createLivingWikiApi } from './app.js'
-import { createScriptedLivingWikiProvider } from './harness.js'
+import { describe, expect, test } from 'vitest'
+import {
+  defineAgent,
+  type HarnessTargetExecutionTerminalOutcome,
+  type HarnessTargetStream,
+  type ModelProvider,
+} from '@purista/harness'
+import { FakeModelProvider } from '@purista/harness/testing'
+import { createLivingWikiApi, releaseSessionAfterStream } from './app.js'
+import { createLivingWikiHarness, createScriptedLivingWikiProvider } from './harness.js'
 
-async function createFixture(): Promise<{ dataRoot: string; skillDirectory: string; cleanup: () => Promise<void> }> {
+async function createFixture(): Promise<{ dataRoot: string; cleanup: () => Promise<void> }> {
   const root = await mkdtemp(join(tmpdir(), 'living-wiki-api-'))
   const dataRoot = join(root, 'data')
-  const skillDirectory = join(root, 'skills/wiki-curator')
   await mkdir(join(dataRoot, 'raw/sources'), { recursive: true })
   await mkdir(join(dataRoot, 'wiki'), { recursive: true })
-  await mkdir(skillDirectory, { recursive: true })
-  await writeFile(join(skillDirectory, 'SKILL.md'), [
-    '---',
-    'name: wiki-curator',
-    'description: Curate compact linked wiki pages.',
-    '---',
-    'Keep pages compact and preserve source references.'
-  ].join('\n'))
   await writeFile(join(dataRoot, 'raw/sources/jaeger.md'), '# Jaeger Source\n\nJaeger stores traces.\n')
   await writeFile(join(dataRoot, 'wiki/index.md'), '# Index\n')
   await writeFile(join(dataRoot, 'wiki/log.md'), '# Log\n')
   await writeFile(join(dataRoot, 'wiki/jaeger.md'), '# Jaeger\n')
-  return { dataRoot, skillDirectory, cleanup: () => rm(root, { recursive: true, force: true }) }
+  return { dataRoot, cleanup: () => rm(root, { recursive: true, force: true }) }
+}
+
+const releaseProbe = defineAgent('releaseProbe', { model: 'chat', instructions: 'Test stream cleanup.' })
+type ReleaseProbeOutcome = HarnessTargetExecutionTerminalOutcome<typeof releaseProbe.contract>
+type ReleaseProbeStream = HarnessTargetStream<typeof releaseProbe.contract>
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
+}
+
+function releaseProbeStream(result: Promise<ReleaseProbeOutcome>): ReleaseProbeStream {
+  return {
+    result,
+    cancel: async () => undefined,
+    async *[Symbol.asyncIterator]() {
+      yield {
+        type: 'run.started',
+        eventId: 'release-event-1',
+        sequence: 1,
+        runId: 'release-run',
+        at: '2026-01-01T00:00:00.000Z',
+      }
+    },
+  }
 }
 
 describe('living wiki API', () => {
+  test('releases a borrowed chat session when result settles without iteration', async () => {
+    const settled = deferred<ReleaseProbeOutcome>()
+    let releases = 0
+    const wrapped = releaseSessionAfterStream(releaseProbeStream(settled.promise), async () => { releases += 1 })
+
+    settled.resolve({ status: 'completed', runId: 'release-run', output: 'done' })
+    await expect(wrapped.result).resolves.toMatchObject({ status: 'completed' })
+    expect(releases).toBe(1)
+  })
+
+  test('releases an authentic borrowed Harness session after an unobserved result settles', async () => {
+    const fixture = await createFixture()
+    const { harness, storage } = await createLivingWikiHarness({
+      dataRoot: fixture.dataRoot,
+      provider: createScriptedLivingWikiProvider(),
+      model: 'fake-wiki-model',
+    })
+    try {
+      const session = await harness.getSession('result-only-session')
+      const wrapped = releaseSessionAfterStream(
+        session.agents.wikiAnswerer.stream({ question: 'What stores traces?' }),
+        () => session.release(),
+      )
+      await expect(wrapped.result).resolves.toMatchObject({ status: 'completed' })
+      const reacquired = await harness.getSession('result-only-session')
+      await reacquired.release()
+    } finally {
+      await harness.close()
+      await storage.close()
+      await fixture.cleanup()
+    }
+  })
+
+  test('releases an authentic borrowed Harness session after full stream consumption', async () => {
+    const fixture = await createFixture()
+    const { harness, storage } = await createLivingWikiHarness({
+      dataRoot: fixture.dataRoot,
+      provider: createScriptedLivingWikiProvider(),
+      model: 'fake-wiki-model',
+    })
+    try {
+      const session = await harness.getSession('consumed-stream-session')
+      const wrapped = releaseSessionAfterStream(
+        session.agents.wikiAnswerer.stream({ question: 'What stores traces?' }),
+        () => session.release(),
+      )
+      const events = []
+      for await (const event of wrapped) events.push(event)
+      await expect(wrapped.result).resolves.toMatchObject({ status: 'completed' })
+      expect(events).toContainEqual(expect.objectContaining({ type: 'run.finished' }))
+      const reacquired = await harness.getSession('consumed-stream-session')
+      await reacquired.release()
+    } finally {
+      await harness.close()
+      await storage.close()
+      await fixture.cleanup()
+    }
+  })
+
+  test('does not release a borrowed chat session when observation stops before result settles', async () => {
+    const settled = deferred<ReleaseProbeOutcome>()
+    let releases = 0
+    const wrapped = releaseSessionAfterStream(releaseProbeStream(settled.promise), async () => { releases += 1 })
+    const iterator = wrapped[Symbol.asyncIterator]()
+
+    await expect(iterator.next()).resolves.toMatchObject({ done: false, value: { type: 'run.started' } })
+    await iterator.return?.()
+    expect(releases).toBe(0)
+
+    settled.resolve({ status: 'completed', runId: 'release-run', output: 'done' })
+    await expect(wrapped.result).resolves.toMatchObject({ status: 'completed' })
+    expect(releases).toBe(1)
+  })
+
+  test('streams chat with the standard AI SDK UI Message Stream v1 protocol', async () => {
+    const fixture = await createFixture()
+    const { app, shutdown } = await createLivingWikiApi({
+      dataRoot: fixture.dataRoot,
+      provider: createScriptedLivingWikiProvider(),
+      model: 'fake-wiki-model',
+    })
+    try {
+      const response = await app.request('/api/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          id: 'wiki-chat-session',
+          trigger: 'submit-message',
+          messages: [{ id: 'question-1', role: 'user', parts: [{ type: 'text', text: 'What stores traces?' }] }],
+        }),
+      })
+      expect(response.status).toBe(200)
+      expect(response.headers.get('x-vercel-ai-ui-message-stream')).toBe('v1')
+      const body = await response.text()
+      expect(body).toContain('data-output')
+      expect(body).toContain('[DONE]')
+    } finally {
+      await shutdown()
+      await fixture.cleanup()
+    }
+  })
+
+  test('interrupts a writable chat tool and resumes the same root after standard approval', async () => {
+    const fixture = await createFixture()
+    const provider = new FakeModelProvider({ strict: true })
+    const usage = { inputTokens: 2, outputTokens: 3, totalTokens: 5 }
+    provider.enqueueObjectStream([
+      {
+        kind: 'tool_call',
+        call: {
+          id: 'write-approved-note',
+          name: 'writeWikiPage',
+          arguments: { slug: 'approved-note', content: '# Approved note\n\nWritten after review.\n' },
+        },
+      },
+      { kind: 'finish', object: null, usage, finishReason: 'tool_calls' },
+    ])
+    const finalAnswer = {
+      answer: 'The approved note was written.',
+      citedPages: ['approved-note'],
+      confidenceNotes: ['The write tool completed after approval.'],
+    }
+    provider.enqueueObjectStream([
+      { kind: 'partial', partial: finalAnswer },
+      { kind: 'finish', object: finalAnswer, usage, finishReason: 'stop' },
+    ])
+    const { app, store, shutdown } = await createLivingWikiApi({
+      dataRoot: fixture.dataRoot,
+      provider,
+      model: 'fake-wiki-model',
+    })
+    const userMessage = {
+      id: 'write-question',
+      role: 'user',
+      parts: [{ type: 'text', text: 'Create the approved note page.' }],
+    }
+
+    try {
+      const first = await app.request('/api/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: 'approval-chat-session', trigger: 'submit-message', messages: [userMessage] }),
+      })
+      const firstChunks = await responseChunks(first)
+      const start = requiredChunk(firstChunks, 'start')
+      const input = requiredChunk(firstChunks, 'tool-input-available')
+      const approval = requiredChunk(firstChunks, 'tool-approval-request')
+      const assistantMessageId = requiredString(start['messageId'], 'assistant message id')
+      const toolCallId = requiredString(input['toolCallId'], 'tool call id')
+      const toolName = requiredString(input['toolName'], 'tool name')
+      const approvalId = requiredString(approval['approvalId'], 'approval id')
+      const descriptor = requiredRecord(approval['approvalDescriptor'], 'approval descriptor')
+      const rootRunId = requiredString(descriptor['rootRunId'], 'root run id')
+      expect(toolName).toBe('writeWikiPage')
+      expect(approval['reason']).toBe('wiki_write')
+      await expect(store.readWikiPage('approved-note')).rejects.toThrow()
+
+      const assistantMessage = {
+        id: assistantMessageId,
+        role: 'assistant',
+        parts: [{
+          type: 'dynamic-tool',
+          toolName,
+          toolCallId,
+          state: 'approval-responded',
+          input: input['input'],
+          approval: {
+            id: approvalId,
+            approved: true,
+            descriptor,
+            reason: 'Approved in the integration test.',
+          },
+        }],
+      }
+      const resumed = await app.request('/api/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          id: 'approval-chat-session',
+          trigger: 'submit-message',
+          messageId: assistantMessageId,
+          messages: [userMessage, assistantMessage],
+        }),
+      })
+      const resumedChunks = await responseChunks(resumed)
+      expect(JSON.stringify(resumedChunks)).toContain(rootRunId)
+      expect(resumedChunks).toContainEqual(expect.objectContaining({ type: 'data-output' }))
+      await expect(store.readWikiPage('approved-note')).resolves.toMatchObject({
+        content: expect.stringContaining('Written after review.'),
+      })
+      provider.assertExhausted()
+    } finally {
+      await shutdown()
+      await fixture.cleanup()
+    }
+  })
+
   test('serves pages and starts observable fake workflow runs', async () => {
     const fixture = await createFixture()
     const provider = createScriptedLivingWikiProvider()
-    const { app, shutdown } = createLivingWikiApi({
+    const { app, shutdown } = await createLivingWikiApi({
       dataRoot: fixture.dataRoot,
-      skillDirectory: fixture.skillDirectory,
       provider,
       model: 'fake-wiki-model'
     })
@@ -56,7 +276,7 @@ describe('living wiki API', () => {
       const events = await app.request(`/api/runs/${startedBody.runId}/events`)
       expect(events.headers.get('content-type')).toContain('text/event-stream')
       const eventText = await events.text()
-      expect(eventText).toContain('answer.delta')
+      expect(eventText).toContain('"status":"completed"')
       expect(eventText).toContain('run.finished')
 
       const lookup = await app.request(`/api/runs/${startedBody.runId}`)
@@ -70,9 +290,8 @@ describe('living wiki API', () => {
   test('cancels an in-flight run through the registry', async () => {
     const fixture = await createFixture()
     const provider = createScriptedLivingWikiProvider({ delayMs: 200 })
-    const { app, shutdown } = createLivingWikiApi({
+    const { app, shutdown } = await createLivingWikiApi({
       dataRoot: fixture.dataRoot,
-      skillDirectory: fixture.skillDirectory,
       provider,
       model: 'fake-wiki-model'
     })
@@ -88,7 +307,7 @@ describe('living wiki API', () => {
       expect(cancelled.status).toBe(202)
 
       const events = await app.request(`/api/runs/${runId}/events`)
-      expect(await events.text()).toContain('cancelled')
+      expect(await events.text()).toContain('"status":"cancelled"')
     } finally {
       await shutdown()
       await fixture.cleanup()
@@ -97,9 +316,8 @@ describe('living wiki API', () => {
 
   test('uploads a markdown source file', async () => {
     const fixture = await createFixture()
-    const { app, shutdown } = createLivingWikiApi({
+    const { app, shutdown } = await createLivingWikiApi({
       dataRoot: fixture.dataRoot,
-      skillDirectory: fixture.skillDirectory,
       provider: createScriptedLivingWikiProvider(),
       model: 'fake-wiki-model'
     })
@@ -124,9 +342,8 @@ describe('living wiki API', () => {
 
   test('starts direct agent runs without a workflow', async () => {
     const fixture = await createFixture()
-    const { app, shutdown } = createLivingWikiApi({
+    const { app, shutdown } = await createLivingWikiApi({
       dataRoot: fixture.dataRoot,
-      skillDirectory: fixture.skillDirectory,
       provider: createScriptedLivingWikiProvider(),
       model: 'fake-wiki-model'
     })
@@ -142,7 +359,7 @@ describe('living wiki API', () => {
       expect(startedBody.status).toBe('running')
 
       const events = await app.request(`/api/runs/${startedBody.runId}/events`)
-      expect(await events.text()).toContain('agent.finished')
+      expect(await events.text()).toContain('run.finished')
 
       const lookup = await app.request(`/api/runs/${startedBody.runId}`)
       await expect(lookup.json()).resolves.toMatchObject({ runId: startedBody.runId, kind: 'agent', targetId: 'wiki_answerer', status: 'succeeded' })
@@ -152,13 +369,8 @@ describe('living wiki API', () => {
     }
   })
 
-  test('logs run validation failures with actionable metadata', async () => {
+  test('streams validation failures with actionable metadata', async () => {
     const fixture = await createFixture()
-    const logs: string[] = []
-    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
-      logs.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'))
-      return true
-    })
     const badProvider = {
       id: 'bad-provider',
       genAiSystem: 'fake',
@@ -168,12 +380,19 @@ describe('living wiki API', () => {
           usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
           finishReason: 'stop'
         }
+      },
+      async *objectStream() {
+        yield {
+          kind: 'finish' as const,
+          object: { answer: 'missing required arrays' },
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          finishReason: 'stop' as const
+        }
       }
     }
-    const { app, shutdown } = createLivingWikiApi({
+    const { app, shutdown } = await createLivingWikiApi({
       dataRoot: fixture.dataRoot,
-      skillDirectory: fixture.skillDirectory,
-      provider: badProvider as any,
+      provider: badProvider as unknown as ModelProvider,
       model: 'bad-model'
     })
 
@@ -185,13 +404,10 @@ describe('living wiki API', () => {
       })
       const { runId } = await started.json() as { runId: string }
       const events = await app.request(`/api/runs/${runId}/events`)
-      expect(await events.text()).toContain('VALIDATION_ERROR')
-      const joinedLogs = logs.join('')
-      expect(joinedLogs).toContain('Harness workflow run failed.')
-      expect(joinedLogs).toContain('Living wiki run finished with error.')
-      expect(joinedLogs).toContain('agent_output')
+      const eventText = await events.text()
+      expect(eventText).toContain('WORKFLOW_MANAGED_CALL_FAILED')
+      expect(eventText).toContain('agent_run')
     } finally {
-      writeSpy.mockRestore()
       await shutdown()
       await fixture.cleanup()
     }
@@ -199,9 +415,8 @@ describe('living wiki API', () => {
 
   test('returns spec-shaped graph nodes and stores generated artifacts', async () => {
     const fixture = await createFixture()
-    const { app, shutdown } = createLivingWikiApi({
+    const { app, shutdown } = await createLivingWikiApi({
       dataRoot: fixture.dataRoot,
-      skillDirectory: fixture.skillDirectory,
       provider: createScriptedLivingWikiProvider(),
       model: 'fake-wiki-model'
     })
@@ -252,9 +467,8 @@ describe('living wiki API', () => {
 
   test('runs intelligence workflows and applies review decisions idempotently', async () => {
     const fixture = await createFixture()
-    const { app, shutdown } = createLivingWikiApi({
+    const { app, shutdown } = await createLivingWikiApi({
       dataRoot: fixture.dataRoot,
-      skillDirectory: fixture.skillDirectory,
       provider: createScriptedLivingWikiProvider(),
       model: 'fake-wiki-model'
     })
@@ -354,3 +568,27 @@ describe('living wiki API', () => {
     }
   })
 })
+
+async function responseChunks(response: Response): Promise<Record<string, unknown>[]> {
+  const body = await response.text()
+  return body
+    .split('\n')
+    .filter(line => line.startsWith('data: ') && line !== 'data: [DONE]')
+    .map(line => requiredRecord(JSON.parse(line.slice(6)) as unknown, 'SSE chunk'))
+}
+
+function requiredChunk(chunks: readonly Record<string, unknown>[], type: string): Record<string, unknown> {
+  const chunk = chunks.find(candidate => candidate['type'] === type)
+  if (!chunk) throw new Error(`Expected ${type} chunk.`)
+  return chunk
+}
+
+function requiredRecord(value: unknown, label: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`Expected ${label}.`)
+  return value as Record<string, unknown>
+}
+
+function requiredString(value: unknown, label: string): string {
+  if (typeof value !== 'string' || value.length === 0) throw new Error(`Expected ${label}.`)
+  return value
+}

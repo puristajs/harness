@@ -2,12 +2,14 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "../..",
-    "types": ["node"],
-    "paths": {
-      "@purista/harness": ["../../packages/harness/src/index.ts"],
-      "@purista/harness-openai": ["../../packages/harness-openai/src/index.ts"]
-    }
+    "rootDir": "src",
+    "declaration": false,
+    "declarationMap": false,
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src/index.ts"]
+  "include": [
+    "src/index.ts"
+  ]
 }

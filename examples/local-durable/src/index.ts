@@ -2,53 +2,38 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
-import { defineHarness, localDurableExecution, type JsonValue, type ModelProvider, type ObjectRequest, type ObjectResponse } from '@purista/harness'
+import { defineHarness, defineWorkflow, localDurableExecution } from '@purista/harness'
 
-class NoopProvider implements ModelProvider {
-  readonly id = 'noop'
-  readonly genAiSystem = 'example'
-  async object<T extends JsonValue = JsonValue>(_req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
-    return { object: {} as T, finishReason: 'stop', usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }
-  }
-}
-
-const planInput = z.object({ topic: z.string(), failAfterFirstStep: z.boolean().default(false) })
+const planInput = z.object({ topic: z.string() }).strict()
 const planOutput = z.object({ done: z.boolean(), topic: z.string() })
+const reviewWait = {
+  waitId: 'plan-review',
+  kind: 'human_review',
+  schemaVersion: 'plan-review-v1',
+  definitionVersion: 'v1',
+  deadline: '2099-01-01T00:00:00.000Z',
+} as const
 
 export async function createLocalDurableHarness(root?: string) {
-  const local = localDurableExecution({ root: root ?? await mkdtemp(join(tmpdir(), 'purista-local-durable-')), exec: false })
-  const provider = new NoopProvider()
-  const harness = defineHarness()
-    .state(local.state)
-    .runtime(local.runtime)
-    .sandbox(local.sandbox)
-    .workspaceStore(local.workspaceStore)
-    .checkpoints(local.checkpoints)
-    .requires(['runtime.persistent', 'workspace_store.persistent', 'context_checkpoint.persistent'])
-    .models({ noop: { provider, model: 'noop', capabilities: ['object'], retry: false } })
-    .tools({})
-    .skills({})
-    .agents({ noop: { model: 'noop', instructions: 'No model call is needed.', builtinTools: false } })
-    .workflows(({ workflow }) => ({
-      plan: workflow({
-        input: planInput,
-        output: planOutput,
-        handler: async (ctx) => {
-          await ctx.step('outline', async () => {
-            await ctx.checkpoints.write({
-              sequence: 1,
-              kind: 'summary',
-              payload: { topic: ctx.input.topic, next: 'draft' }
-            })
-            return { outline: true }
-          })
-          if (ctx.input.failAfterFirstStep) throw new Error('simulated crash')
-          await ctx.step('draft', async () => ({ draft: true }))
-          return { done: true, topic: ctx.input.topic }
-        }
-      })
-    }))
-    .build()
+  const local = localDurableExecution({
+    root: root ?? (await mkdtemp(join(tmpdir(), 'purista-local-durable-'))),
+    exec: false,
+  })
+  const plan = defineWorkflow('plan', {
+    input: planInput,
+    output: planOutput,
+    durable: true,
+    workspace: true,
+    async handler(context) {
+      await context.step('outline', async () => ({ topic: context.input.topic, next: 'review' }))
+      const decision = await context.externalWait.wait(reviewWait)
+      if (decision.status !== 'approved') return { done: false, topic: context.input.topic }
+      await context.step('draft', async () => ({ draft: true }))
+      return { done: true, topic: context.input.topic }
+    },
+  })
+  const harness = await defineHarness({ name: 'localDurableExample', revision: 'v1' }).addWorkflow(plan)
+    .getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace })
   return { local, harness }
 }
 
@@ -56,14 +41,17 @@ export async function runLocalDurableExample(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'purista-local-durable-'))
   const first = await createLocalDurableHarness(root)
   const firstSession = await first.harness.getSession('demo')
-  await firstSession.workflows.plan.prompt({ topic: 'durable local work', failAfterFirstStep: true }, { durable: { runId: 'demo-run' } }).catch(() => undefined)
-  await first.harness.shutdown()
+  await firstSession.workflows.plan.run({ topic: 'durable local work' }, { durable: { runId: 'demo-run' } })
+  await first.harness.close()
 
   const second = await createLocalDurableHarness(root)
+  await second.local.storage.signalWait({ waitId: reviewWait.waitId, eventId: 'review-approved', outcome: 'approved' })
   const secondSession = await second.harness.getSession('demo')
-  const result = await secondSession.workflows.plan.prompt({ topic: 'durable local work', failAfterFirstStep: false }, { durable: { runId: 'demo-run' } })
-  console.log(result)
-  await second.harness.shutdown()
+  console.log(await secondSession.workflows.plan.run(
+    { topic: 'durable local work' },
+    { durable: { runId: 'demo-run' } },
+  ))
+  await second.harness.close()
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

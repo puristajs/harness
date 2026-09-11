@@ -1,0 +1,120 @@
+status: approved
+language: en
+open_decisions: []
+human_approval:
+  status: approved
+approval_evidence:
+  status: approved
+  approver_id: repository-owner via explicit auto-approval request
+  approved_at: '2026-08-28'
+  approval_ref: codex-task-01a04a0c-a2e8-7123-8107-938ac950aa99#standard-schema-auto-approval-request
+  manifest_digest: "sha256:d675819593a8c7712cf7f4ccb6f4a78db08f2cefa325c36ec527e80a166d6498"
+  scope_refs: [CAP-SS-TYPES, CAP-SS-VALIDATION, CAP-SS-PROJECTION, CAP-SS-PROVIDERS, CAP-SS-CONSUMERS, CAP-SS-CLEANUP]
+gates:
+  no_drift_gate:
+    status: passed
+  ambiguity_gate:
+    status: passed
+  semantic_alignment_gate:
+    status: passed
+  spec_structure_gate:
+    status: passed
+  visualization_gate:
+    status: passed
+  requirements_quality_gate:
+    status: passed
+  end_to_end_definition_gate:
+    status: passed
+  file_structure_gate:
+    status: passed
+  current_dependency_research_gate:
+    status: passed
+  concise_spec_gate:
+    status: passed
+  client_consumer_coverage_gate:
+    status: passed
+  frontend_ux_integration_gate:
+    status: passed
+  standards_first_gate:
+    status: passed
+  machine_readable_contract_gate:
+    status: passed
+  async_semantics_gate:
+    status: passed
+  clean_rebuild_boundary_gate:
+    status: passed
+  generation_map_gate:
+    status: passed
+  strong_boundary_type_gate:
+    status: passed
+  representation_reuse_gate:
+    status: passed
+  interface_gate:
+    status: passed
+  e2e_gate:
+    status: passed
+  unhappy_path_gate:
+    status: passed
+  security_privacy_gate:
+    status: passed
+  observability_gate:
+    status: passed
+  performance_resilience_gate:
+    status: passed
+  data_integrity_recovery_gate:
+    status: passed
+  production_readiness_gate:
+    status: passed
+  supply_chain_gate:
+    status: passed
+  wave_readiness:
+    status: passed
+  migration_gate:
+    status: passed
+  checklist_walk_gate:
+    status: passed
+  contradiction_check:
+    status: passed
+  spec_judge_loop:
+    status: passed
+  semantic_judge_gate:
+    status: passed
+  self_audit_gate:
+    status: passed
+  gate_simulation:
+    status: passed
+spec_judge_loop:
+  status: passed
+  run_timing: approval_only
+  uncertainty: Implementation and test execution are pending; no public contract decision is open.
+  findings_count: 9
+  blocking_findings_count: 0
+  judge: root semantic review against inspected source, PURISTA patterns and primary standards documentation
+  reviewed_flows: [03-flows/e2e-coverage.md, 03-contracts/schema-types.md, 03-contracts/runtime-validation.md, 03-contracts/model-projection.md, 04-delivery/consumers.md]
+semantic_judge_evidence:
+  status: passed
+  judge: root evidence-bound semantic review
+  reviewed_at: '2026-08-28'
+  evidence_ref: evidence/readiness-review.md
+checklist_walk:
+  status: passed
+  topics:
+    architecture: covered
+    contracts: covered
+    end_to_end: covered
+    testing: covered
+    security_privacy: covered_with_explicit_equivalent_controls
+    performance: covered
+    operations: covered
+    dependencies: covered
+    documentation: covered
+    consumers: covered
+    clean_cut: covered
+  blocking_findings_count: 0
+review_notes:
+  - Owner explicitly auto-approved the specs and accepted breaking changes, with no migration or backward-compatibility code.
+  - The spec separates validation capability from model JSON Schema projection and preserves the plain provider port.
+  - Internal Zod remains where it reduces complexity; only public user-schema boundaries are refactored.
+  - Voyage is excluded and unrelated dirty working-tree changes are preserved.
+  - Definition readiness is not implementation acceptance.
+  - The owner-approved JSON decision was corrected before implementation: only validated outputs are JSON, while raw validator inputs remain exact to support defaults, optionals, coercion and transforms.

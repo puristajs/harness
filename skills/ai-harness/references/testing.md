@@ -1,161 +1,20 @@
 # Testing
 
-## Contents
-- Default Checks
-- Fake Model Providers
-- Type Tests
-- Contract Tests
-- Streaming Tests
-- Adapter Failure Tests
-
-## Default Checks
-For the harness repo, run the narrowest relevant checks first, then the package-level gates:
-
-```bash
-npm run lint
-npm run typecheck
-npm run test:types
-npm test
-npm run test:contracts
-npm run test:integration
-npm run test:failure
-npm run build
-```
-
-If a package script differs, inspect `package.json` and use the local script names.
-
-## Fake Model Providers
-Unit and integration tests should not require live provider credentials. Inject a fake `ModelProvider`:
+Use `@purista/harness/testing` and application-owned fakes. A useful test composes the real definitions and creates a real instance with fake adapters:
 
 ```ts
-import type { JsonValue, ModelProvider, ObjectRequest, ObjectResponse } from '@purista/harness'
-
-class FakeObjectProvider implements ModelProvider {
-  readonly id = 'fake'
-  readonly genAiSystem = 'fake'
-
-  async object<T extends JsonValue = JsonValue>(_req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
-    return {
-      object: { answer: 'fake answer' } as T,
-      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-      finishReason: 'stop'
-    }
-  }
-}
-```
-
-Use fake providers for:
-- agent input/output validation
-- workflow orchestration
-- tool call loops
-- permissions
-- streaming event shape
-- telemetry/logging behavior
-
-Keep one explicit live-provider smoke test path if needed, gated by env vars such as `OPENAI_API_KEY`.
-
-## Type Tests
-Add type tests for builder inference:
-- unknown model aliases are rejected in agents
-- unknown tools/skills are rejected in agents
-- governance `rule(...)` narrows `ctx.input` for selected TypeScript tools
-- governance `exposureRule(...)` rejects unknown tool ids and narrows `ctx.toolId`
-- workflow `ctx.agents.<id>` input/output types come from the agent schemas
-- model handles expose only declared capability methods
-- multimodal content parts require matching input capabilities
-- `embed` and `rerank` exist only on matching aliases
-
-Use `@ts-expect-error` for negative cases.
-
-## Contract Tests
-Use `@purista/harness/testing` for reusable adapter contracts when available:
-- `FakeModelProvider`
-- `FakeMemoryAdapter`
-- `makeHarness`
-- `stateStoreContract`
-- `memoryAdapterContract`
-- `sandboxContract`
-- `sandboxSnapshotContract`
-- `fakeSnapshotSandbox`
-- `adapterCapabilitiesContract`
-- `fakeCapabilityAdapter`
-- `createInMemoryFeedbackRecorder`
-
-Adapters should prove cancellation, timeout, validation failure, and shutdown behavior.
-
-`FakeModelProvider` supports queued text/object/embedding/rerank responses and queued text/object stream chunks:
-
-```ts
-const model = new FakeModelProvider()
-model.enqueueObject({
-  object: { answer: 'ok' },
+const provider = new FakeModelProvider({ strict: true })
+provider.enqueueObject({
+  object: { answer: 'ok' }, finishReason: 'stop',
   usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-  finishReason: 'stop'
 })
-model.enqueueEmbedding({
-  embeddings: [{ index: 0, vector: [0.1, 0.2] }],
-  usage: { inputTokens: 2, outputTokens: 0, totalTokens: 2 }
-})
+const instance = await definition.getInstance({ models: { chat: { provider, model: 'fake' } } })
+const session = await instance.getSession('test')
+await expect(session.agents.assistant.run(input)).resolves.toMatchObject({ status: 'completed' })
+provider.assertExhausted()
+await instance.close()
 ```
 
-## Streaming Tests
-Collect stream events and assert lifecycle behavior:
+Test definition inference with positive assignments and `@ts-expect-error` negatives. Use public adapter contract suites for storage, memory, sandbox, workspace, and text search. Test cancellation, timeouts, malformed output, capability mismatch, cleanup, privacy, and deterministic replay.
 
-```ts
-const events = []
-for await (const event of session.workflows.audit.stream({ scope: 'all' })) {
-  events.push(event)
-}
-
-expect(events.some((event) => event.type === 'run.started')).toBe(true)
-expect(events.some((event) => event.type === 'run.finished')).toBe(true)
-```
-
-For model streaming, queue fake provider chunks and test both privacy modes.
-Consumed `textStream(...)` / `objectStream(...)` chunks emit no run-event
-partials by default. Calls that pass `{ emitRunEvents: true }` emit
-`model.delta`, `model.object.partial`, and streamed final `model.object`.
-`text(...)` / `object(...)` final calls emit no partials. Public stream tests
-should assert grouping metadata: generated `streamId` stability per stream
-invocation, distinct ids across parallel streams, `modelAlias`, and available
-`workflowId` / `agentId`.
-
-Test stream consumers against `RunEvent`, not provider-specific HTTP/SSE chunks. HTTP/SSE mapping belongs to the application integration layer.
-Breaking out of a stream iterator should not abort the run; test cancellation
-through an explicit `AbortSignal` when run termination is expected.
-
-Governance tests should cover both exposure and execution layers:
-- exposure-only governance hides tools before the fake provider request and does not require `policies`
-- `mode: 'shadow'` emits `policy.exposure` without removing tools
-- execution policies emit `policy.evaluated` with `decisionId` and optional evidence fields
-- approvals receive `approvalId`, `callId`, and matching decisions
-- policy and approval events do not persist raw tool input or output
-
-## Adapter Failure Tests
-Provider adapters should cover:
-- provider 4xx and 5xx mapping
-- rate-limit/network retry metadata
-- invalid retry policy values fail before provider execution
-- context-length exceeded as non-retriable
-- malformed provider responses
-- missing provider operation for a declared capability
-- cancellation through `AbortSignal`
-- model/tool/schema validation failures
-
-State, memory, and sandbox adapters should cover:
-- stable ordering
-- idempotent close/shutdown
-- append atomicity where required
-- missing sessions/files/runs
-- executor unavailable behavior
-- snapshot/resume behavior when implemented
-- scope isolation, unsupported capability gates, and content-capture behavior for memory adapters
-# Replay and diagnostics
-
-`createReplayInteractionRecorder({ sanitize })` requires an explicit sanitizer,
-wraps a test provider, and produces a caller-owned fixture. Use
-`replayModelProvider(fixture)` plus `assertReplayConsumed(provider)` for strict,
-offline tests. The recorder never serializes the pre-sanitized value, but the
-caller must review sanitizer output. `assertDiagnosticInvariants(snapshot,
-invariants)` is a synchronous, explicit, content-free test helper; it is never
-enabled automatically in production.
+For browser endpoints, feed `stream(...)` to `@purista/harness-ai-sdk-ui/v1` and assert official AI SDK UI Message Stream v1 headers and parsing. Test approval continuation and disconnect cancellation. Keep live-provider and live-infrastructure tests opt-in through environment variables.

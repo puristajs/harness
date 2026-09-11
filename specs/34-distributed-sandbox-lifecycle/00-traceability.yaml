@@ -1,0 +1,232 @@
+traceability_version: 1
+requirements:
+  - requirement_id: REQ-SBX-DOCKER
+    statement: One optional standalone Docker addon also serves OrbStack, retains scoped local files, enforces local ownership and security, and fails missing state or unsupported restore without empty replacement.
+    capability_ids: [CAP-SBX-DOCKER]
+    path_ids: [PATH-SBX-DOCKER, PATH-SBX-DOCKER-LOSS]
+    acceptance_ids: [ACC-SBX-DOCKER, ACC-SBX-DOCKER-LOSS]
+  - requirement_id: REQ-SBX-BOUNDARY
+    statement: Sandbox coordination remains adapter-private; HarnessStorage strengthens session integrity without lifecycle records or methods, and PURISTA depends only on public Harness APIs.
+    capability_ids: [CAP-SBX-OPEN, CAP-SBX-CLEANUP, CAP-SBX-PURISTA]
+    path_ids: [PATH-SBX-OPEN, PATH-SBX-PURISTA]
+    acceptance_ids: [ACC-SBX-BOUNDARY]
+  - requirement_id: REQ-SBX-IDENTITY
+    statement: Logical scope uses exact optional Harness identity and rejects session identity mismatch before sandbox access.
+    capability_ids: [CAP-SBX-IDENTITY]
+    path_ids: [PATH-SBX-IDENTITY]
+    acceptance_ids: [ACC-SBX-IDENTITY]
+  - requirement_id: REQ-SBX-FENCING
+    statement: Two clients create one generation and stale attachments cannot mutate compute without exposing fences publicly.
+    capability_ids: [CAP-SBX-OPEN, CAP-SBX-FENCE]
+    path_ids: [PATH-SBX-OPEN, PATH-SBX-STALE]
+    acceptance_ids: [ACC-SBX-OPEN, ACC-SBX-STALE]
+  - requirement_id: REQ-SBX-RECOVERY
+    statement: Missing compute is replaced only after committed durable-workspace recovery and is never silently replaced by empty state.
+    capability_ids: [CAP-SBX-RECOVER]
+    path_ids: [PATH-SBX-RESTORE, PATH-SBX-STATE-LOST]
+    acceptance_ids: [ACC-SBX-RESTORE, ACC-SBX-STATE-LOST]
+  - requirement_id: REQ-SBX-CLEANUP
+    statement: Detach and explicit termination are idempotent while adapter-owned retention and cleanup require no Harness maintenance subsystem.
+    capability_ids: [CAP-SBX-CLEANUP]
+    path_ids: [PATH-SBX-DETACH, PATH-SBX-TERMINATE]
+    acceptance_ids: [ACC-SBX-CLEANUP]
+  - requirement_id: REQ-SBX-PRIVACY
+    statement: Standard telemetry excludes scope identity provider coordination checkpoint path command and content values.
+    capability_ids: [CAP-SBX-OBSERVE]
+    path_ids: [PATH-SBX-OBSERVE]
+    acceptance_ids: [ACC-SBX-PRIVACY]
+  - requirement_id: REQ-SBX-CONTRACT
+    statement: All existing adapters fakes callers and active docs replace the old API without compatibility paths; every adapter passes the base lifecycle contract and every production distributed adapter also passes shared two-client conformance without runtime topology branches.
+    capability_ids: [CAP-SBX-CONTRACT]
+    path_ids: [PATH-SBX-CONTRACT]
+    acceptance_ids: [ACC-SBX-CONTRACT, ACC-SBX-CLEAN-BREAK]
+  - requirement_id: REQ-SBX-BAKEOFF
+    statement: E2B and Daytona use one approved probe before production adapter selection or implementation.
+    capability_ids: [CAP-SBX-BAKEOFF]
+    path_ids: [PATH-SBX-BAKEOFF]
+    acceptance_ids: [ACC-SBX-BAKEOFF]
+capabilities:
+  - capability_id: CAP-SBX-DOCKER
+    requirement_ids: [REQ-SBX-DOCKER]
+    path_ids: [PATH-SBX-DOCKER, PATH-SBX-DOCKER-LOSS]
+  - capability_id: CAP-SBX-OPEN
+    requirement_ids: [REQ-SBX-BOUNDARY, REQ-SBX-FENCING]
+    path_ids: [PATH-SBX-OPEN]
+  - capability_id: CAP-SBX-CLEANUP
+    requirement_ids: [REQ-SBX-BOUNDARY, REQ-SBX-CLEANUP]
+    path_ids: [PATH-SBX-DETACH, PATH-SBX-TERMINATE]
+  - capability_id: CAP-SBX-PURISTA
+    requirement_ids: [REQ-SBX-BOUNDARY]
+    path_ids: [PATH-SBX-PURISTA]
+  - capability_id: CAP-SBX-IDENTITY
+    requirement_ids: [REQ-SBX-IDENTITY]
+    path_ids: [PATH-SBX-IDENTITY]
+  - capability_id: CAP-SBX-FENCE
+    requirement_ids: [REQ-SBX-FENCING]
+    path_ids: [PATH-SBX-STALE]
+  - capability_id: CAP-SBX-RECOVER
+    requirement_ids: [REQ-SBX-RECOVERY]
+    path_ids: [PATH-SBX-RESTORE, PATH-SBX-STATE-LOST]
+  - capability_id: CAP-SBX-OBSERVE
+    requirement_ids: [REQ-SBX-PRIVACY]
+    path_ids: [PATH-SBX-OBSERVE]
+  - capability_id: CAP-SBX-CONTRACT
+    requirement_ids: [REQ-SBX-CONTRACT]
+    path_ids: [PATH-SBX-CONTRACT]
+  - capability_id: CAP-SBX-BAKEOFF
+    requirement_ids: [REQ-SBX-BAKEOFF]
+    path_ids: [PATH-SBX-BAKEOFF]
+paths:
+  - path_id: PATH-SBX-DOCKER
+    kind: success
+    requirement_ids: [REQ-SBX-DOCKER]
+    capability_ids: [CAP-SBX-DOCKER]
+    acceptance_ids: [ACC-SBX-DOCKER]
+    contract_refs: [CTR-SBX-DOCKER, CTR-SBX-SCOPE, CTR-SBX-OPEN, CTR-SBX-SANDBOX]
+  - path_id: PATH-SBX-DOCKER-LOSS
+    kind: recovery
+    requirement_ids: [REQ-SBX-DOCKER]
+    capability_ids: [CAP-SBX-DOCKER]
+    acceptance_ids: [ACC-SBX-DOCKER-LOSS]
+    contract_refs: [CTR-SBX-DOCKER, CTR-SBX-OPEN]
+  - path_id: PATH-SBX-OPEN
+    kind: success
+    requirement_ids: [REQ-SBX-BOUNDARY, REQ-SBX-FENCING]
+    capability_ids: [CAP-SBX-OPEN]
+    acceptance_ids: [ACC-SBX-BOUNDARY, ACC-SBX-OPEN]
+    contract_refs: [CTR-SBX-SCOPE, CTR-SBX-OPEN, CTR-SBX-SANDBOX]
+  - path_id: PATH-SBX-PURISTA
+    kind: success
+    requirement_ids: [REQ-SBX-BOUNDARY]
+    capability_ids: [CAP-SBX-PURISTA]
+    acceptance_ids: [ACC-SBX-BOUNDARY]
+    contract_refs: [CTR-SBX-SCOPE, CTR-SBX-SANDBOX]
+  - path_id: PATH-SBX-IDENTITY
+    kind: authorization_denial
+    requirement_ids: [REQ-SBX-IDENTITY]
+    capability_ids: [CAP-SBX-IDENTITY]
+    acceptance_ids: [ACC-SBX-IDENTITY]
+    contract_refs: [CTR-SBX-SCOPE]
+  - path_id: PATH-SBX-STALE
+    kind: conflict
+    requirement_ids: [REQ-SBX-FENCING]
+    capability_ids: [CAP-SBX-FENCE]
+    acceptance_ids: [ACC-SBX-STALE]
+    contract_refs: [CTR-SBX-SANDBOX]
+  - path_id: PATH-SBX-RESTORE
+    kind: recovery
+    requirement_ids: [REQ-SBX-RECOVERY]
+    capability_ids: [CAP-SBX-RECOVER]
+    acceptance_ids: [ACC-SBX-RESTORE]
+    contract_refs: [CTR-SBX-OPEN]
+  - path_id: PATH-SBX-STATE-LOST
+    kind: not_found
+    requirement_ids: [REQ-SBX-RECOVERY]
+    capability_ids: [CAP-SBX-RECOVER]
+    acceptance_ids: [ACC-SBX-STATE-LOST]
+    contract_refs: [CTR-SBX-OPEN]
+  - path_id: PATH-SBX-DETACH
+    kind: success
+    requirement_ids: [REQ-SBX-CLEANUP]
+    capability_ids: [CAP-SBX-CLEANUP]
+    acceptance_ids: [ACC-SBX-CLEANUP]
+    contract_refs: [CTR-SBX-OPEN]
+  - path_id: PATH-SBX-TERMINATE
+    kind: success
+    requirement_ids: [REQ-SBX-CLEANUP]
+    capability_ids: [CAP-SBX-CLEANUP]
+    acceptance_ids: [ACC-SBX-CLEANUP]
+    contract_refs: [CTR-SBX-SANDBOX]
+  - path_id: PATH-SBX-OBSERVE
+    kind: other
+    requirement_ids: [REQ-SBX-PRIVACY]
+    capability_ids: [CAP-SBX-OBSERVE]
+    acceptance_ids: [ACC-SBX-PRIVACY]
+    contract_refs: [CTR-SBX-OPEN]
+  - path_id: PATH-SBX-CONTRACT
+    kind: other
+    requirement_ids: [REQ-SBX-CONTRACT]
+    capability_ids: [CAP-SBX-CONTRACT]
+    acceptance_ids: [ACC-SBX-CONTRACT, ACC-SBX-CLEAN-BREAK]
+    contract_refs: [CTR-SBX-OPEN, CTR-SBX-SANDBOX]
+  - path_id: PATH-SBX-BAKEOFF
+    kind: other
+    requirement_ids: [REQ-SBX-BAKEOFF]
+    capability_ids: [CAP-SBX-BAKEOFF]
+    acceptance_ids: [ACC-SBX-BAKEOFF]
+    contract_refs: [CTR-SBX-SANDBOX]
+acceptance:
+  - acceptance_id: ACC-SBX-CLEAN-BREAK
+    requirement_ids: [REQ-SBX-CONTRACT]
+    path_ids: [PATH-SBX-CONTRACT]
+    verification_refs: [VERIFY-SBX-CLEAN-BREAK, VERIFY-SBX-TYPES, VERIFY-SBX-CONTRACT, VERIFY-SBX-INTEGRATION]
+  - acceptance_id: ACC-SBX-DOCKER
+    requirement_ids: [REQ-SBX-DOCKER]
+    path_ids: [PATH-SBX-DOCKER]
+    verification_refs: [VERIFY-SBX-DOCKER-UNIT, VERIFY-SBX-DOCKER-LIVE]
+  - acceptance_id: ACC-SBX-DOCKER-LOSS
+    requirement_ids: [REQ-SBX-DOCKER]
+    path_ids: [PATH-SBX-DOCKER-LOSS]
+    verification_refs: [VERIFY-SBX-DOCKER-UNIT, VERIFY-SBX-DOCKER-LIVE]
+  - acceptance_id: ACC-SBX-BOUNDARY
+    requirement_ids: [REQ-SBX-BOUNDARY]
+    path_ids: [PATH-SBX-OPEN, PATH-SBX-PURISTA]
+    verification_refs: [VERIFY-SBX-TYPES, VERIFY-SBX-INTEGRATION, VERIFY-SBX-DEPENDENCIES]
+  - acceptance_id: ACC-SBX-IDENTITY
+    requirement_ids: [REQ-SBX-IDENTITY]
+    path_ids: [PATH-SBX-IDENTITY]
+    verification_refs: [VERIFY-SBX-CONTRACT, VERIFY-SBX-INTEGRATION]
+  - acceptance_id: ACC-SBX-OPEN
+    requirement_ids: [REQ-SBX-FENCING]
+    path_ids: [PATH-SBX-OPEN]
+    verification_refs: [VERIFY-SBX-CONTRACT]
+  - acceptance_id: ACC-SBX-STALE
+    requirement_ids: [REQ-SBX-FENCING]
+    path_ids: [PATH-SBX-STALE]
+    verification_refs: [VERIFY-SBX-CONTRACT, VERIFY-SBX-FAILURE]
+  - acceptance_id: ACC-SBX-RESTORE
+    requirement_ids: [REQ-SBX-RECOVERY]
+    path_ids: [PATH-SBX-RESTORE]
+    verification_refs: [VERIFY-SBX-INTEGRATION]
+  - acceptance_id: ACC-SBX-STATE-LOST
+    requirement_ids: [REQ-SBX-RECOVERY]
+    path_ids: [PATH-SBX-STATE-LOST]
+    verification_refs: [VERIFY-SBX-CONTRACT, VERIFY-SBX-FAILURE]
+  - acceptance_id: ACC-SBX-CLEANUP
+    requirement_ids: [REQ-SBX-CLEANUP]
+    path_ids: [PATH-SBX-DETACH, PATH-SBX-TERMINATE]
+    verification_refs: [VERIFY-SBX-CONTRACT, VERIFY-SBX-INTEGRATION]
+  - acceptance_id: ACC-SBX-PRIVACY
+    requirement_ids: [REQ-SBX-PRIVACY]
+    path_ids: [PATH-SBX-OBSERVE]
+    verification_refs: [VERIFY-SBX-PRIVACY]
+  - acceptance_id: ACC-SBX-CONTRACT
+    requirement_ids: [REQ-SBX-CONTRACT]
+    path_ids: [PATH-SBX-CONTRACT]
+    verification_refs: [VERIFY-SBX-CONTRACT]
+  - acceptance_id: ACC-SBX-BAKEOFF
+    requirement_ids: [REQ-SBX-BAKEOFF]
+    path_ids: [PATH-SBX-BAKEOFF]
+    verification_refs: [VERIFY-SBX-BAKEOFF]
+verification:
+  - verification_id: VERIFY-SBX-CLEAN-BREAK
+    command: npm test --workspace @purista/harness -- test/sandbox-lifecycle-clean-break.test.ts test/local-durable-execution.test.ts test/session-lifecycle.test.ts test/workflow-child-tasks.test.ts test/sandbox-snapshot.test.ts test/public-api.test.ts
+  - verification_id: VERIFY-SBX-DOCKER-UNIT
+    command: npm test --workspace @purista/harness-sandbox-docker
+  - verification_id: VERIFY-SBX-DOCKER-LIVE
+    command: npm run test:docker --workspace @purista/harness-sandbox-docker
+    precondition: Explicit opt-in and pre-provisioned disposable local engine/image; script added by SBX-013, not run by default CI.
+  - verification_id: VERIFY-SBX-TYPES
+    command: npm run test:types
+  - verification_id: VERIFY-SBX-CONTRACT
+    command: npm run test:contracts
+  - verification_id: VERIFY-SBX-INTEGRATION
+    command: npm run test:integration
+  - verification_id: VERIFY-SBX-FAILURE
+    command: npm run test:failure
+  - verification_id: VERIFY-SBX-PRIVACY
+    command: npm test -- sandbox-lifecycle-telemetry
+  - verification_id: VERIFY-SBX-DEPENDENCIES
+    command: npm run verify:architecture
+  - verification_id: VERIFY-SBX-BAKEOFF
+    command: provider probe command defined by SBX-006 after contract completion

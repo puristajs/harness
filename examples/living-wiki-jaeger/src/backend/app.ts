@@ -1,7 +1,18 @@
 import { Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
-import { JsonLogger, serializeError, type RunEvent } from '../../../../packages/harness/src/index.js'
-import { agentIds, createLivingWikiHarness, workflowIds, type AgentId, type LivingWikiHarnessOptions, type WorkflowId } from './harness.js'
+import {
+  JsonLogger,
+  serializeError,
+  type AnyHarnessTargetContract,
+  type ExecutionEvent,
+  type HarnessTargetStream,
+  type JsonValue,
+} from '@purista/harness'
+import {
+  createHarnessUIMessageStreamResponse,
+  parseHarnessUIMessageRequest,
+} from '@purista/harness-ai-sdk-ui/v1'
+import { agentIds, createLivingWikiHarness, resolveAgentTarget, resolveWorkflowTarget, workflowIds, type AgentId, type LivingWikiHarnessOptions, type WorkflowId } from './harness.js'
 import { slugSchema } from './data.js'
 import {
   agentRunRequestSchema,
@@ -14,8 +25,13 @@ import {
   type ReviewRequest
 } from './schemas.js'
 
-type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled'
-type LivingWikiRunEvent = RunEvent | { type: 'answer.delta'; runId: string; at: string; delta: string }
+type RunStatus = 'running' | 'succeeded' | 'interrupted' | 'failed' | 'cancelled'
+type LivingWikiRunEvent = ExecutionEvent | {
+  type: 'transport.error'
+  runId: string
+  at: string
+  error: ReturnType<typeof serializeError>
+}
 
 interface ApiRun {
   runId: string
@@ -72,8 +88,8 @@ async function readJson(c: { req: { json: () => Promise<unknown> } }): Promise<u
   }
 }
 
-export function createLivingWikiApi(options: LivingWikiHarnessOptions = {}) {
-  const { harness, store, model } = createLivingWikiHarness(options)
+export async function createLivingWikiApi(options: LivingWikiHarnessOptions = {}) {
+  const { harness, store, model, storage } = await createLivingWikiHarness(options)
   const logger = new JsonLogger({ level: 'info', bindings: { component: 'living-wiki-api' } })
   const app = new Hono()
   const runs = new Map<string, ApiRun>()
@@ -104,6 +120,23 @@ export function createLivingWikiApi(options: LivingWikiHarnessOptions = {}) {
   })
 
   app.get('/api/health', (c) => c.json({ status: 'ok', model }))
+
+  app.post('/api/chat', async (c) => {
+    const parsed = await parseHarnessUIMessageRequest(await readJson(c))
+    const question = parsed.lastUserMessage.parts
+      .filter((part) => part.type === 'text')
+      .map((part) => part.text)
+      .join('')
+    const session = await harness.getSession(parsed.sessionId)
+    const events = releaseSessionAfterStream(session.agents.wikiAnswerer.stream(
+      { question },
+      parsed.resume === undefined ? undefined : { resume: parsed.resume },
+    ), () => session.release())
+    return createHarnessUIMessageStreamResponse(events, {
+      sessionId: parsed.sessionId,
+      ...(parsed.assistantMessageId === undefined ? {} : { messageId: parsed.assistantMessageId }),
+    })
+  })
 
   app.get('/api/pages', async (c) => c.json({ pages: (await store.listPages()).map(({ slug, title, summary }) => ({ slug, title, summary })) }))
   app.get('/api/pages/:slug', async (c) => {
@@ -439,7 +472,9 @@ export function createLivingWikiApi(options: LivingWikiHarnessOptions = {}) {
 
     void (async () => {
       try {
-        const invoker = args.kind === 'workflow' ? session.workflows[args.targetId] : session.agents[args.targetId]
+        const invoker = args.kind === 'workflow'
+          ? session.workflows[resolveWorkflowTarget(args.targetId)]
+          : session.agents[resolveAgentTarget(args.targetId)]
         if (!invoker) throw new Error(`Unknown ${args.kind} target ${args.targetId}.`)
         for await (const event of invoker.stream(args.input as never, { signal: controller.signal })) {
           if (!pending.runId) {
@@ -448,41 +483,47 @@ export function createLivingWikiApi(options: LivingWikiHarnessOptions = {}) {
             runs.set(run.runId, run)
             firstRun(run)
           }
-          if (event.type === 'run.finished' && event.output && !event.error) {
-            for (const delta of answerDeltas(event.runId, answerFromResult(event.output))) {
-              pending.events.push(delta)
-              for (const subscriber of pending.subscribers) subscriber(delta)
-              await new Promise((resolve) => setTimeout(resolve, 12))
-            }
-          }
           pending.events.push(event)
           for (const subscriber of pending.subscribers) subscriber(event)
           if (event.type === 'run.finished') {
-            pending.status = event.error?.message?.toLowerCase().includes('cancel') ? 'cancelled' : event.error ? 'failed' : 'succeeded'
-            pending.result = event.output
-            pending.error = event.error
-            if (event.error) {
-              const log = pending.status === 'cancelled' ? logger.warn.bind(logger) : logger.error.bind(logger)
-              log('Living wiki run finished with error.', {
-                run_id: event.runId,
-                kind: args.kind,
-                target_id: args.targetId,
-                status: pending.status,
-                error: event.error
-              })
-            } else {
+            if (event.outcome.status === 'completed') {
+              pending.status = 'succeeded'
+              pending.result = event.outcome.output
               logger.info('Living wiki run finished.', {
                 run_id: event.runId,
                 kind: args.kind,
                 target_id: args.targetId,
                 status: pending.status
               })
+            } else if (event.outcome.status === 'interrupted') {
+              pending.status = 'interrupted'
+              pending.result = event.outcome.interrupt
+              logger.info('Living wiki run interrupted.', {
+                run_id: event.runId,
+                kind: args.kind,
+                target_id: args.targetId,
+                status: pending.status,
+                interrupt_type: event.outcome.interrupt.type
+              })
+            } else {
+              pending.status = event.outcome.status
+              pending.error = event.outcome.error
             }
           }
         }
       } catch (error) {
         pending.status = controller.signal.aborted ? 'cancelled' : 'failed'
         pending.error = error instanceof Error ? { message: error.message } : { message: 'Run failed.' }
+        if (pending.runId) {
+          const failedEvent: LivingWikiRunEvent = {
+            type: 'transport.error',
+            runId: pending.runId,
+            at: new Date().toISOString(),
+            error: serializeError(error)
+          }
+          pending.events.push(failedEvent)
+          for (const subscriber of pending.subscribers) subscriber(failedEvent)
+        }
         if (!pending.runId || pending.events.every((event) => event.type !== 'run.finished')) {
           const log = pending.status === 'cancelled' ? logger.warn.bind(logger) : logger.error.bind(logger)
           log('Living wiki run failed before completion.', {
@@ -496,7 +537,7 @@ export function createLivingWikiApi(options: LivingWikiHarnessOptions = {}) {
         if (!pending.runId) failFirst(error)
       } finally {
         pending.resolveDone()
-        await session.close().catch(() => undefined)
+        await session.destroy().catch(() => undefined)
       }
     })()
 
@@ -513,8 +554,28 @@ export function createLivingWikiApi(options: LivingWikiHarnessOptions = {}) {
         if (run.status === 'running') run.controller.abort(new Error('shutdown'))
       }
       await Promise.all([...runs.values()].map((run) => run.done.catch(() => undefined)))
-      await harness.shutdown()
+      await harness.close()
+      await storage.close()
     }
+  }
+}
+
+export function releaseSessionAfterStream<Target extends AnyHarnessTargetContract>(
+  stream: HarnessTargetStream<Target>,
+  release: () => Promise<void>,
+): HarnessTargetStream<Target> {
+  let released = false
+  const releaseOnce = async () => {
+    if (released) return
+    released = true
+    await release()
+  }
+  return {
+    result: stream.result.finally(releaseOnce),
+    cancel: reason => stream.cancel(reason),
+    async *[Symbol.asyncIterator]() {
+      yield* stream
+    },
   }
 }
 
@@ -550,24 +611,6 @@ function extractReviewRequest(result: unknown): ReviewRequest | undefined {
   if (!isRecord(reviewRequest)) return undefined
   if (typeof reviewRequest['id'] !== 'string' || typeof reviewRequest['runId'] !== 'string') return undefined
   return reviewRequest as ReviewRequest
-}
-
-function answerFromResult(result: unknown): string | undefined {
-  if (!isRecord(result)) return undefined
-  return typeof result['answer'] === 'string'
-    ? result['answer']
-    : typeof result['markdown'] === 'string'
-      ? result['markdown']
-      : undefined
-}
-
-function answerDeltas(runId: string, content: string | undefined): LivingWikiRunEvent[] {
-  if (!content) return []
-  const chunks: LivingWikiRunEvent[] = []
-  for (let index = 0; index < content.length; index += 24) {
-    chunks.push({ type: 'answer.delta', runId, at: new Date().toISOString(), delta: content.slice(index, index + 24) })
-  }
-  return chunks
 }
 
 function extractProposedChanges(result: unknown): ProposedPageChange[] {

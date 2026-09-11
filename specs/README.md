@@ -1,93 +1,111 @@
-# `@purista/harness` — Specification v2
+# `@purista/harness` specification v4
 
-This folder is the authoritative specification for the `@purista/harness` library and its provider ecosystem. The implementation agent must read every file. No file may be skipped; no decision may be improvised beyond what is locked here.
+This folder is the authoritative specification for Harness core and its
+first-party provider and infrastructure packages.
 
-The folder contains 30 files (this README plus 29 numbered specs). The published package set includes `@purista/harness` (the umbrella library) plus independent provider and adapter addons such as `@purista/harness-openai`, `@purista/harness-anthropic`, `@purista/harness-bedrock`, `@purista/harness-azure-foundry`, `@purista/harness-agent-plugins`, future `@purista/harness-memory-*` packages, and future external durable workspace store packages. Core also ships local-first durable execution adapters backed by built-in Node/Bun SQLite plus host-directory workspaces. Private examples may exist under `examples/` when backed by numbered specs. Non-core packages follow the convention `@purista/harness-{addon}`. Shared tool execution, including TypeScript and MCP tools, is part of the harness contract.
+Read [spec 42](./42-composable-definitions-and-catalogs.md) first. It defines
+the complete v4 authoring, immutable composition, type inference, runtime,
+streaming, approval, and host-integration contract. Topic specifications then
+define the detailed behavior of ports and focused capabilities. A topic file
+cannot add a second authoring surface, mutable registry, string service
+locator, broader public-root set, or alternate runtime lifecycle.
+
+All Harness-owned structured execution state uses the
+[HarnessStorage contract](./32-harness-storage.md). The distributed reference
+deployment uses the
+[PostgreSQL and Kubernetes stack](./43-distributed-production-reference-stack.md).
 
 ## Reading order
 
-For an implementation agent starting cold, read in this order:
+1. [42 — composable definitions and catalogs](./42-composable-definitions-and-catalogs.md)
+2. [00 — overview](./00-overview.md)
+3. [01 — architecture](./01-architecture.md)
+4. [02 — definition and runtime configuration](./02-harness-config.md)
+5. [06 — model provider](./06-models.md)
+6. [07 — tools and MCP](./07-tools.md)
+7. [08 — Agent Skills](./08-skills.md)
+8. [09 — agents](./09-agents.md)
+9. [10 — workflows](./10-workflows.md)
+10. [11 — sessions](./11-sessions.md)
+11. [12 — streaming](./12-streaming.md)
+12. [13 — public API index](./13-public-api.md)
+13. [15 — error catalog](./15-error-catalog.md)
+14. [16 — testing](./16-testing.md)
+15. [17 — implementation-plan authority](./17-implementation-plan.md)
 
-1. [00-overview.md](./00-overview.md) — purpose, mental model, scope, glossary.
-2. [01-architecture.md](./01-architecture.md) — package layout and dependency direction.
-3. [02-harness-config.md](./02-harness-config.md) — `defineHarness` schema and validation.
-4. [03-foundation.md](./03-foundation.md) — logger, error base, OTel integration.
-5. [04-state-queue-stream.md](./04-state-queue-stream.md) — state and events.
-6. [05-sandbox.md](./05-sandbox.md) — sandbox port (FS + exec) and default factories.
-7. [06-models.md](./06-models.md) — model provider port.
-8. [07-tools.md](./07-tools.md) — TS, MCP-stdio, MCP-http tools.
-9. [08-skills.md](./08-skills.md) — skill manifest and executor.
-10. [09-agents.md](./09-agents.md) — inline `AgentDefinition`, `AgentContext`, default loop.
-11. [10-workflows.md](./10-workflows.md) — inline `WorkflowDefinition`, `WorkflowContext`.
-12. [11-sessions.md](./11-sessions.md) — `Session` API, concurrency, conversation history.
-13. [12-streaming.md](./12-streaming.md) — `RunEvent`, bounded live streaming, and privacy-safe persistence.
-14. [13-public-api.md](./13-public-api.md) — authoritative export list.
-15. [14-otel-conventions.md](./14-otel-conventions.md) — span/metric/attribute names.
-16. [15-error-catalog.md](./15-error-catalog.md) — every error class.
-17. [16-testing.md](./16-testing.md) — vitest, contract suites, gates.
-18. [17-implementation-plan.md](./17-implementation-plan.md) — ordered build phases.
-19. [18-living-wiki-jaeger-example.md](./18-living-wiki-jaeger-example.md) — canonical Living Wiki intelligence workspace with direct agents, workflows, HITL review, artifacts, MCP, SSE, and Jaeger tracing.
-20. [19-ai-eval-core.md](./19-ai-eval-core.md) — harness-owned AI eval core, telemetry interop, run summaries, trace-context propagation, and local scorer/candidate helpers.
-21. [20-memory-adapters.md](./20-memory-adapters.md) — pluggable memory adapter port, scopes, telemetry, metrics, reference adapter, and testing contract.
-22. [21-durable-workspaces.md](./21-durable-workspaces.md) — production durable workspace lifecycle, checkpoint references, retention, encryption, cleanup, quotas, fallback, telemetry, and contract tests.
-23. [22-local-durable-execution.md](./22-local-durable-execution.md) — built-in local durable execution with SQLite runtime persistence, host-directory workspace/sandbox binding, context checkpoints, and secure defaults.
-24. [23-provider-outcomes-and-retry.md](./23-provider-outcomes-and-retry.md) — provider-neutral finish outcomes, active/deferred retry policy, SDK retry boundaries, and rate-limit metadata.
-25. [24-governance-policy.md](./24-governance-policy.md) — optional policy-driven governance layer for typed tool exposure, execution policy, approvals, audit events, and external policy adapters.
-26. [25-static-harness-modules.md](./25-static-harness-modules.md) — static typed modules, provenance, lifecycle ownership, and capability-family rules.
-27. [26-context-projection-and-compaction.md](./26-context-projection-and-compaction.md) — transient context projection and bounded recovery.
-28. [27-test-replay-and-diagnostic-invariants.md](./27-test-replay-and-diagnostic-invariants.md) — sanitized test replay and opt-in diagnostic invariants.
-29. [28-workflow-child-tasks.md](./28-workflow-child-tasks.md) — typed background child tasks, bounded fan-out, and in-process continuables.
-30. [29-agent-plugins.md](./29-agent-plugins.md) — first-party Agent Plugins client, trust, portable Skills/MCP projection, and current MCP behavior.
+Implementation agents then load only the topic specifications needed for their
+ticket.
 
-## File index (one-liners)
+## Topic index
 
-| File | Summary |
-|------|---------|
-| [00-overview.md](./00-overview.md) | Purpose, mental model, scope/non-goals, glossary. |
-| [01-architecture.md](./01-architecture.md) | Layering, dependency rules, core-plus-provider package layout. |
-| [02-harness-config.md](./02-harness-config.md) | `defineHarness()` chainable builder, defaults, validation rules. |
-| [03-foundation.md](./03-foundation.md) | Logger interface, `HarnessError` base, OTel approach. |
-| [04-state-queue-stream.md](./04-state-queue-stream.md) | StateStore port + in-memory default + persisted shapes. |
-| [05-sandbox.md](./05-sandbox.md) | Sandbox port (FS + exec), `inMemorySandbox()` files-only and `bashSandbox()` (just-bash) defaults, auto-detect. |
-| [06-models.md](./06-models.md) | Model alias, `ModelProvider` port, capability enforcement. |
-| [07-tools.md](./07-tools.md) | TS, MCP-stdio, MCP-http tool configs and behavior. |
-| [08-skills.md](./08-skills.md) | Agent Skills discovery, strict/lenient `SKILL.md` frontmatter parsing, trust/collision rules, mount-at-`/skills/<name>/`, progressive disclosure, activation, and privacy. |
-| [09-agents.md](./09-agents.md) | Inline `AgentDefinition`, default loop with built-in tools, per-agent permissions, `maxSteps`. |
-| [10-workflows.md](./10-workflows.md) | Inline `WorkflowDefinition`, parallel agents, cancellation. |
-| [11-sessions.md](./11-sessions.md) | `Session` API, persistence, serial concurrency rule, `SessionMemory`, conversation history. |
-| [12-streaming.md](./12-streaming.md) | `RunEvent` union, ordering guarantees, in-process buffered queue. |
-| [13-public-api.md](./13-public-api.md) | Authoritative export list; Zod-to-JSON-Schema conversion rules. |
-| [14-otel-conventions.md](./14-otel-conventions.md) | Spans, metrics, attribute keys, log fields. |
-| [15-error-catalog.md](./15-error-catalog.md) | Every error class, code, category, retriable, meta. |
-| [16-testing.md](./16-testing.md) | Vitest, contract suites, fakes, coverage gates. |
-| [17-implementation-plan.md](./17-implementation-plan.md) | Phased build order with exit criteria. |
-| [18-living-wiki-jaeger-example.md](./18-living-wiki-jaeger-example.md) | Canonical living-wiki intelligence workspace contract covering Hono, React/Vite, OpenAI, direct agents, workflows, HITL review, artifacts, MCP, SSE, and Jaeger. |
-| [19-ai-eval-core.md](./19-ai-eval-core.md) | Harness-owned AI eval core functionality and explicit non-ownership of Cloudgrid adapter concerns. |
-| [20-memory-adapters.md](./20-memory-adapters.md) | Memory adapter port, run/session/agent/user/tenant scopes, telemetry, metrics, and sandbox-backed reference adapter. |
-| [21-durable-workspaces.md](./21-durable-workspaces.md) | Durable workspace store contract for production replay across runtime checkpoints and sandbox workspace state. |
-| [22-local-durable-execution.md](./22-local-durable-execution.md) | Local durable execution bundle using SQLite runtime persistence, host-directory workspaces, durable sandbox binding, and context checkpoint storage. |
-| [23-provider-outcomes-and-retry.md](./23-provider-outcomes-and-retry.md) | Provider-neutral finish outcomes, active/deferred retry policy, SDK retry boundaries, and rate-limit metadata. |
-| [24-governance-policy.md](./24-governance-policy.md) | Optional tool-exposure and tool-call governance, typed native policy rules, approval adapters, shadow mode, and external policy engine adapters. |
-| [25-static-harness-modules.md](./25-static-harness-modules.md) | Static typed module composition, provenance, capability-family ownership, and lifecycle rules. |
-| [26-context-projection-and-compaction.md](./26-context-projection-and-compaction.md) | Model-visible context projection, tool-result pruning, and single-retry recovery. |
-| [27-test-replay-and-diagnostic-invariants.md](./27-test-replay-and-diagnostic-invariants.md) | Sanitized offline provider replay and explicit diagnostic invariant contracts. |
-| [28-workflow-child-tasks.md](./28-workflow-child-tasks.md) | Typed child-task lifecycle, queued fan-out, durable descriptors, and in-process continuables. |
-| [29-agent-plugins.md](./29-agent-plugins.md) | First-party Agent Plugins client: trusted local package inspection, Skills/MCP binding, portable filesystem behavior, MCP, telemetry, testing, and release/docs scope. |
+| Topic | Owner |
+| --- | --- |
+| Logging, errors, telemetry bootstrap | [03-foundation](./03-foundation.md) |
+| Persisted state and run events | [04-state-queue-stream](./04-state-queue-stream.md), [32-harness-storage](./32-harness-storage.md) |
+| Sandbox filesystem and execution | [05-sandbox](./05-sandbox.md) |
+| OpenTelemetry naming | [14-otel-conventions](./14-otel-conventions.md) |
+| Testing fakes, contracts, and gates | [16-testing](./16-testing.md) |
+| Runtime telemetry and evaluation foundation | [19-ai-eval-core](./19-ai-eval-core.md) |
+| Memory orchestration and adapters | [33-enterprise-memory](./33-enterprise-memory/00-vision.md) |
+| Durable workspaces and local durability | [21-durable-workspaces](./21-durable-workspaces.md), [22-local-durable-execution](./22-local-durable-execution.md) |
+| Provider outcomes and retry | [23-provider-outcomes-and-retry](./23-provider-outcomes-and-retry.md) |
+| Governance and approval | [24-governance-policy](./24-governance-policy.md), [37-decision-boundaries](./37-decision-boundaries/00-vision.md) |
+| Context projection and bounded recovery | [26-context-projection-and-compaction](./26-context-projection-and-compaction.md) |
+| Sanitized test replay and diagnostics | [27-test-replay-and-diagnostic-invariants](./27-test-replay-and-diagnostic-invariants.md) |
+| Workflow child tasks and fan-out | [28-workflow-child-tasks](./28-workflow-child-tasks.md) |
+| Agent Plugin inspection/projection | [29-agent-plugins](./29-agent-plugins.md) |
+| Guardrails and sensitive data | [30-guardrails](./30-guardrails.md), [31-sensitive-data-guardrails](./31-sensitive-data-guardrails.md), [38-guardrail-authoring](./38-guardrail-authoring/00-vision.md) |
+| Distributed Sandbox lifecycle and ownership | [34-distributed-sandbox-lifecycle](./34-distributed-sandbox-lifecycle/00-vision.md), [36-sandbox-ownership-and-administration](./36-sandbox-ownership-and-administration/00-vision.md) |
+| Generic evaluation runs | [35-generic-evaluation-runs](./35-generic-evaluation-runs.md) |
+| Standard Schema boundaries | [39-standard-schema-boundaries](./39-standard-schema-boundaries/00-vision.md) |
+| OPA policy adapter | [41-opa-policy-adapter](./41-opa-policy-adapter.md) |
+| Distributed production stack | [43-distributed-production-reference-stack](./43-distributed-production-reference-stack.md) |
 
-## Authoritative anchors
+## Archived decision records
 
-- All exported symbols → [13-public-api.md](./13-public-api.md).
-- All error classes → [15-error-catalog.md](./15-error-catalog.md).
-- All OTel names → [14-otel-conventions.md](./14-otel-conventions.md).
-- Durable workspace lifecycle and replay semantics → [21-durable-workspaces.md](./21-durable-workspaces.md).
-- Local durable execution, SQLite runtime persistence, and context checkpoints → [22-local-durable-execution.md](./22-local-durable-execution.md).
-- Provider outcomes, active/deferred retry, and rate-limit metadata → [23-provider-outcomes-and-retry.md](./23-provider-outcomes-and-retry.md).
-- Tool-exposure and tool-call governance, approvals → [24-governance-policy.md](./24-governance-policy.md).
-- Static module behavior and provenance → [25-static-harness-modules.md](./25-static-harness-modules.md).
-- Transient context projection → [26-context-projection-and-compaction.md](./26-context-projection-and-compaction.md).
-- Test-only replay and diagnostics → [27-test-replay-and-diagnostic-invariants.md](./27-test-replay-and-diagnostic-invariants.md).
-- Workflow child tasks, fan-out, and continuables → [28-workflow-child-tasks.md](./28-workflow-child-tasks.md).
-- Agent Plugins client behavior, trust, and portable package semantics → [29-agent-plugins.md](./29-agent-plugins.md).
-- Build order → [17-implementation-plan.md](./17-implementation-plan.md).
+[Spec 25](./25-static-harness-modules.md) and
+[spec 40](./40-declarative-registration-and-guardrails-binding.md) are concise
+records of replaced design work. They contain no active authoring or runtime
+contract. Historical readiness records are evidence of prior decisions and
+must be explicitly marked superseded when a later contract replaces them.
 
-If two files appear to disagree, the more specific file wins (catalog/api/conventions > behavior > overview). Report any contradiction discovered during implementation as a spec bug rather than improvising.
+## Normative ownership rules
+
+- Spec 42 owns public definition factories, direct references, catalogs,
+  executable roots, graph closure, `$infer`, runtime binding, invokers,
+  streaming, admission, host tools, and PURISTA integration requirements.
+- Spec 39 owns Standard Schema and Standard JSON Schema direction, validation,
+  projection, and caching.
+- Spec 37 owns decision evidence, approval, continuation, and prepared-tool
+  ordering.
+- Spec 38 owns Guardrail action/configuration semantics; spec 42 owns how a
+  typed binding attaches to an agent and contributes graph requirements.
+- Spec 32 owns the single persistence boundary and authoritative run model.
+- Specs 34 and 36 own topology-transparent Sandbox lifecycle and owner
+  authorization.
+- Spec 43 owns the selected distributed storage and Sandbox reference stack.
+
+If two active files conflict, that is a specification defect. An implementation
+agent must stop that ticket and route the contradiction to readiness review
+rather than choose one interpretation.
+
+## Clean-break rule
+
+The v4 release contains one current API and one execution path. Source, tests,
+examples, generated templates, package declarations, documentation, diagrams,
+skills, and public knowledge must contain no compatibility wrapper, deprecated
+alias, dual runtime behavior, or stale recommended example.
+
+Historical records may name removed concepts solely to identify what is no
+longer active. They cannot define types, examples, or fallback behavior.
+
+## Readiness and plan
+
+- Repository readiness record: [`.readiness-report.yaml`](./.readiness-report.yaml)
+- Executable workspace plan:
+  [`plans/harness-v4-clean-break/plan.json`](../../plans/harness-v4-clean-break/plan.json)
+
+A human-approved intent does not substitute for independent semantic review,
+current scope digests, or implementation verification. The plan must bind the
+latest approved specification digest before implementation tickets become
+ready.

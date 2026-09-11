@@ -10,3 +10,6 @@ coverage/
 .env
 examples/living-wiki-jaeger/data/artifacts
 ai-eval-research/
+.artifacts/decision-consumers/
+.artifacts/decision-skills/
+.sandbox-verification/

@@ -1,8 +1,54 @@
 import { HarnessError } from './harness-error.js'
+import { decisionEvidenceSchema, decisionFailureKindSchema, policyDenialReasonSchema } from '../decisions/schemas.js'
+import { z } from 'zod'
+import type { DecisionEvidence, DecisionFailureKind } from '../decisions/types.js'
+import type { WorkflowManagedCallOperation } from '../storage/execution.js'
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
+}
+
+/** Stable locations for public value-schema validation failures. */
+export type ValidationWhere =
+  | 'agent_input'
+  | 'agent_output'
+  | 'workflow_input'
+  | 'workflow_output'
+  | 'tool_input'
+  | 'tool_output'
+  | 'mcp_input'
+  | 'mcp_output'
+  | 'model_request'
+  | 'model_response'
+  | 'memory_key'
+  | 'memory_value'
+  | 'memory_scope'
+  | 'memory_write_options'
+  | 'memory_list_options'
+  | 'memory_search_query'
+  | 'message'
+  | 'session_history'
+  | 'invoke_options'
+  | 'eval_input'
+  | 'sandbox_options'
 
 /** Configuration validation and assembly failures. */
 export class HarnessConfigError extends HarnessError {
-  public constructor(message: string, meta: { reason: string; path?: string; id?: string; module_id?: string }, cause?: unknown) {
+  public constructor(
+    message: string,
+    meta: {
+      reason: string
+      path?: string
+      id?: string
+      module_id?: string
+      schemaBoundary?: 'agent_output' | 'tool_input'
+      schemaVendor?: string
+      schemaTarget?: 'draft-2020-12'
+    },
+    cause?: unknown,
+  ) {
     super({ code: 'HARNESS_CONFIG_ERROR', category: 'config', retriable: false, message, meta, cause })
   }
 }
@@ -12,73 +58,175 @@ export class ValidationError extends HarnessError {
   public constructor(
     message: string,
     meta: {
-      where:
-        /** Agent input schema validation failed. */ | 'agent_input'
-        /** Agent output schema validation failed. */ | 'agent_output'
-        /** Workflow input schema validation failed. */ | 'workflow_input'
-        /** Workflow output schema validation failed. */ | 'workflow_output'
-        /** Tool input schema validation failed. */ | 'tool_input'
-        /** Tool output schema validation failed. */ | 'tool_output'
-        /** MCP request schema validation failed. */ | 'mcp_input'
-        /** MCP response schema validation failed. */ | 'mcp_output'
-        /** Model provider response shape is invalid. */ | 'model_response'
-        /** Session memory key is invalid. */ | 'memory_key'
-        /** Session memory value is invalid or non-serializable. */ | 'memory_value'
-        /** Session memory scope is invalid or unsupported. */ | 'memory_scope'
-        /** Session memory options are invalid or unsupported. */ | 'memory_write_options'
-        /** Session memory listing options are invalid. */ | 'memory_list_options'
-        /** Session memory search query is invalid. */ | 'memory_search_query'
-        /** Message envelope validation failed. */ | 'message'
-        /** Session history shape validation failed. */ | 'session_history'
-        /** Invocation options are invalid. */ | 'invoke_options'
-        /** Evaluation helper input is invalid. */ | 'eval_input'
+      where: ValidationWhere
       issues: unknown
     },
-    cause?: unknown
+    cause?: unknown,
   ) {
     super({ code: 'VALIDATION_ERROR', category: 'validation', retriable: false, message, meta, cause })
   }
 }
 
-/** Tool execution denied by policy or approval hook. */
+/** Provider capacity was not admitted and the caller may retry after a delay. */
+export class ModelAdmissionRejectedError extends HarnessError {
+  public readonly retryAfterMs: number
+
+  public constructor(
+    retryAfterMs: number,
+    meta: { providerId: string; model: string; credentialScope: string; operation: string },
+    cause?: unknown,
+  ) {
+    super({
+      code: 'MODEL_ADMISSION_REJECTED',
+      category: 'model',
+      retriable: true,
+      message: 'Model provider capacity is not currently available.',
+      meta: { ...meta, retryAfterMs },
+      cause,
+    })
+    this.retryAfterMs = retryAfterMs
+  }
+}
+
+/** Complete agent-loop capacity was not admitted and the caller may retry. */
+export class AgentAdmissionRejectedError extends HarnessError {
+  /** Optional bounded-admission retry hint in milliseconds. */
+  public readonly retryAfterMs?: number
+
+  public constructor(options: Readonly<{ retryAfterMs?: number }> = {}) {
+    if (!isPlainRecord(options) || Reflect.ownKeys(options).some(key => typeof key !== 'string' || key !== 'retryAfterMs')) {
+      throw new HarnessConfigError('Agent admission rejection options are invalid.', {
+        reason: 'invalid_agent_admission_rejection', path: 'agentAdmission.retryAfterMs',
+      })
+    }
+    const retryAfterMs = options.retryAfterMs
+    if (retryAfterMs !== undefined && (!Number.isSafeInteger(retryAfterMs) || retryAfterMs <= 0)) {
+      throw new HarnessConfigError('Agent admission retryAfterMs must be a positive safe integer.', {
+        reason: 'invalid_agent_admission_rejection', path: 'agentAdmission.retryAfterMs',
+      })
+    }
+    super({
+      code: 'AGENT_ADMISSION_REJECTED', category: 'admission', retriable: true,
+      message: 'Agent admission capacity is exhausted.',
+      meta: { reason: 'capacity_exhausted', ...(retryAfterMs === undefined ? {} : { retryAfterMs }) },
+    })
+    if (retryAfterMs !== undefined) this.retryAfterMs = retryAfterMs
+  }
+}
+
+/** Tool execution denied by a configured coarse permission. */
 export class PermissionDeniedError extends HarnessError {
-  public constructor(message: string, meta: { tool_name: string; agent_id: string; reason?: 'mode_deny' | 'hook_deny' | 'hook_failed' }, cause?: unknown) {
-    super({ code: 'PERMISSION_DENIED', category: 'permission', retriable: false, message, meta, cause })
+  public constructor(evidence: DecisionEvidence, cause?: unknown) {
+    super({
+      code: 'PERMISSION_DENIED',
+      category: 'permission',
+      retriable: false,
+      message: 'Permission denied.',
+      meta: { evidence: parseDecisionEvidence(evidence) },
+      cause,
+    })
   }
 }
 
 /** Tool execution denied by a configured governance policy or approval decision. */
 export class PolicyDeniedError extends HarnessError {
-  public constructor(
-    message: string,
-    meta: {
-      tool_name: string
-      agent_id: string
-      policy_id: string
-      rule_id?: string
-      effect: 'deny' | 'require_approval'
-      reason?: 'policy_deny' | 'approval_rejected' | 'approval_unavailable'
-    },
-    cause?: unknown
-  ) {
-    super({ code: 'POLICY_DENIED', category: 'permission', retriable: false, message, meta, cause })
+  public constructor(evidence: DecisionEvidence, reason: z.output<typeof policyDenialReasonSchema>, cause?: unknown) {
+    const parsedReason = policyDenialReasonSchema.safeParse(reason)
+    if (!parsedReason.success) throw decisionConfigError()
+    super({
+      code: 'POLICY_DENIED',
+      category: 'permission',
+      retriable: false,
+      message: 'Tool call denied by governance policy.',
+      meta: { evidence: parseDecisionEvidence(evidence), reason: parsedReason.data },
+      cause,
+    })
   }
 }
 
-/** Governance policy adapter or native predicate evaluation failed. */
-export class PolicyEvaluationError extends HarnessError {
-  public constructor(
-    message: string,
-    meta: { tool_name: string; agent_id: string; policy_id?: string; rule_id?: string; reason: 'adapter_failed' | 'predicate_failed' | 'invalid_decision' },
-    cause?: unknown
-  ) {
-    super({ code: 'POLICY_EVALUATION_ERROR', category: 'permission', retriable: false, message, meta, cause })
+/** A decision boundary explicitly blocked execution. */
+export class DecisionBlockedError extends HarnessError {
+  public constructor(evidence: DecisionEvidence, cause?: unknown) {
+    const safeEvidence = parseDecisionEvidence(evidence)
+    super({
+      code: 'DECISION_BLOCKED',
+      category: 'interceptor',
+      retriable: false,
+      message: 'Decision blocked execution.',
+      meta: { evidence: safeEvidence },
+      cause,
+    })
   }
+}
+
+/** A decision callback failed closed before it could safely continue. */
+export class DecisionEvaluationError extends HarnessError {
+  public constructor(evidence: DecisionEvidence, failureKind: DecisionFailureKind, cause?: unknown) {
+    const safeEvidence = parseDecisionEvidence(evidence)
+    const safeFailureKind = parseDecisionFailureKind(failureKind)
+    super({
+      code: 'DECISION_EVALUATION_ERROR',
+      category: 'interceptor',
+      retriable: false,
+      message: 'Decision evaluation failed closed.',
+      meta: { evidence: safeEvidence, failureKind: safeFailureKind },
+      cause,
+    })
+  }
+}
+
+function parseDecisionEvidence(value: unknown): DecisionEvidence {
+  try {
+    return decisionEvidenceSchema.parse(value)
+  } catch {
+    throw decisionConfigError()
+  }
+}
+
+function parseDecisionFailureKind(value: unknown): DecisionFailureKind {
+  try {
+    return decisionFailureKindSchema.parse(value)
+  } catch {
+    throw decisionConfigError()
+  }
+}
+
+function decisionConfigError(): HarnessConfigError {
+  return new HarnessConfigError('Decision evidence configuration is invalid.', { reason: 'invalid_decision_evidence' })
+}
+
+const sandboxPermissionDeniedReasonSchema = z.enum([
+  'scope_mismatch',
+  'owner_not_authorized',
+  'owner_revoked',
+  'principal_revoked',
+])
+const sandboxConflictReasonSchema = z.enum([
+  'binding_changed',
+  'policy_changed',
+  'checkpoint_busy',
+  'snapshot_pinned',
+  'idempotency_conflict',
+])
+const sandboxQuotaMetadataSchema = z.strictObject({
+  quota: z.enum(['catalog_entries', 'active_sandboxes', 'snapshots', 'snapshot_bytes']),
+  limit: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  actual: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+})
+
+function parseSandboxErrorMetadata<T>(schema: z.ZodType<T>, value: unknown): T {
+  const parsed = schema.safeParse(value)
+  if (parsed.success) return parsed.data
+  throw new HarnessConfigError('Sandbox error metadata is invalid.', { reason: 'invalid_sandbox_error_metadata' })
 }
 
 /** Sandbox filesystem or command execution failed. */
 export class SandboxError extends HarnessError {
-  public constructor(message: string, meta: { reason: 'invalid_path' | 'exec_failed' | 'fs_failed' | string; stdout?: string; stderr?: string }, cause?: unknown) {
+  public constructor(
+    message: string,
+    meta: { reason: 'invalid_path' | 'exec_failed' | 'fs_failed' | string; stdout?: string; stderr?: string },
+    cause?: unknown,
+  ) {
     super({ code: 'SANDBOX_ERROR', category: 'sandbox', retriable: true, message, meta, cause })
   }
 }
@@ -87,6 +235,71 @@ export class SandboxError extends HarnessError {
 export class SandboxNoExecutorError extends HarnessError {
   public constructor(message: string, meta: { session_id: string }, cause?: unknown) {
     super({ code: 'SANDBOX_NO_EXECUTOR', category: 'sandbox', retriable: false, message, meta, cause })
+  }
+}
+
+/** Sandbox ownership or acting-principal admission was denied without leaking owner data. */
+export class SandboxPermissionDeniedError extends HarnessError {
+  public constructor(reason: z.input<typeof sandboxPermissionDeniedReasonSchema>, cause?: unknown) {
+    super({
+      code: 'SANDBOX_PERMISSION_DENIED',
+      category: 'permission',
+      retriable: false,
+      message: 'Sandbox access denied.',
+      meta: { reason: parseSandboxErrorMetadata(sandboxPermissionDeniedReasonSchema, reason) },
+      cause,
+    })
+  }
+}
+
+/** A sandbox mutation conflicts with an immutable binding, active checkpoint, or snapshot state. */
+export class SandboxConflictError extends HarnessError {
+  public constructor(reason: z.input<typeof sandboxConflictReasonSchema>, cause?: unknown) {
+    const safeReason = parseSandboxErrorMetadata(sandboxConflictReasonSchema, reason)
+    super({
+      code: 'SANDBOX_CONFLICT',
+      category: 'sandbox',
+      retriable: safeReason === 'checkpoint_busy',
+      message: 'Sandbox operation conflicts with current state.',
+      meta: { reason: safeReason },
+      cause,
+    })
+  }
+}
+
+/** A finite sandbox catalog, active allocation, or snapshot capacity was exhausted. */
+export class SandboxQuotaExceededError extends HarnessError {
+  public constructor(meta: z.input<typeof sandboxQuotaMetadataSchema>, cause?: unknown) {
+    super({
+      code: 'SANDBOX_QUOTA_EXCEEDED',
+      category: 'sandbox',
+      retriable: false,
+      message: 'Sandbox quota exceeded.',
+      meta: parseSandboxErrorMetadata(sandboxQuotaMetadataSchema, meta),
+      cause,
+    })
+  }
+}
+
+/** A known sandbox scope cannot be attached or safely recovered. */
+export class SandboxStateLostError extends HarnessError {
+  public constructor(
+    message: string,
+    meta: {
+      reason:
+        | 'lifecycle_state_missing'
+        | 'provider_missing'
+        | 'durable_workspace_required'
+        | 'durable_workspace_recovery_unavailable'
+        | 'owner_missing'
+        | 'scope_terminated'
+        | 'creation_indeterminate'
+      lifetime: 'session' | 'run'
+      adapter_id?: string
+    },
+    cause?: unknown,
+  ) {
+    super({ code: 'SANDBOX_STATE_LOST', category: 'sandbox', retriable: false, message, meta, cause })
   }
 }
 
@@ -109,6 +322,8 @@ export class ModelError extends HarnessError {
         | 'context_length_exceeded'
         | 'embedding_count_mismatch'
         | 'rerank_result_mismatch'
+        | 'invalid_provider_continuation'
+        | 'unsupported_request_option'
       retryKind?: 'none' | 'active' | 'deferred'
       retryAfterMs?: number
       retryAttempt?: number
@@ -122,23 +337,27 @@ export class ModelError extends HarnessError {
       providerBody?: unknown
       providerHeaders?: Record<string, string>
     },
-    cause?: unknown
+    cause?: unknown,
   ) {
     const retriable =
-      meta.reason === 'network'
-      || meta.reason === 'rate_limited'
-      || meta.reason === 'provider_unavailable'
-      || meta.status === 429
-      || meta.status === 408
-      || meta.status === 409
-      || (typeof meta.status === 'number' && meta.status >= 500)
+      meta.reason === 'network' ||
+      meta.reason === 'rate_limited' ||
+      meta.reason === 'provider_unavailable' ||
+      meta.status === 429 ||
+      meta.status === 408 ||
+      meta.status === 409 ||
+      (typeof meta.status === 'number' && meta.status >= 500)
     super({ code: 'MODEL_ERROR', category: 'model', retriable, message, meta, cause })
   }
 }
 
 /** Requested model capability is not available for alias/provider method. */
 export class ModelCapabilityError extends HarnessError {
-  public constructor(message: string, meta: { alias: string; method: string; reason: 'missing_capability' | 'method_missing' }, cause?: unknown) {
+  public constructor(
+    message: string,
+    meta: { alias: string; method: string; reason: 'missing_capability' | 'method_missing' },
+    cause?: unknown,
+  ) {
     super({ code: 'MODEL_CAPABILITY_ERROR', category: 'model', retriable: false, message, meta, cause })
   }
 }
@@ -152,14 +371,18 @@ export class ToolError extends HarnessError {
       retriable: cause instanceof HarnessError ? cause.retriable : false,
       message,
       meta,
-      cause
+      cause,
     })
   }
 }
 
 /** Tool reference was not found in registry, allowlist, or model response mapping. */
 export class ToolNotFoundError extends HarnessError {
-  public constructor(message: string, meta: { tool_id: string; where: 'registry' | 'agent_allowlist' | 'model_response' }, cause?: unknown) {
+  public constructor(
+    message: string,
+    meta: { tool_id: string; where: 'registry' | 'agent_allowlist' | 'model_response' },
+    cause?: unknown,
+  ) {
     super({ code: 'TOOL_NOT_FOUND', category: 'tool', retriable: false, message, meta, cause })
   }
 }
@@ -171,31 +394,33 @@ export class SkillNotFoundError extends HarnessError {
   }
 }
 
+/** Stable reasons emitted while loading or mounting one v4 Agent Skill. */
+export type SkillManifestErrorReason =
+  | 'invalid_skill_url'
+  | 'directory_missing'
+  | 'missing_skill_md'
+  | 'invalid_frontmatter'
+  | 'missing_description'
+  | 'invalid_name'
+  | 'name_mismatch'
+  | 'unsafe_skill_entry'
+  | 'invalid_skill_path'
+  | 'invalid_skill_encoding'
+  | 'skill_file_too_large'
+  | 'scan_limit_reached'
+  | 'readonly_mount_unsupported'
+
 /** Skill manifest/frontmatter/config validation failure. */
 export class SkillManifestError extends HarnessError {
   public constructor(
     message: string,
     meta: {
       directory?: string
-      reason:
-        | 'missing_skill_md'
-        | 'invalid_frontmatter'
-        | 'missing_description'
-        | 'invalid_name'
-        | 'name_mismatch'
-        | 'directory_missing'
-        | 'reserved_name'
-        | 'skill_not_declared'
-        | 'skill_read_tool_missing'
-        | 'skill_sandbox_unsupported'
-        | 'untrusted_project_skill'
-        | 'collision_shadowed'
-        | 'scan_limit_reached'
+      reason: SkillManifestErrorReason
       skill_id?: string
-      source?: string
-      agent_id?: string
+      path?: string
     },
-    cause?: unknown
+    cause?: unknown,
   ) {
     super({ code: 'SKILL_MANIFEST_ERROR', category: 'config', retriable: false, message, meta, cause })
   }
@@ -210,7 +435,15 @@ export class AgentNotFoundError extends HarnessError {
 
 /** Agent exceeded configured loop iteration/step budget. */
 export class AgentLoopBudgetError extends HarnessError {
-  public constructor(message: string, meta: { agent_id: string; reason: 'iterations_exceeded'; limit: number }, cause?: unknown) {
+  public constructor(
+    message: string,
+    meta: {
+      agent_id: string
+      reason: 'max_steps' | 'max_tool_calls' | 'max_subagent_calls' | 'max_depth'
+      limit: number
+    },
+    cause?: unknown,
+  ) {
     super({ code: 'AGENT_LOOP_BUDGET_EXCEEDED', category: 'validation', retriable: false, message, meta, cause })
   }
 }
@@ -232,7 +465,7 @@ export class DelegationPolicyError extends HarnessError {
       limit?: number
       model_alias?: string
     },
-    cause?: unknown
+    cause?: unknown,
   ) {
     super({ code: 'DELEGATION_POLICY_ERROR', category: 'validation', retriable: false, message, meta, cause })
   }
@@ -243,6 +476,134 @@ export class WorkflowNotFoundError extends HarnessError {
   public constructor(message: string, meta: { workflow_id: string }, cause?: unknown) {
     super({ code: 'WORKFLOW_NOT_FOUND', category: 'validation', retriable: false, message, meta, cause })
   }
+}
+
+/** A public approval resume does not match the current durable continuation. */
+export class ApprovalResumeError extends HarnessError {
+	public constructor(reason:
+		| 'invalid_resume' | 'run_mismatch' | 'input_mismatch' | 'interrupt_mismatch'
+		| 'revision_mismatch' | 'graph_mismatch' | 'session_identity_mismatch'
+		| 'invalid_checkpoint' | 'event_conflict' | 'decision_set_mismatch' | 'stale_continuation') {
+		super({ code: 'APPROVAL_RESUME_ERROR', category: 'validation', retriable: false,
+			message: 'Tool approval resume is invalid.', meta: { reason } })
+	}
+}
+
+/** One workflow call id was reused for another logical managed call. */
+export class WorkflowCallReplayConflictError extends HarnessError {
+	public constructor(meta: {
+		reason: 'operation_mismatch' | 'target_mismatch' | 'input_mismatch' | 'idempotency_key_mismatch' | 'options_mismatch'
+		workflow_id: string
+		call_id: string
+		expected_operation: WorkflowManagedCallOperation | 'child_task_start'
+		received_operation: WorkflowManagedCallOperation | 'child_task_start'
+		expected_target_kind: 'agent' | 'tool' | 'model'
+		expected_target_id: string
+		received_target_kind: 'agent' | 'tool' | 'model'
+		received_target_id: string
+	}) {
+		super({ code: 'WORKFLOW_CALL_REPLAY_CONFLICT', category: 'validation', retriable: false,
+			message: 'Workflow call id conflicts with an existing logical managed call.', meta })
+	}
+}
+
+/** One logical workflow invocation exhausted its agent-call budget. */
+export class WorkflowAgentCallBudgetError extends HarnessError {
+	public constructor(meta: { workflow_id: string; agent_id: string; reason: 'max_calls' | 'max_parallel'; limit: number }) {
+		super({ code: 'WORKFLOW_AGENT_CALL_BUDGET_EXCEEDED', category: 'validation', retriable: false,
+			message: 'Workflow agent-call budget exceeded.', meta })
+	}
+}
+
+/**
+ * A direct agent, tool, or model operation selected by workflow orchestration failed.
+ *
+ * Metadata contains only stable definition and call identity; provider, tool,
+ * and user content remain in the private cause chain.
+ *
+ * @example
+ * ```ts
+ * try {
+ *   await workflow.run(input)
+ * } catch (error) {
+ *   if (error instanceof WorkflowManagedCallError) console.error(error.meta.call_id)
+ * }
+ * ```
+ */
+export class WorkflowManagedCallError extends HarnessError {
+	public constructor(meta: {
+		reason: 'operation_failed'
+		workflow_id: string
+		call_id: string
+		operation: WorkflowManagedCallOperation
+		target_kind: 'agent' | 'tool' | 'model'
+		target_id: string
+	}, cause?: unknown) {
+		super({ code: 'WORKFLOW_MANAGED_CALL_FAILED', category: 'internal', retriable: false,
+			message: 'Workflow managed call failed.', meta, cause })
+	}
+}
+
+export interface HostNestedTargetStoredErrorV1 {
+	readonly code: 'HOST_NESTED_TARGET_FAILED'
+	readonly message: 'Host nested target failed.'
+	readonly category: 'internal'
+	readonly retriable: false
+	readonly meta: Readonly<{
+		reason: 'target_failed'; caller: import('../definitions/types.js').HarnessExecutionCaller; caller_run_id: string; tool_id: string; tool_call_id: string; call_id: string
+		target_kind: 'agent' | 'workflow'; target_id: string
+	}>
+}
+
+/** A target invoked by one host tool returned a failed terminal. */
+export class HostNestedTargetError extends HarnessError {
+	public constructor(meta: HostNestedTargetStoredErrorV1['meta'], cause?: unknown) {
+		super({ code: 'HOST_NESTED_TARGET_FAILED', category: 'internal', retriable: false,
+			message: 'Host nested target failed.', meta, cause })
+	}
+}
+
+/** A host nested call id was reused with another target or input. */
+export class HostNestedTargetReplayConflictError extends HarnessError {
+	public constructor(meta: {
+		reason: 'target_mismatch' | 'input_mismatch'; caller: import('../definitions/types.js').HarnessExecutionCaller; caller_run_id: string; tool_id: string; tool_call_id: string; call_id: string
+		expected_target_kind: 'agent' | 'workflow'; expected_target_id: string
+		received_target_kind: 'agent' | 'workflow'; received_target_id: string
+	}) {
+		super({ code: 'HOST_NESTED_TARGET_REPLAY_CONFLICT', category: 'validation', retriable: false,
+			message: 'Host nested call id conflicts with an existing logical target call.', meta })
+	}
+}
+
+/** A persisted target route no longer matches the dispatcher's immutable binding. */
+export class HarnessTargetRouteReceiptMismatchError extends HarnessError {
+	public constructor(meta: {
+		reason: 'route_receipt_mismatch'
+		target_kind: 'agent' | 'workflow'
+		target_id: string
+	}) {
+		super({
+			code: 'HARNESS_TARGET_ROUTE_RECEIPT_MISMATCH', category: 'validation', retriable: false,
+			message: 'Persisted target route does not match the current dispatcher binding.', meta,
+		})
+	}
+}
+
+/** A durable task id was reused with another stable start tuple. */
+export class ChildTaskConflictError extends HarnessError {
+	public constructor(meta: { reason: 'idempotency_key_reused'; workflow_id: string; parent_run_id: string; task_id: string; agent_id: string; call_id: string }) {
+		super({ code: 'CHILD_TASK_CONFLICT', category: 'validation', retriable: false,
+			message: 'Child-task idempotency key conflicts with an existing task.', meta })
+	}
+}
+
+/** A child-task record or live handle is unavailable in the requested state. */
+export class ChildTaskStateError extends HarnessError {
+	public constructor(meta: { reason: 'invalid_record'; task_id: string }
+		| { reason: 'recovery_required' | 'closing' | 'terminal'; task_id: string; workflow_id: string; agent_id: string }) {
+		super({ code: 'CHILD_TASK_STATE_ERROR', category: 'state', retriable: false,
+			message: 'Child task is not available in the requested state.', meta })
+	}
 }
 
 /** Session id not found in backing store. */
@@ -256,28 +617,59 @@ export class SessionNotFoundError extends HarnessError {
 export class SessionBusyError extends HarnessError {
   public constructor(
     message: string,
-    meta: { session_id: string; reason?: 'concurrent_run' | 'session_release_in_progress' | 'history_clear_during_run' | 'history_replace_during_run' },
-    cause?: unknown
+    meta: {
+      session_id: string
+      reason?:
+        | 'concurrent_run'
+        | 'session_release_in_progress'
+        | 'history_clear_during_run'
+        | 'history_replace_during_run'
+    },
+    cause?: unknown,
   ) {
     super({ code: 'SESSION_BUSY', category: 'session', retriable: true, message, meta, cause })
   }
 }
 
-/** State backend operation failed. */
+/** Harness storage or scoped-memory backend operation failed. */
 export class StateError extends HarnessError {
   public constructor(
     message: string,
     meta: {
       op:
-        | 'getSession' | 'upsertSession' | 'closeSession' | 'appendMessages' | 'listMessages'
-        | 'clearMessages' | 'replaceMessages' | 'createRun' | 'finishRun' | 'getRun' | 'listRuns' | 'appendEvents' | 'listEvents'
-        | 'contextCheckpointWrite' | 'contextCheckpointRead' | 'contextCheckpointList' | 'contextCheckpointDelete'
-        | 'memory.get' | 'memory.set' | 'memory.delete' | 'memory.list' | 'memory.search'
+        | 'getSession'
+        | 'upsertSession'
+        | 'closeSession'
+        | 'appendMessages'
+        | 'listMessages'
+        | 'clearMessages'
+        | 'replaceMessages'
+        | 'createRun'
+        | 'finishRun'
+        | 'getRun'
+        | 'listRuns'
+        | 'appendEvents'
+        | 'listEvents'
+        | 'acquireRun'
+		| 'replaceCheckpoint'
+		| 'finalizeRun'
+        | 'loadCheckpoint'
+        | 'commitCheckpoint'
+        | 'withSessionLock'
+        | 'registerWait'
+        | 'getWait'
+        | 'signalWait'
+        | 'cancelWait'
+        | 'memory.get'
+        | 'memory.set'
+        | 'memory.delete'
+        | 'memory.list'
+        | 'memory.search'
       reason?: 'duplicate_message_id' | string
       adapter?: 'memory' | string
       memory_provider?: string
     },
-    cause?: unknown
+    cause?: unknown,
   ) {
     super({ code: 'STATE_ERROR', category: 'state', retriable: true, message, meta, cause })
   }
@@ -305,7 +697,7 @@ export class WorkspaceError extends HarnessError {
       run_id?: string
       session_id?: string
     },
-    cause?: unknown
+    cause?: unknown,
   ) {
     const retriable = meta.reason === 'backend_failure' || meta.reason === 'cleanup_pending'
     super({ code: 'WORKSPACE_ERROR', category: 'workspace', retriable, message, meta, cause })
@@ -325,7 +717,7 @@ export class WorkspaceQuotaExceededError extends HarnessError {
       run_id?: string
       session_id?: string
     },
-    cause?: unknown
+    cause?: unknown,
   ) {
     super({ code: 'WORKSPACE_QUOTA_EXCEEDED', category: 'workspace', retriable: false, message, meta, cause })
   }
@@ -341,7 +733,7 @@ export class WorkspaceCleanupError extends HarnessError {
       remaining_refs?: readonly string[]
       retry_after_ms?: number
     },
-    cause?: unknown
+    cause?: unknown,
   ) {
     super({ code: 'WORKSPACE_CLEANUP_ERROR', category: 'workspace', retriable: true, message, meta, cause })
   }
@@ -349,36 +741,57 @@ export class WorkspaceCleanupError extends HarnessError {
 
 /** Timed execution budget expired. */
 export class OperationTimeoutError extends HarnessError {
-  public constructor(message: string, meta: { scope: 'run' | 'model' | 'tool' | 'sandbox_run' | 'memory' | 'workspace'; timeout_ms: number }, cause?: unknown) {
+  public constructor(
+    message: string,
+    meta: { scope: 'run' | 'model' | 'tool' | 'decision' | 'sandbox_run' | 'memory' | 'workspace' | 'child_task'; timeout_ms: number },
+    cause?: unknown,
+  ) {
     super({ code: 'OPERATION_TIMEOUT', category: 'timeout', retriable: true, message, meta, cause })
   }
 }
 
 /** Operation cancelled by abort signal or explicit cancellation path. */
 export class OperationCancelledError extends HarnessError {
-  public constructor(message: string, meta: { scope: 'run' | 'workflow' | 'agent' | 'model' | 'tool' | 'sandbox' | 'memory' | 'workspace' }, cause?: unknown) {
+  public constructor(
+    message: string,
+    meta: { scope: 'run' | 'workflow' | 'agent' | 'model' | 'tool' | 'sandbox' | 'memory' | 'workspace' | 'child_task' },
+    cause?: unknown,
+  ) {
     super({ code: 'OPERATION_CANCELLED', category: 'cancelled', retriable: false, message, meta, cause })
   }
 }
 
 /** MCP transport/protocol failure. */
 export class McpProtocolError extends HarnessError {
-  public constructor(message: string, meta: { tool_id: string; transport: 'stdio' | 'http'; phase: 'connect' | 'list' | 'call' }, cause?: unknown) {
+  public constructor(
+    message: string,
+    meta: { tool_id: string; transport: 'stdio' | 'http'; phase: 'connect' | 'list' | 'call' },
+    cause?: unknown,
+  ) {
     super({ code: 'MCP_PROTOCOL_ERROR', category: 'tool', retriable: true, message, meta, cause })
   }
 }
 
 /** Supported MCP HTTP authentication kinds. */
 export type McpAuthKind =
-  /** No authentication. */ 'none'
-  /** Bearer token auth. */ | 'bearer'
-  /** OAuth2 access token auth. */ | 'oauth2'
-  /** API key auth. */ | 'api_key'
-  /** Basic auth. */ | 'basic'
+  /** No authentication. */
+  | 'none'
+  /** Bearer token auth. */
+  | 'bearer'
+  /** OAuth2 access token auth. */
+  | 'oauth2'
+  /** API key auth. */
+  | 'api_key'
+  /** Basic auth. */
+  | 'basic'
 
 /** MCP authentication/authorization failure. */
 export class McpAuthError extends HarnessError {
-  public constructor(message: string, meta: { tool_id: string; auth_kind: McpAuthKind; status?: number }, cause?: unknown) {
+  public constructor(
+    message: string,
+    meta: { tool_id: string; auth_kind: McpAuthKind; status?: number },
+    cause?: unknown,
+  ) {
     const retriable = typeof meta.status === 'number' ? meta.status >= 500 : false
     super({ code: 'MCP_AUTH_ERROR', category: 'tool', retriable, message, meta, cause })
   }

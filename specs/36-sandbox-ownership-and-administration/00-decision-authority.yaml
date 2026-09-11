@@ -1,0 +1,48 @@
+decision_authority_version: 1
+default_allowed_classes: [D0, D1]
+decisions:
+  - decision_id: DEC-SOWN-BOUNDARY
+    class: D2
+    authority: repository_owner_standing_specification_approval
+    scope_refs: [REQ-SOWN-DELIVERY]
+    source_refs: [00-vision.md#DEC-SOWN-BOUNDARY]
+  - decision_id: DEC-SOWN-SELECTION
+    class: D2
+    authority: repository_owner_standing_specification_approval
+    scope_refs: [REQ-SOWN-POLICY]
+    source_refs: [01-behavior.md#DEC-SOWN-SELECTION]
+  - decision_id: DEC-SOWN-OWNER
+    class: D2
+    authority: repository_owner_standing_specification_approval
+    scope_refs: [REQ-SOWN-OWNER]
+    source_refs: [01-behavior.md#DEC-SOWN-OWNER]
+  - decision_id: DEC-SOWN-LAZY
+    class: D2
+    authority: repository_owner_standing_specification_approval
+    scope_refs: [REQ-SOWN-OWNER]
+    source_refs: [01-behavior.md#DEC-SOWN-LAZY]
+  - decision_id: DEC-SOWN-DURABLE
+    class: D2
+    authority: repository_owner_standing_specification_approval
+    scope_refs: [REQ-SOWN-DURABLE]
+    source_refs: [01-behavior.md#DEC-SOWN-DURABLE]
+  - decision_id: DEC-SOWN-ADMIN
+    class: D2
+    authority: repository_owner_standing_specification_approval
+    scope_refs: [REQ-SOWN-ADMIN]
+    source_refs: [02-administration.md#DEC-SOWN-ADMIN]
+  - decision_id: DEC-SOWN-BOUNDS
+    class: D2
+    authority: repository_owner_standing_specification_approval
+    scope_refs: [REQ-SOWN-BOUNDS]
+    source_refs: [02-administration.md#DEC-SOWN-BOUNDS]
+  - decision_id: DEC-SOWN-PURISTA
+    class: D2
+    authority: repository_owner_standing_specification_approval
+    scope_refs: [REQ-SOWN-PURISTA]
+    source_refs: [05-purista.md#DEC-SOWN-PURISTA]
+  - decision_id: DEC-SOWN-DELIVERY
+    class: D2
+    authority: repository_owner_standing_specification_approval
+    scope_refs: [REQ-SOWN-DELIVERY]
+    source_refs: [04-delivery.md#DEC-SOWN-DELIVERY]

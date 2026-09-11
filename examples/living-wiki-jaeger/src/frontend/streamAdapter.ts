@@ -1,16 +1,11 @@
-export type SseState = 'idle' | 'invoking workflow' | 'invoking agent' | 'SSE connected' | 'SSE reconnecting' | 'completed' | 'failed' | 'cancelled'
+import type { ExecutionEvent } from '@purista/harness'
 
-export type RunEvent = {
-  type: string
+export type SseState = 'idle' | 'invoking workflow' | 'invoking agent' | 'SSE connected' | 'SSE reconnecting' | 'completed' | 'interrupted' | 'failed' | 'cancelled'
+
+export type SseExecutionEvent = ExecutionEvent | {
+  type: 'transport.error'
   runId?: string
-  output?: Record<string, unknown>
-  result?: Record<string, unknown>
   error?: { message?: string }
-  delta?: string
-  toolId?: string
-  callId?: string
-  dropped?: number
-  [key: string]: unknown
 }
 
 export type ToolIndicator = {
@@ -31,10 +26,10 @@ export type StreamUpdate =
   | { kind: 'artifacts'; artifacts: unknown[] }
   | { kind: 'none' }
 
-export function adaptRunEvent(event: RunEvent): StreamUpdate[] {
+export function adaptExecutionEvent(event: SseExecutionEvent): StreamUpdate[] {
   const updates: StreamUpdate[] = []
   if (event.type === 'stream.overflow') updates.push({ kind: 'overflow', dropped: Number(event.dropped ?? 0) })
-  if ((event.type === 'model.delta' || event.type === 'answer.delta') && typeof event.delta === 'string') {
+  if (event.type === 'output.text.delta' && typeof event.delta === 'string') {
     updates.push({ kind: 'answer_delta', delta: event.delta })
   }
 
@@ -64,7 +59,9 @@ export function adaptRunEvent(event: RunEvent): StreamUpdate[] {
     })
   }
 
-  const payload = event.output ?? event.result
+  const payload = event.type === 'run.finished' && event.outcome.status === 'completed'
+    ? event.outcome.output
+    : event.type === 'output.object.snapshot' ? event.value : undefined
   const reviewRequest = readReviewRequest(payload) ?? readReviewRequest(event)
   if (reviewRequest) updates.push({ kind: 'review', reviewRequest })
 
@@ -74,7 +71,17 @@ export function adaptRunEvent(event: RunEvent): StreamUpdate[] {
   if (event.type === 'run.finished') {
     updates.push({
       kind: 'finished',
-      state: event.error?.message?.toLowerCase().includes('cancel') ? 'cancelled' : event.error ? 'failed' : 'completed',
+      state: event.outcome.status,
+      ...((event.outcome.status === 'failed' || event.outcome.status === 'cancelled') && event.outcome.error.message
+        ? { failedMessage: event.outcome.error.message }
+        : {})
+    })
+  }
+
+  if (event.type === 'transport.error') {
+    updates.push({
+      kind: 'finished',
+      state: 'failed',
       ...(event.error?.message ? { failedMessage: event.error.message } : {})
     })
   }

@@ -24,8 +24,8 @@ Returns `true` iff `value` is an instance of `HarnessError` (i.e. any error clas
 - code: `HARNESS_CONFIG_ERROR`
 - category: `config`
 - retriable: `false`
-- when: `defineHarness` validation fails (schema, capability mismatch, id collision, reserved prefix, missing model alias, agent/model capability mismatch, etc.); also thrown at workflow call time when `opts.durable` is supplied without an executable `.runtime(...)` (`reason:'durable_runtime_required'`).
-- meta: `path?: string` (config path), `id?: string`, `reason: string` (e.g. `'duplicate_adapter'`, `'duplicate_module'`, `'duplicate_definition'`, `'invalid_module'`, `'invalid_context_projection'`, `'missing_required_capability'`, `'invalid_workspace_store'`, `'invalid_context_checkpoint_store'`, `'durable_runtime_required'`, `'sqlite_unavailable'`).
+- when: `defineHarness` validation fails (schema, capability mismatch, id collision, reserved prefix, missing model alias, agent/model capability mismatch, etc.); also thrown at workflow call time when `opts.durable` is supplied without an executable `.storage(...)` (`reason:'durable_runtime_required'`).
+- meta: `path?: string` (config path), `id?: string`, `reason: string` (e.g. `'duplicate_adapter'`, `'duplicate_definition'`, `'catalog_has_no_targets'`, `'agent_cycle'`, `'model_name_collision'`, `'invalid_context_projection'`, `'missing_required_capability'`, `'invalid_workspace_store'`, `'invalid_context_checkpoint_store'`, `'durable_runtime_required'`, `'sqlite_unavailable'`).
 
 ### Testing-only errors
 
@@ -39,29 +39,39 @@ taxonomy and are never emitted by normal harness execution.
 - code: `VALIDATION_ERROR`
 - category: `validation`
 - retriable: `false`
-- when: Zod or JSON Schema parse failure on tool/agent/workflow/MCP input/output, memory key/value/scope/options/query, model response shape, structured object validation, embedding/rerank input invariants, or per-call `timeoutMs` invariants.
-- meta: `where: 'agent_input'|'agent_output'|'workflow_input'|'workflow_output'|'tool_input'|'tool_output'|'mcp_input'|'mcp_output'|'model_response'|'memory_key'|'memory_value'|'memory_scope'|'memory_write_options'|'memory_list_options'|'memory_search_query'|'message'|'session_history'|'invoke_options'|'eval_input'`, `issues: unknown`.
+- when: Standard Schema or JSON Schema validation failure on tool/agent/workflow/MCP input/output, memory key/value/scope/options/query, persisted model-request projection, model response shape, structured object validation, embedding/rerank input invariants, or per-call `timeoutMs` invariants.
+- meta: `where: 'agent_input'|'agent_output'|'workflow_input'|'workflow_output'|'tool_input'|'tool_output'|'mcp_input'|'mcp_output'|'model_request'|'model_response'|'memory_key'|'memory_value'|'memory_scope'|'memory_write_options'|'memory_list_options'|'memory_search_query'|'message'|'session_history'|'invoke_options'|'eval_input'`. The H4-008 resumable request projection uses exactly `{reason:'non_json_model_call_options'}` when optional call/provider options are not JSON. For public Standard Schema boundaries, `issues` is exactly `{count:number,truncated:boolean}`; vendor messages, paths, values and causes are private and omitted. Validator throws and non-JSON successful transforms map to the `InternalError` reasons locked in [39-standard-schema-boundaries](./39-standard-schema-boundaries/03-contracts/runtime-validation.md).
+- workflow/child-task invoke-option issues are content-free and exactly one of
+  `{reason:'invalid_workflow_call_id'}`, `{reason:'invalid_child_task_idempotency_key'}`,
+  `{reason:'child_task_idempotency_key_required'}`,
+  `{reason:'durable_continuable_child_task_unsupported'}`,
+  `{reason:'invalid_child_task_timeout'}`,
+  `{reason:'invalid_child_task_context'}`, or
+  `{reason:'approval_capable_child_task_unsupported'}`.
+- supplying `InvokeOptions.durable` to a target without `durable:true` uses the
+  content-free issue `{reason:'target_not_durable'}`.
 
 ### `PermissionDeniedError`
 - code: `PERMISSION_DENIED`
 - category: `permission`
 - retriable: `false`
-- when: An agent's permission policy denied a tool call (mode `'deny'`, an `'ask'` hook returned `'deny'`, or the hook itself failed). Recoverable in the loop: the harness informs the model via a tool result message and continues the run.
-- meta: `tool_name: string`, `agent_id: string`, `reason?: 'mode_deny'|'hook_deny'|'hook_failed'`.
+- when: An enforced coarse permission denied a tool occurrence. This is a recoverable safe tool result, while malformed policy decisions are terminal decision-evaluation failures.
+- constructor: `PermissionDeniedError(evidence, cause?)`.
+- message: fixed `Permission denied.`
+- meta: exactly `{evidence: DecisionEvidence}`, validated before serialization; causes are omitted.
 
 ### `PolicyDeniedError`
 - code: `POLICY_DENIED`
 - category: `permission`
 - retriable: `false`
-- when: configured governance denied a tool call, rejected required approval, or required approval without an approval provider. Recoverable in the default loop: the harness informs the model via a tool result message and continues the run.
-- meta: `tool_name: string`, `agent_id: string`, `policy_id: string`, `rule_id?: string`, `effect: 'deny'|'require_approval'`, `reason?: 'policy_deny'|'approval_rejected'|'approval_unavailable'`.
+- when: configured governance denied a tool call. Recoverable in the default loop: the harness informs the model via a tool result message and continues the run. A resumed rejected approval is represented by a recoverable `ToolError` with `tool_kind: 'approval'`.
+- constructor: `PolicyDeniedError(evidence, reason, cause?)`.
+- message: fixed `Tool call denied by governance policy.`
+- meta: exactly `{evidence: DecisionEvidence, reason: 'policy_deny'}`, validated before serialization; causes are omitted.
 
-### `PolicyEvaluationError`
-- code: `POLICY_EVALUATION_ERROR`
-- category: `permission`
-- retriable: `false`
-- when: a native governance predicate throws, an external policy adapter throws, or an adapter returns an invalid decision effect.
-- meta: `tool_name: string`, `agent_id: string`, `policy_id?: string`, `rule_id?: string`, `reason: 'adapter_failed'|'predicate_failed'|'invalid_decision'`.
+### Decision boundary errors
+
+`DecisionBlockedError` and `DecisionEvaluationError` are terminal non-retriable interceptor-category errors with fixed messages and validated evidence. The [decision evidence contract](./37-decision-boundaries/03-contracts/decisions.md) defines exact codes, fields and failure kinds for core and addons. GuardrailsConfigError remains addon-owned for configuration failures. ExternalWaitError adds invalid_snapshot for malformed adapter records; wait request/signal validation uses invalid_request.
 
 ### `SandboxError`
 - code: `SANDBOX_ERROR`
@@ -74,8 +84,24 @@ taxonomy and are never emitted by normal harness execution.
 - code: `SANDBOX_NO_EXECUTOR`
 - category: `sandbox`
 - retriable: `false`
-- when: `SandboxSession.exec` is invoked on a session whose `executor === 'unavailable'` (e.g. the in-memory files-only fallback when `just-bash` is not installed).
+- when: `SandboxSession.exec` is invoked on a session whose `executor === 'unavailable'` (e.g. the in-memory files-and-search fallback when `just-bash` is not installed).
 - meta: `session_id: string`.
+
+### `SandboxStateLostError`
+- code: `SANDBOX_STATE_LOST`
+- category: `sandbox`
+- retriable: `false`
+- when: a Sandbox adapter lacks lifecycle state for an existing scope or
+  authoritatively reports that known provider compute is missing, and Harness
+  has not established and authorized recovery from a committed durable
+  workspace.
+- meta: `reason: 'lifecycle_state_missing'|'provider_missing'|'durable_workspace_required'|'durable_workspace_recovery_unavailable'`, `lifetime: 'session'|'run'`, `adapter_id: string`.
+- forbidden meta: logical scope fields, tenant/principal values, generation,
+  lease/fence values, provider references, checkpoint references, paths,
+  commands, content, credentials, and provider response bodies.
+
+Provider outage, timeout, quota, unauthorized, and cancellation retain their
+existing error classification and must not be converted to state loss.
 
 ### `ModelError`
 - code: `MODEL_ERROR`
@@ -143,15 +169,25 @@ tokens, raw headers, or attachments.
 - code: `AGENT_LOOP_BUDGET_EXCEEDED`
 - category: `validation`
 - retriable: `false`
-- when: default loop iterations exceed the effective agent budget (`agent.maxSteps` when configured, otherwise `defaults.agentMaxIterations`).
-- meta: `agent_id: string`, `reason: 'iterations_exceeded'`, `limit: number`.
+- when: the standard agent loop would exceed the effective local step, tool
+  call, subagent call, or delegation-depth budget.
+- meta: exactly
+  `{agent_id:string,reason:'max_steps'|'max_tool_calls'|'max_subagent_calls'|'max_depth',limit:number}`.
+- the operation that would exceed the limit does not start; metadata never
+  includes input, output, prompts, messages, tool arguments, or provider data.
 
-### `DelegationPolicyError`
-- code: `DELEGATION_POLICY_ERROR`
-- category: `validation`
-- retriable: `false`
-- when: a workflow-local `ctx.agents.<id>(...)` call violates the workflow delegation policy or the effective delegation budgets.
-- meta: `workflow_id: string`, `agent_id: string`, `reason: 'delegation_disabled'|'agent_not_allowed'|'max_child_agent_calls_exceeded'|'max_parallel_child_agent_calls_exceeded'|'max_delegation_depth_exceeded'|'model_alias_not_allowed'`, `limit?: number`, `model_alias?: string`.
+### `AgentAdmissionRejectedError`
+- code: `AGENT_ADMISSION_REJECTED`
+- category: `admission`
+- retriable: `true`
+- when: a bounded `AgentAdmission` cannot accept another root execution tree;
+  the built-in in-memory adapter uses this when its FIFO has reached
+  `maxQueued`.
+- message: fixed `Agent admission capacity is exhausted.`
+- meta: exactly `{reason:'capacity_exhausted',retryAfterMs?:number}`; a present
+  retry delay is a positive safe integer.
+- forbidden meta: input, output, queue contents, prompt, message, credentials,
+  tenant/principal values, or provider data.
 
 ### `WorkflowNotFoundError`
 - code: `WORKFLOW_NOT_FOUND`
@@ -160,11 +196,154 @@ tokens, raw headers, or attachments.
 - when: session accessed via unknown workflow id.
 - meta: `workflow_id: string`.
 
+### `ApprovalResumeError`
+- code: `APPROVAL_RESUME_ERROR`
+- category: `validation`
+- retriable: `false`
+- message: fixed `Tool approval resume is invalid.`
+- when: a public approval resume is malformed, does not identify the current
+  root/session/interruption/deployment graph, conflicts with a prior event, has
+  an incomplete decision set, or addresses a consumed continuation.
+- meta: exactly `{reason:'invalid_resume'|'run_mismatch'|'input_mismatch'|'interrupt_mismatch'|'revision_mismatch'|'graph_mismatch'|'session_identity_mismatch'|'invalid_checkpoint'|'event_conflict'|'decision_set_mismatch'|'stale_continuation'}`.
+- reason precedence is exact: strict resume/options/identifier and raw-JSON
+  validation; session, run, and root target; canonical pre-transform root input;
+  selection by interrupt id of the terminal receipt, current pending interrupt,
+  or retained immediately-prior receipt; revision; graph and session identity;
+  checkpoint kind/version; selected receipt or pending-event replay/conflict;
+  decision-set equality. A valid input for the right run whose canonical JSON wire value
+  differs from the stored root input uses `input_mismatch`. A new event for a
+  consumed interrupt uses `stale_continuation` after prior-event handling. On a
+  pending run, any well-formed interrupt id that selects neither the current
+  interrupt nor the retained immediately-prior receipt is
+  `stale_continuation`; the bounded contract does not retain older receipts.
+  Metadata never
+  includes event ids, decisions, reviewer reason, checkpoint data, digests,
+  input, output, prompt, message, credentials, or provider continuation.
+
+### `WorkflowCallReplayConflictError`
+- code: `WORKFLOW_CALL_REPLAY_CONFLICT`
+- category: `validation`
+- retriable: `false`
+- when: one workflow invocation reuses a `callId` across direct agent, tool, or
+  model calls or child-task starts with another operation, target, canonical JSON wire input,
+  normalized options, or idempotency key. Equal concurrent tuples coalesce and
+  do not throw this error.
+- message: fixed `Workflow call id conflicts with an existing logical managed call.`
+- meta: exactly `{reason:'operation_mismatch'|'target_mismatch'|'input_mismatch'|'idempotency_key_mismatch'|'options_mismatch',workflow_id:string,call_id:string,expected_operation:WorkflowManagedCallOperation|'child_task_start',received_operation:WorkflowManagedCallOperation|'child_task_start',expected_target_kind:'agent'|'tool'|'model',expected_target_id:string,received_target_kind:'agent'|'tool'|'model',received_target_id:string}`. `WorkflowManagedCallOperation` is the closed operation union in [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md).
+- when multiple fields differ, reason precedence is operation, target, input,
+  idempotency key, then remaining normalized options.
+- forbidden meta: input, output, canonical JSON, digests, prompts, messages,
+  credentials, or provider payloads.
+
+### `WorkflowAgentCallBudgetError`
+- code: `WORKFLOW_AGENT_CALL_BUDGET_EXCEEDED`
+- category: `validation`
+- retriable: `false`
+- when: one logical workflow invocation exceeds its effective total agent-call
+  budget, or a direct awaited agent call cannot enter immediately because the
+  effective parallel ceiling is full or a queued child-task turn has priority.
+- message: fixed `Workflow agent-call budget exceeded.`
+- meta: exactly `{workflow_id:string,agent_id:string,reason:'max_calls'|'max_parallel',limit:number}`.
+- forbidden meta: input, output, call id, idempotency key, queue contents,
+  prompts, messages, credentials, and provider payloads.
+
+### `WorkflowManagedCallError`
+- code: `WORKFLOW_MANAGED_CALL_FAILED`
+- category: `internal`
+- retriable: `false`
+- when: an agent, tool, or model selected by a workflow managed call returns or
+  throws a failure after admission. Transported/provider error data remains an
+  untrusted private cause and is never reconstructed as its remote class.
+- message: fixed `Workflow managed call failed.`
+- meta: exactly `{reason:'operation_failed',workflow_id:string,call_id:string,operation:WorkflowManagedCallOperation,target_kind:'agent'|'tool'|'model',target_id:string}`.
+- forbidden meta: transported code, category, message or metadata; input,
+  output, canonical JSON, prompts, credentials, and provider payloads.
+
+### `WorkflowChildTargetError`
+- code: `WORKFLOW_CHILD_TARGET_FAILED`
+- category: `internal`
+- retriable: `false`
+- when: an agent run owned by a workflow child task returns a validated
+  `failed` terminal. Direct awaited agent/tool/model calls instead use
+  `WorkflowManagedCallError`.
+- message: fixed `Workflow child target failed.`
+- meta: exactly `{reason:'child_task_failed',workflow_id:string,call_id:string,task_id:string,target_kind:'agent',target_id:string}`.
+- forbidden meta: transported code, category, message or metadata; input,
+  output, canonical JSON, prompts, credentials, and provider payloads.
+
+### `HostNestedTargetError`
+- code: `HOST_NESTED_TARGET_FAILED`
+- category: `internal`
+- retriable: `false`
+- when: a target invoked by a host tool returns a validated `failed` terminal.
+  The transported error remains an untrusted private cause and is never
+  reconstructed as its remote class.
+- message: fixed `Host nested target failed.`
+- meta: exactly `{reason:'target_failed',agent_id:string,tool_id:string,tool_call_id:string,call_id:string,target_kind:'agent'|'workflow',target_id:string}`.
+- forbidden meta: transported code, category, message or metadata; input,
+  output, canonical JSON, route receipt or digest, prompts, credentials, and
+  provider payloads.
+
+### `HostNestedTargetReplayConflictError`
+- code: `HOST_NESTED_TARGET_REPLAY_CONFLICT`
+- category: `validation`
+- retriable: `false`
+- when: one host-tool invocation reuses a `callId` with another target or
+  canonical JSON wire input. Equal concurrent tuples coalesce and do not throw
+  this error.
+- message: fixed `Host nested call id conflicts with an existing logical target call.`
+- meta: exactly `{reason:'target_mismatch'|'input_mismatch',agent_id:string,tool_id:string,tool_call_id:string,call_id:string,expected_target_kind:'agent'|'workflow',expected_target_id:string,received_target_kind:'agent'|'workflow',received_target_id:string}`.
+- when target and input both differ, target mismatch has precedence. A current
+  route-receipt mismatch is evaluated after target and before input and uses
+  `HarnessTargetRouteReceiptMismatchError`.
+- forbidden meta: input, output, canonical JSON, route receipt or digest,
+  prompts, credentials, and provider payloads.
+
+### `HarnessTargetRouteReceiptMismatchError`
+- code: `HARNESS_TARGET_ROUTE_RECEIPT_MISMATCH`
+- category: `validation`
+- retriable: `false`
+- when: a well-formed persisted target-route receipt has no byte-exact match in
+  the current immutable dispatcher binding table.
+- message: fixed `Persisted target route does not match the current dispatcher binding.`
+- meta: exactly `{reason:'route_receipt_mismatch',target_kind:'agent'|'workflow',target_id:string}`.
+- forbidden meta: route receipt, route address, binding or contract digest,
+  input, output, canonical JSON, prompts, credentials, and provider payloads.
+
+### `ChildTaskConflictError`
+- code: `CHILD_TASK_CONFLICT`
+- category: `validation`
+- retriable: `false`
+- when: a durable task id derived from `(parentRunId,idempotencyKey)` already
+  exists but its persisted start tuple differs by call id, agent, input, mode,
+  timeout, or context.
+- message: fixed `Child-task idempotency key conflicts with an existing task.`
+- meta: exactly `{reason:'idempotency_key_reused',workflow_id:string,parent_run_id:string,task_id:string,agent_id:string,call_id:string}`.
+- `agent_id` and `call_id` are always the received attempted values, never the
+  values from the existing record.
+- forbidden meta: idempotency key, input, output, canonical JSON, hashes,
+  prompts, messages, credentials, and provider payloads.
+
+### `ChildTaskStateError`
+- code: `CHILD_TASK_STATE_ERROR`
+- category: `state`
+- retriable: `false`
+- when: a matching durable task is running but not resident in this Harness
+  instance, a persisted child-task record is malformed, or an operation is
+  attempted after the continuable task begins closing or reaches terminal
+  state.
+- message: fixed `Child task is not available in the requested state.`
+- meta: exactly the discriminated union
+  `{reason:'invalid_record',task_id:string}` or
+  `{reason:'recovery_required'|'closing'|'terminal',task_id:string,workflow_id:string,agent_id:string}`.
+- forbidden meta: input, output, task error details, idempotency key, prompts,
+  messages, credentials, and provider payloads.
+
 ### `SessionNotFoundError`
 - code: `SESSION_NOT_FOUND`
 - category: `session`
 - retriable: `false`
-- when: StateStore returned undefined for an id that was expected to exist (rare; mostly internal).
+- when: HarnessStorage returned undefined for an id that was expected to exist (rare; mostly internal).
 - meta: `session_id: string`.
 
 ### `SessionBusyError`
@@ -178,8 +357,8 @@ tokens, raw headers, or attachments.
 - code: `STATE_ERROR`
 - category: `state`
 - retriable: `true`
-- when: StateStore, context-checkpoint, or memory backend failure, or duplicate message id on `appendMessages`/`replaceMessages`. Also propagated when `createRun` fails (in which case the harness emits no spans/events for that run).
-- meta: `op: 'getSession'|'upsertSession'|'closeSession'|'appendMessages'|'listMessages'|'clearMessages'|'replaceMessages'|'createRun'|'finishRun'|'getRun'|'listRuns'|'appendEvents'|'listEvents'|'contextCheckpointWrite'|'contextCheckpointRead'|'contextCheckpointList'|'contextCheckpointDelete'|'memory.get'|'memory.set'|'memory.delete'|'memory.list'|'memory.search'`, `reason?: 'duplicate_message_id'|'terminal_run_exists'|'checkpoint_conflict'|string`, `adapter?: 'memory'|string`, `memory_provider?: string`.
+- when: HarnessStorage, context-checkpoint, or memory backend failure, or duplicate message id on `appendMessages`/`replaceMessages`. Also propagated when `createRun` fails (in which case the harness emits no spans/events for that run).
+- meta: `op: 'getSession'|'invoke'|'upsertSession'|'closeSession'|'appendMessages'|'listMessages'|'clearMessages'|'replaceMessages'|'createRun'|'finishRun'|'finalizeRun'|'getRun'|'listRuns'|'appendEvents'|'listEvents'|'acquireRun'|'loadCheckpoint'|'commitCheckpoint'|'replaceCheckpoint'|'contextCheckpointWrite'|'contextCheckpointRead'|'contextCheckpointList'|'contextCheckpointDelete'|'memory.get'|'memory.set'|'memory.delete'|'memory.list'|'memory.search'`, `reason?: 'duplicate_message_id'|'terminal_run_exists'|'checkpoint_conflict'|'run_conflict'|'run_not_found'|'acquisition_conflict'|'lease_conflict'|'active_lease_requires_finalize'|'event_conflict'|'event_sequence_conflict'|'instance_closed'|string`, `adapter?: 'memory'|string`, `memory_provider?: string`.
 
 ### `WorkspaceError`
 - code: `WORKSPACE_ERROR`
@@ -207,14 +386,20 @@ tokens, raw headers, or attachments.
 - category: `timeout`
 - retriable: `true`
 - when: any timed budget elapsed.
-- meta: `scope: 'run'|'model'|'tool'|'sandbox_run'|'memory'|'workspace'`, `timeout_ms: number`.
+- meta: `scope: 'run'|'model'|'tool'|'decision'|'sandbox_run'|'memory'|'workspace'|'child_task'|'evaluation_run'|'evaluation_task'|'evaluation_scorer'`, `timeout_ms: number`.
 
 ### `OperationCancelledError`
 - code: `OPERATION_CANCELLED`
 - category: `cancelled`
 - retriable: `false`
 - when: AbortSignal aborted (including pre-aborted signals at entry points).
-- meta: `scope: 'run'|'workflow'|'agent'|'model'|'tool'|'sandbox'|'memory'|'workspace'`.
+- meta: `scope: 'run'|'workflow'|'agent'|'model'|'tool'|'sandbox'|'memory'|'workspace'|'child_task'|'evaluation'`.
+
+Generic evaluation callbacks use these existing error classes as abort reasons.
+The runner serializes terminal callback errors into the content-free
+`EvaluationErrorRecord` from
+[35-generic-evaluation-runs](./35-generic-evaluation-runs.md); it does not add an
+evaluation-specific public error class.
 
 ### `McpProtocolError`
 - code: `MCP_PROTOCOL_ERROR`

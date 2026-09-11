@@ -1,0 +1,41 @@
+tickets:
+  TICKET-001:
+    path: "wave_01_foundation/tickets/TICKET-001-foundation.md"
+    wave: 1
+    lifecycle: "accepted"
+  TICKET-002:
+    path: "wave_02_governance/tickets/TICKET-002-governance.md"
+    wave: 2
+    lifecycle: "accepted"
+  TICKET-003:
+    path: "wave_03_providers/tickets/TICKET-003-providers.md"
+    wave: 3
+    lifecycle: "accepted"
+  TICKET-004:
+    path: "wave_04_tools/tickets/TICKET-004-tools.md"
+    wave: 4
+    lifecycle: "accepted"
+  TICKET-005:
+    path: "wave_05_rails/tickets/TICKET-005-rails.md"
+    wave: 5
+    lifecycle: "accepted"
+  TICKET-006:
+    path: "wave_06_waits/tickets/TICKET-006-waits.md"
+    wave: 6
+    lifecycle: "accepted"
+  TICKET-007:
+    path: "wave_07_review/tickets/TICKET-007-review.md"
+    wave: 7
+    lifecycle: "accepted"
+  TICKET-008:
+    path: "wave_08_consumers/tickets/TICKET-008-consumers.md"
+    wave: 8
+    lifecycle: "accepted"
+  TICKET-009:
+    path: "wave_09_docs/tickets/TICKET-009-docs.md"
+    wave: 9
+    lifecycle: "accepted"
+  TICKET-010:
+    path: "wave_10_cleanup/tickets/TICKET-010-cleanup.md"
+    wave: 10
+    lifecycle: "accepted"

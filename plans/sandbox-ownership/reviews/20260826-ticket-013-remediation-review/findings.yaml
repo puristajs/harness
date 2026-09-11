@@ -1,0 +1,22 @@
+findings:
+  - id: REVIEW-013-005
+    severity: blocking
+    category: TRACEABILITY
+    root_cause: tooling_gap
+    status: open
+    owner_ticket: TICKET-013
+    route: planner
+    spec_refs:
+      - ai-harness/plans/sandbox-ownership/wave_02_private_catalogs/tickets/TICKET-013-packed_verification.md#Handoff
+      - ai-harness/specs/36-sandbox-ownership-and-administration/00-vision.md#REQ-SOWN-DELIVERY
+    impacted_path: "independent review and Wave 3/11 consumers of TICKET-013 evidence"
+    location: "ai-harness/plans/implementation-evidence/TICKET-013.json:7-56"
+    expected: "The evidence must use checker-supported artifact kinds, consumer disposition, and architecture status while pinning the current nested plan digest."
+    actual: "The plan digest is correct, but changed_artifacts still use verification/fixture, consumer_impact uses verification_owned, and architecture_checks uses blocked_as_designed; all are rejected by the configured checker."
+    evidence: "The remediation run of check_implementation_evidence.mjs reports each listed TICKET-013 field as invalid."
+    fix_boundary: "Controller-owned implementation evidence and nested-plan evidence-check wiring only; do not change product code."
+    required_verification:
+      - "Correct or regenerate TICKET-013 evidence using the configured schema's allowed values."
+      - "Run a nested-plan-compatible evidence check, or separately record the flat-layout checker limitation."
+      - "After an explicitly prepopulated workspace-local cache is supplied, run the required source proof without network or project dependency writes."
+    agent_instruction: "Keep the exact current digest, correct only evidence-schema fields, and do not mark this ticket accepted until the evidence check and real staged source proof are both available."

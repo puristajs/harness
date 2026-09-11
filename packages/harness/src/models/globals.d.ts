@@ -8,13 +8,9 @@ interface AbortSignal {
 
 declare const AbortSignal: {
   abort(reason?: unknown): AbortSignal
+  any(signals: readonly AbortSignal[]): AbortSignal
 }
 
 declare const crypto: {
   getRandomValues<T extends ArrayBufferView>(array: T): T
-}
-
-declare const process: {
-  stdout: { write(chunk: string): unknown }
-  env: Record<string, string | undefined>
 }

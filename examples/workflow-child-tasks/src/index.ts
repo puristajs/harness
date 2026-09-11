@@ -1,54 +1,77 @@
-import { defineHarness, inMemorySandbox } from '@purista/harness'
+import { defineAgent, defineHarness, defineWorkflow } from '@purista/harness'
+import { FakeModelProvider } from '@purista/harness/testing'
 import { z } from 'zod'
 
-/**
- * A real application could replace these deterministic handlers with model-loop
- * agents. Keeping them local makes the example runnable without credentials.
- */
+const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
+const reviewInput = z.object({ documentId: z.string() })
+const reviewOutput = z.object({ documentId: z.string(), verdict: z.string() })
+
+const reviewer = defineAgent('reviewer', {
+  model: 'chat',
+  input: reviewInput,
+  output: reviewOutput,
+  instructions: 'Review the document and return its id and verdict.',
+  prompt: input => ({ role: 'user', content: `Review ${input.documentId}.` }),
+})
+
+const clarifier = defineAgent('clarifier', {
+  model: 'chat',
+  input: z.string(),
+  output: z.string(),
+  instructions: 'Answer each private follow-up concisely.',
+  prompt: input => ({ role: 'user', content: input }),
+})
+
+const startReview = defineWorkflow('startReview', {
+  input: reviewInput,
+  output: z.object({ taskId: z.string() }),
+  agents: [reviewer, clarifier],
+  agentCalls: { maxParallel: 2 },
+  async handler(context) {
+    const task = await context.childTasks.start('reviewer', { documentId: context.input.documentId }, {
+      callId: 'backgroundReview',
+    })
+    return { taskId: task.id }
+  },
+})
+
+const privateFollowUp = defineWorkflow('privateFollowUp', {
+  input: z.string(),
+  output: z.string(),
+  agents: [reviewer, clarifier],
+  async handler(context) {
+    const task = await context.childTasks.start('clarifier', context.input, {
+      callId: 'privateClarification',
+      mode: 'continuable',
+    })
+    await task.send('follow-up')
+    return (await task.close()) ?? 'no response'
+  },
+})
+
+const reviewHarness = defineHarness({ name: 'workflowChildTasksExample' })
+  .addWorkflow(startReview)
+  .addWorkflow(privateFollowUp)
+
+/** Creates the runnable child-task example with deterministic model responses. */
 export function createReviewHarness() {
-  return defineHarness()
-    .sandbox(inMemorySandbox())
-    .models({ local: { provider: { id: 'example', genAiSystem: 'example' }, model: 'example', capabilities: ['object'] } })
-    .agents(({ agent }) => ({
-      reviewer: agent({
-        model: 'local', input: z.object({ documentId: z.string() }), output: z.object({ documentId: z.string(), verdict: z.string() }),
-        builtinTools: false, instructions: 'Review the document.',
-        handler: async ({ input }) => ({ documentId: input.documentId, verdict: 'approved' })
-      }),
-      clarifier: agent({
-        model: 'local', input: z.string(), output: z.string(), builtinTools: false, instructions: 'Keep private notes.',
-        handler: async ({ input, history }) => `${(await history.list()).length}:${input}`
-      })
-    }))
-    .workflows(({ workflow }) => ({
-      start_review: workflow({
-        input: z.object({ documentId: z.string() }), output: z.object({ taskId: z.string() }),
-        delegation: { agents: ['reviewer', 'clarifier'], maxParallelChildAgentCalls: 2 },
-        handler: async (ctx) => {
-          const task = await ctx.childTasks.start('reviewer', { documentId: ctx.input.documentId })
-          return { taskId: task.id }
-        }
-      }),
-      private_follow_up: workflow({
-        input: z.string(), output: z.string(), delegation: { agents: ['reviewer', 'clarifier'] },
-        handler: async (ctx) => {
-          const task = await ctx.childTasks.start('clarifier', ctx.input, { mode: 'continuable' })
-          await task.send('follow-up')
-          return (await task.close()) ?? 'no response'
-        }
-      })
-    }))
-    .build()
+  const provider = new FakeModelProvider({ strict: true })
+  provider.enqueueObject({ object: { documentId: 'DOC-42', verdict: 'approved' }, usage, finishReason: 'stop' })
+  provider.enqueueText({ content: 'first response', usage, finishReason: 'stop' })
+  provider.enqueueText({ content: 'follow-up response', usage, finishReason: 'stop' })
+  return reviewHarness.getInstance({ models: { chat: { provider, model: 'example' } } })
 }
 
 export async function runExample(): Promise<void> {
-  const harness = createReviewHarness()
+  const harness = await createReviewHarness()
   const session = await harness.getSession('review-demo')
-  const { taskId } = await session.workflows.start_review.prompt({ documentId: 'DOC-42' })
-  const review = await (await session.childTasks.get(taskId))?.result()
-  const followUp = await session.workflows.private_follow_up.prompt('first note')
-  console.log({ review, followUp })
-  await harness.shutdown()
+  const start = await session.workflows.startReview.run({ documentId: 'DOC-42' })
+  if (start.status !== 'completed') throw new Error('Review workflow interrupted.')
+  const review = await (await session.childTasks.get(start.output.taskId))?.result()
+  const followUp = await session.workflows.privateFollowUp.run('first note')
+  if (followUp.status !== 'completed') throw new Error('Follow-up workflow interrupted.')
+  console.log({ review, followUp: followUp.output })
+  await harness.close()
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

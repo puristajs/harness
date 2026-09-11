@@ -1,557 +1,221 @@
-# Public API Overview
+# Public API
 
-This page summarizes the public surface most application developers need. The
-interfaces below are the supported API entry points for applications and
-adapter packages.
+`@purista/harness` separates portable, immutable definitions from runtime
+bindings. TypeScript derives the callable targets and required adapters from the
+definition graph.
 
-## Packages
+## Definition helpers
 
-| Package | Purpose |
-|---|---|
-| `@purista/harness` | Core runtime: builder, sessions, agents, workflows, tools, sandbox, state, telemetry, errors. |
-| `@purista/harness-openai` | OpenAI model provider adapter. |
-| `@purista/harness-anthropic` | Anthropic model provider adapter. |
-| `@purista/harness-bedrock` | Amazon Bedrock model provider adapter. |
-| `@purista/harness-azure-foundry` | Azure AI Foundry model provider adapter. |
-| `@purista/harness-agent-plugins` | Opt-in Agent Plugins v1 inspection and explicit, application-owned Skill/MCP bindings. |
+| Helper | Purpose |
+| --- | --- |
+| `defineTool(id, options)` | Native TypeScript tool with typed input, output, handler, and declared resources. |
+| `defineSkill(id, options)` | Agent Skill directory and its required runtimes. |
+| `defineMcpServer(id, options)` | Transport-free MCP server and selected typed tools. |
+| `defineAgent(id, options)` | Standard bounded agent loop with tools, skills, subagents, policy, and guardrails. |
+| `defineWorkflow(id, options)` | Typed application orchestration over exact agent and model references. |
+| `defineCatalog(id, options)` | Optional reusable package of explicitly exported definitions. |
+| `defineHarness(options)` | Root definition with composition, inspection, and runtime creation. |
 
-## Application API
-
-```ts
-const harness = defineHarness({ name: 'my-service' })
-  .runtime(...)
-  .memory(...)
-  .requires(...)
-  .models(...)
-  .tools(...)
-  .skills(...)
-  .agents(...)
-  .workflows(...)
-  .build()
-
-const session = await harness.getSession('tenant:user:thread')
-const answer = await session.agents.answerer.prompt(input)
-const report = await session.workflows.research_report.prompt(input)
-await harness.shutdown()
-```
-
-`runtime(...)`, `memory(...)`, and `requires(...)` are optional. Omit them for
-the simple in-process defaults.
-
-## Main Types
-
-| Type | What It Represents |
-|---|---|
-| `Harness<S>` | Built runtime with `getSession`, `shutdown`, and `$infer`. |
-| `HarnessInspection` | Data-only adapter and capability snapshot returned by `harness.inspect()`. |
-| `Session<S>` | Operational context exposing `agents`, `workflows`, `childTasks`, `history`, `memory`, `getRunSummary`, `release`, and destructive `close`. |
-| `AgentInvoker` | `prompt(input)` and `stream(input)` for direct agent runs. |
-| `WorkflowInvoker` | `prompt(input)` and `stream(input)` for workflow runs. |
-| `WorkflowDelegationPolicy` | Optional per-workflow child-agent allowlist, fan-out budgets, and model-alias policy. |
-| `WorkflowChildTasks` / `ChildTaskHandle` | Typed workflow-owned isolated background tasks with lifecycle status and cancellation. |
-| `ContinuableChildTaskHandle` | In-process isolated task conversation with serialized `send(...)` turns and explicit `close()`. |
-| `GovernanceConfig` | Optional policy layer for tool exposure, tool-call deny/audit, shadow mode, and approvals. |
-| `GovernancePolicyEvaluator` | Adapter interface for external policy engines. |
-| `GovernanceDecision` | Normalized execution policy decision returned by native rules or adapters, including decision evidence fields. |
-| `ModelProvider` | Adapter interface implemented by provider packages for text, object, multimodal, embedding, and rerank operations. |
-| `StateStore` | Persistence port for sessions, runs, messages, and events. |
-| `MemoryAdapter` / `MemoryFacade` | Pluggable agent memory port and scoped runtime facade. |
-| `Sandbox` / `SandboxSession` | File and optional command execution boundary. |
-| `ReadOnlyMountCapableSandboxSession` | Sandbox session that can stage immutable reviewed package assets for trusted stdio plugins. |
-| `ToolDefinition` | TypeScript, MCP stdio, or MCP HTTP tool config. |
-| `SkillDefinition` / `ResolvedSkill` | Skill directory binding and parsed runtime metadata. |
-| `DiscoverSkillsOptions` / `DiscoveredSkills` | Client-style skill discovery input and diagnostics. |
-| `AdapterCapability` | Stable non-model adapter capability id such as `sandbox.snapshot` or `runtime.checkpoint`. |
-| `DurableRuntime` | Optional checkpoint/lease runtime contract for durable use cases. |
-| `DurableWorkspaceStore` | Optional replay workspace contract linking runtime checkpoints to persisted workspace state. |
-| `DurableReplayCheckpoint` | Adapter-neutral checkpoint payload that carries `workspaceRef`, `checkpointRef`, and optional `snapshotRef`. |
-| `FeedbackRecord` | Optional feedback signal attached to harness-native ids. |
-
-## Adapter Capabilities
+Definitions are frozen identity-bearing values. Use direct references throughout
+the graph:
 
 ```ts
-const harness = defineHarness()
-  .runtime(inMemoryDurableRuntime())
-  .workspaceStore(durableWorkspace)
-  .requires(['sandbox.fs', 'memory.session', 'runtime.checkpoint', 'runtime.workspace_checkpoint', 'workspace_store.durable'])
-  .models(...)
-  .agents(...)
-  .build()
+import { defineAgent, defineHarness, defineTool } from '@purista/harness'
+import { z } from 'zod'
 
-const inspection = harness.inspect()
-console.log(inspection.capabilities)
-```
-
-`harness.inspect()` is synchronous and data-only. It does not open sessions,
-call networks, or mutate adapters. Missing required adapter capabilities fail
-during `build()` with `HarnessConfigError`. Memory adapter capabilities use the
-same policy path, for example `memory.session`, `memory.search`, and
-`memory.persistent`.
-
-## Tool Definitions
-
-```mermaid
-flowchart LR
-  ToolDefinition --> Ts["TypeScript tool"]
-  ToolDefinition --> Stdio["MCP stdio"]
-  ToolDefinition --> Http["MCP HTTP"]
-  Ts --> Sandbox["Sandbox context"]
-  Stdio --> Sandbox
-  Http --> Remote["Remote MCP server"]
-```
-
-TypeScript tools validate with Zod before and after handler execution.
-
-## Skills
-
-```ts
-import { defineHarness, discoverSkills } from '@purista/harness'
-
-const discovered = await discoverSkills({
-  projectRoot: process.cwd(),
-  trustedProjectRoots: [process.cwd()],
-  includeUserAgentsDir: true
+const search = defineTool('search', {
+  description: 'Search approved documents.',
+  input: z.object({ query: z.string() }),
+  output: z.object({ passages: z.array(z.string()) }),
+  handler: async (_ctx, input) => ({ passages: await index.search(input.query) }),
 })
 
-const harness = defineHarness({ name: 'assistant' })
-  .skills({
-    ...discovered.skills,
-    'incident-responder': {
-      directory: './src/skills/incident-responder',
-      trust: 'trusted',
-      source: 'application'
-    }
-  })
-  .models(...)
-  .agents(({ agent }) => ({
-    triage: agent({
-      model: 'fast',
-      skills: ['incident-responder'],
-      builtinTools: ['read'],
-      instructions: 'Read relevant skills before answering.'
-    })
-  }))
-  .build()
+const answer = defineAgent('answer', {
+  model: 'chat',
+  instructions: 'Answer from approved documents and use search when needed.',
+  tools: [search],
+})
+
+const definition = defineHarness({ name: 'knowledge' }).addAgent(answer)
 ```
 
-Skill prompts contain only catalog metadata and `/skills/<name>/SKILL.md`
-locations. The full skill directory is mounted into the sandbox once per
-session and is loaded through read-only filesystem tools.
+`defineAgent` requires an application-defined model alias and defaults to string
+input, string output, and text-delta streaming. Supplying an input schema also requires a pure `prompt`
+mapper. Supplying an output schema selects structured generation and
+`output.object.snapshot` updates.
 
-MCP stdio tools:
+## Harness definition
 
-- include `kind: 'mcp_stdio'`;
-- can include `install`;
-- run install and execution through the active sandbox executor.
+`HarnessDefinition` exposes:
 
-MCP HTTP tools:
+- `.addAgent(agent)` and `.addWorkflow(workflow)` for direct executable roots;
+- `.use(catalog)` for reusable definition packages;
+- `.inspect()` for a sanitized definition and requirement projection;
+- `.contracts`, `.requirements`, and type-only `.$infer`;
+- `.getInstance(config)` to validate runtime bindings and create an executable instance.
 
-- include `kind: 'mcp_http'`;
-- call a remote streamable HTTP MCP endpoint;
-- support `none`, `bearer`, `oauth2`, `api_key`, and `basic` auth.
+Composition is additive and immutable. Duplicate IDs and conflicting foreign
+definitions fail immediately.
 
-## Agent Loop Controls
+## Runtime bindings
 
-Default-loop agents may declare `prepareStep` and `stopWhen`.
+Bind provider clients, model names, admission controls, storage, memory,
+sandbox, workspace, MCP transports, telemetry, and logging only when creating
+an instance:
 
 ```ts
-prepareStep: ({ step }) => step === 0
-  ? { model: 'planner', activeTools: ['search'] }
-  : { model: 'writer', activeTools: [] },
-stopWhen: ({ step }) => step >= 2
+const instance = await definition.getInstance({
+  models: { chat: { provider, model: 'gpt-5-mini' } },
+})
 ```
 
-`prepareStep` receives the current step number, selected model alias, messages,
-tool specs, history, memory, metadata, checkpoints, and metrics. It may return
-per-call overrides for `model`, `instructions`, `activeTools`, `messages`, and
-model `call` options. `stopWhen` runs after a model response and before tool
-execution; if it returns `true`, the response object is validated as the final
-agent output.
+Every model alias comes from the application definition. Harness reserves none.
+Use one exact `models` record containing all aliases inferred from the graph,
+and add storage, memory, sandbox, workspace, MCP, logger,
+or telemetry bindings only when the graph or deployment requires them.
 
-## Run Events
+The exact `HarnessInstanceConfig<typeof definition.requirements>` type requires
+only resources projected by the graph and rejects unknown bindings.
 
-Streaming invokers yield `RunEvent` values:
-
-| Event | Meaning |
-|---|---|
-| `run.started` | Run record exists and execution began. |
-| `fanout.started` / `fanout.finished` | Bounded workflow-local batch lifecycle. |
-| `child_task.started` / `child_task.settled` | Content-free isolated task lifecycle in the child task's run. |
-| `agent.started` / `agent.finished` | Agent lifecycle. |
-| `tool.started` / `tool.finished` | Tool lifecycle and normalized errors. |
-| `model.message` | Persisted model message metadata. |
-| `model.delta` | Text delta from a `textStream(...)` model call that opted in with `{ emitRunEvents: true }`. |
-| `model.object.partial` | Structured partial from an `objectStream(...)` model call that opted in with `{ emitRunEvents: true }`. |
-| `model.object` | Final object from the default agent `object(...)` call or an opted-in `objectStream(...)` finish chunk. |
-| `run.finished` | Final output or serialized error. |
-| `stream.overflow` | Stream buffer dropped old events. |
-
-`text(...)` and `object(...)` are final request-response operations and do not
-produce partial run events. `textStream(...)` and `objectStream(...)` expose
-provider chunks directly to workflow or custom agent-handler code. Those chunks
-stay private to the run by default; harness mirrors supported chunks as
-provider-neutral run events only when that model stream call passes
-`{ emitRunEvents: true }`. `model.embedding.completed` and
-`model.rerank.completed` are provider-neutral runtime events when the configured
-provider path supports those operations.
-
-Harness-emitted opted-in model stream events include generated `streamId` and
-`modelAlias`. They also include `workflowId` and `agentId` when the stream call
-is made from that scope. `streamId` is unique to the model stream invocation, so
-parallel streams can be grouped independently.
-They remain harness events, not a Vercel stream protocol.
-
-Child-agent lifecycle events emitted from workflows include `workflowId`,
-`delegationCallId`, `delegationDepth`, and `modelAlias`. Persisted payloads keep
-that operational lineage while redacting prompts and outputs.
-
-## Workflow Delegation
-
-Workflows call registered agents through typed `ctx.agents.<id>(input, opts)`.
-Child-agent calls are disabled by default. Opt in per workflow:
+## Sessions and invocation
 
 ```ts
-.workflows(({ workflow }) => ({
-  publish: workflow({
-    input,
-    output,
-    delegation: { agents: ['writer'] },
-    handler: async (ctx) => ctx.agents.writer(ctx.input)
-  })
-}))
-```
+const session = await instance.getSession('conversation-42')
+try {
+  const outcome = await session.agents.answer.run('How do refunds work?')
 
-If every workflow in a harness should be allowed to delegate, opt in globally:
-
-```ts
-.defaults({
-  delegation: {
-    enabled: true,
-    maxChildAgentCalls: 32,
-    maxParallelChildAgentCalls: 8,
-    maxDepth: 1
+  const stream = session.agents.answer.stream('Explain the policy.')
+  for await (const event of stream) {
+    if (event.type === 'output.text.delta') process.stdout.write(event.delta)
   }
-})
+} finally {
+  await session.release()
+  await instance.close()
+}
 ```
 
-Use a workflow-local `delegation` policy to narrow the callable agents, raise or
-lower fan-out budgets, and choose which model aliases may override a child
-agent's default model:
+Every target has the same address-first surface:
+
+- `session.agents.<id>.run(input, options?)`
+- `session.agents.<id>.stream(input, options?)`
+- `session.workflows.<id>.run(input, options?)`
+- `session.workflows.<id>.stream(input, options?)`
+
+`run` resolves to `HarnessTargetRunOutcome<Target>` with status `completed` or
+`interrupted`. Failures and cancellation throw normalized Harness errors.
+`stream` returns a cancellable `HarnessTargetStream`; call `stream.cancel()`
+when a client disconnects. The terminal `run.finished` event carries the same
+aggregate outcome, plus terminal failed and cancelled variants.
+
+Invocation options include cancellation, timeout, history window,
+idempotency key, metadata, tracing, context projection, approval resume, and
+durable invocation identity.
+
+## Execution events
+
+`ExecutionEvent` is the provider-neutral runtime stream. Its v1 discriminators
+are exported as `harnessExecutionEventTypesV1` and include:
+
+- run, agent, and model lifecycle;
+- `output.text.delta`, `output.object.snapshot`, files, and progress;
+- tool input, start, and finish;
+- governance and approval;
+- durable waits, fan-out, and child tasks;
+- `stream.overflow` for bounded observer buffers.
+
+Use `@purista/harness-ai-sdk-ui/v1` to project this contract to the standard AI
+SDK UI Message Stream v1 SSE protocol. Do not expose provider-specific streams
+or raw internal events to a browser.
+
+## Approval interruption and resume
+
+Approval is a typed interruption, not a server error. Persist and display the
+requests from `outcome.interrupt`, collect one decision for every request, then
+resume the same logical run:
 
 ```ts
-.workflows(({ workflow }) => ({
-  publish: workflow({
-    input: z.object({ draft: z.string() }),
-    output: z.object({ text: z.string(), approved: z.boolean() }),
-    delegation: {
-      agents: ['writer', 'reviewer'],
-      maxChildAgentCalls: 4,
-      maxParallelChildAgentCalls: 2,
-      agentModelAliases: { reviewer: ['deep'] }
+if (outcome.status === 'interrupted' && outcome.interrupt.type === 'tool-approval') {
+  const resumed = await session.agents.answer.run(input, {
+    resume: {
+      type: 'tool-approval',
+      runId: outcome.runId,
+      decisions,
     },
-    handler: async (ctx) => {
-      const text = await ctx.agents.writer({ draft: ctx.input.draft })
-      const review = await ctx.agents.reviewer(text, { model: 'deep' })
-      return { text: text.text, approved: review.approved }
-    }
   })
-}))
-```
-
-Denied calls throw `DelegationPolicyError` with code
-`DELEGATION_POLICY_ERROR`.
-
-Policy fields:
-
-- `enabled`: optional workflow switch; a `delegation` object enables delegation
-  unless it sets `enabled: false`.
-- `agents`: child-agent allowlist.
-- `maxChildAgentCalls`: total calls per workflow run.
-- `maxParallelChildAgentCalls`: active calls per workflow run.
-- `maxDepth`: local delegation depth.
-- `modelAliases`: workflow-wide model alias allowlist for child calls.
-- `agentModelAliases`: per-child-agent model alias allowlists.
-
-## Durable Step Retry
-
-Workflow handlers can retry transient step failures before checkpoint commit:
-
-```ts
-await ctx.step('fetch-context', fetchContext, {
-  retry: { maxAttempts: 3, minDelayMs: 250, maxDelayMs: 2_000 }
-})
-```
-
-`retry: true` uses three total attempts with exponential backoff. Replayed
-durable steps return the committed output and never re-run the step function.
-
-## Run Summary
-
-```ts
-const summary = await session.getRunSummary(runId)
-```
-
-`getRunSummary` reads the configured `StateStore` and returns status, start and
-finish timestamps, model/tool/agent call counts, token totals, optional
-cache/reasoning token details when providers report them, and any serialized
-run error. It does not require an OpenTelemetry backend.
-
-Persisted event payloads are redacted even when telemetry content capture is
-enabled. Usage counts and operational metadata remain available for summaries
-and dashboards.
-
-## Invoke Options
-
-```ts
-await session.agents.answerer.prompt(input, {
-  timeoutMs: 30_000,
-  historyWindow: 20,
-  traceparent: req.headers.get('traceparent') ?? undefined,
-  tracestate: req.headers.get('tracestate') ?? undefined,
-  metadata: { tenantId: 'tenant-a' }
-})
-```
-
-`traceparent` and `tracestate` follow W3C Trace Context. Valid values become the
-parent context for the root run span and all child spans. Invalid values are
-ignored with a warning log and do not fail the run.
-
-`metadata` is JSON-serializable scalar application context exposed to workflow
-handlers and custom agent handlers. Do not put secrets, prompts, or user content
-in metadata.
-
-## Metrics
-
-Workflow handlers, custom agent handlers, and TypeScript tool handlers receive a
-scoped `ctx.metrics` helper:
-
-```ts
-interface Metrics {
-  counter(name: string, value?: number, attrs?: SpanAttrs): void
-  histogram(name: string, value: number, attrs?: SpanAttrs): void
-  duration<T>(name: string, attrs: SpanAttrs | undefined, fn: () => Promise<T>): Promise<T>
 }
 ```
 
-Use it for application-owned measurements, for example queue sizes, business
-outcomes, or workflow step durations. The helper records through the harness
-OpenTelemetry meter and adds the active harness/session/run attributes.
+The AI SDK UI adapter maps these requests to standard tool approval parts so
+`useChat` clients can call `addToolApprovalResponse` and reconnect to the
+resumed stream.
 
-Token usage remains on model spans using GenAI and OpenInference attributes.
-When providers report them, cache-read, cache-creation, and reasoning token
-details stay on the `TokenUsage` object and span attributes. The harness also
-emits token usage metrics so aggregate usage can remain available even when
-trace storage samples or drops spans.
+## Tools, skills, and subagents
 
-## Memory
+`defineTool` handlers receive a content-free context with cancellation,
+logging, telemetry, identity, run correlation, metadata, and only the memory or
+sandbox operations declared in `requires`.
 
-`session.memory` exposes session-scoped JSON memory. Run contexts also receive
-`ctx.memory.session`, `ctx.memory.run`, optional `ctx.memory.agent`,
-`ctx.memory.user()`, `ctx.memory.tenant()`, and `ctx.memory.scope(...)`.
+`defineSkill` declares a directory and optional `node`, `python`, or `shell`
+runtime requirements. Skills are mounted read-only and loaded on demand through
+the built-in skill reader.
 
-```ts
-await ctx.memory.session.write('last_topic', { value: 'pricing' })
-const last = await ctx.memory.session.read<{ value: string }>('last_topic')
-const keys = await ctx.memory.session.list({ prefix: 'last_' })
-```
-
-`sandboxMemory()` is the default adapter. It stores session memory under
-`/memory/session/<key>.json` and run memory under
-`/memory/runs/<runId>/<key>.json` inside the session sandbox. External memory
-adapters implement `MemoryAdapter`, declare exact `memory.*` capabilities, and
-keep backend-specific packages under the `@purista/harness-memory-*` pattern.
-
-Search is always present on `SessionMemory`; it throws `ModelCapabilityError`
-when the configured adapter does not advertise `memory.search`.
-
-## Model Provider Operations
-
-Provider packages implement the operations they support and declare matching
-alias capabilities:
+Subagents are direct references on their parent:
 
 ```ts
-interface ModelProvider {
-  text?(req: TextRequest): Promise<TextResponse>
-  textStream?(req: TextRequest): AsyncIterable<TextStreamChunk>
-  object?<T>(req: ObjectRequest<T>): Promise<ObjectResponse<T>>
-  objectStream?<T>(req: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>>
-  embed?(req: EmbeddingRequest): Promise<EmbeddingResponse>
-  rerank?(req: RerankRequest): Promise<RerankResponse>
-}
-```
-
-Use `object` and `object_stream` for structured outputs. Use `embeddings` and
-`rerank` for retrieval workflows; storage and retrieval policy stay outside
-core.
-
-Streaming methods return provider chunks to the caller. By default those chunks
-are internal to the workflow or custom agent handler. When a public-facing model
-stream should be forwarded through `session.*.stream(...)`, pass
-`{ emitRunEvents: true }` to that specific model stream call. Application
-SSE/WebSocket adapters can then forward a single run-event stream without
-treating provider protocols as public API, while owning any UI labels or
-client-facing event names.
-
-Adapter authors extend `BaseModelProvider` and reuse the shared helpers
-exported from the main entry (`toTokenUsage`, `parseProviderJson`,
-`safePartialJson`, `malformedResponseError`, `redactProviderContent`,
-`withoutObjectTool`, and the `createStreamToolCallState` /
-`accumulateStreamToolCallDeltas` / `finalizeStreamToolCalls` stream tool-call
-accumulator) so error shapes and usage accounting stay identical across
-providers.
-
-## Error Families
-
-All harness errors include `code`, `category`, `retriable`, `message`, and
-optional `meta`.
-
-Common codes:
-
-- `VALIDATION_ERROR`
-- `MODEL_ERROR`
-- `MODEL_CAPABILITY_ERROR`
-- `TOOL_ERROR`
-- `TOOL_NOT_FOUND`
-- `MCP_PROTOCOL_ERROR`
-- `MCP_AUTH_ERROR`
-- `SANDBOX_NO_EXECUTOR`
-- `OPERATION_TIMEOUT`
-- `OPERATION_CANCELLED`
-- `SESSION_BUSY`
-
-## Telemetry Options
-
-```ts
-defineHarness()
-  .telemetry({
-    flavor: 'dual',
-    contentCaptureMode: 'NO_CONTENT'
-  })
-```
-
-`flavor` controls emitted attribute namespaces:
-
-| Flavor | Attributes |
-|---|---|
-| `dual` | GenAI and OpenInference attributes. |
-| `gen_ai_only` | GenAI attributes only. |
-| `openinference_only` | OpenInference attributes only. |
-
-`contentCaptureMode` accepts `NO_CONTENT`, `SPAN_ONLY`, `EVENT_ONLY`, or
-`SPAN_AND_EVENT`. The default is `NO_CONTENT`. In v1 core, all modes keep
-prompt, output, tool argument/result, context, and file content out of spans,
-span events, and persisted StateStore events. Memory content follows the
-memory-facade capture policy: `NO_CONTENT` emits no raw memory content, while
-non-`NO_CONTENT` modes opt into bounded `harness.memory.key`,
-`harness.memory.value`, and `harness.memory.query` fields on memory spans or
-span events according to the selected mode.
-
-## Eval Helpers
-
-```ts
-import { evaluateDeterministicScorer, evaluatePromptCandidates } from '@purista/harness'
-
-const scores = await evaluatePromptCandidates({
-  candidates: [{ id: 'concise', prompt: 'Answer in one paragraph.' }],
-  items: [{ id: 'item-1', input: { question: 'What changed?' } }],
-  runCandidate: async (candidate, item) => runPrompt(candidate.prompt, item.input),
-  scorer: async (target) => evaluateDeterministicScorer({
-    type: 'contains',
-    path: '/answer',
-    value: 'changed'
-  }, target),
-  signal: new AbortController().signal
+const coordinator = defineAgent('coordinator', {
+  model: 'chat',
+  instructions: 'Delegate specialist work when useful.',
+  subagents: {
+    researcher,
+    writer: { agent: writer, description: 'Draft the final answer.' },
+  },
+  loop: { maxSubagentCalls: 4, maxParallelSubagents: 2, maxDepth: 2 },
 })
 ```
 
-`evaluatePromptCandidates` is deterministic: it evaluates candidates in input
-order, items in input order, and sorts final scores by mean score descending,
-pass rate descending, then candidate id ascending.
+The compiled graph collects these dependencies recursively and detects cycles.
 
-`@purista/harness/testing` exports `evaluateDeterministicScorer(...)` for
-unit-testing `regex`, `contains`, `json-schema`, and `attribute-equality`
-scorers without invoking a model provider.
+## Workflows
 
-The `json-schema` scorer is a deterministic subset, not a full JSON Schema
-draft implementation. It supports `type`, `const`, `enum`, object
-`properties`, object `required`, and `additionalProperties: false`.
-
-## Testing Subpath
-
-`@purista/harness/testing` ships the fakes (`FakeModelProvider`,
-`FakeStateStore`, `FakeSandbox`, `FakeLogger`, `FakeMemoryAdapter`,
-`fakeSnapshotSandbox`, `fakeCapabilityAdapter`,
-`InMemoryDurableWorkspaceStore`), the port contract suites
-(`stateStoreContract`, `sandboxContract`, `modelProviderContract`,
-`loggerContract`, `memoryAdapterContract`, `durableWorkspaceStoreContract`,
-`adapterCapabilitiesContract`, `sandboxSnapshotContract`), and the helpers
-`makeHarness`, `recordEvents`, and `createInMemoryFeedbackRecorder`. The
-locked list lives in `specs/13-public-api.md`; adapter packages run the
-matching contract suites in their own test suites.
-
-## OpenAI Adapter
+A workflow declares direct agent references and exact model handles its handler
+may call:
 
 ```ts
-import { openai } from '@purista/harness-openai'
-
-const provider = openai({
-  apiKey: process.env.OPENAI_API_KEY!,
-  baseURL: process.env.OPENAI_BASE_URL,
-  api: 'responses'
+const investigate = defineWorkflow('investigate', {
+  input: z.object({ question: z.string() }),
+  output: z.object({ answer: z.string() }),
+  agents: [researcher],
+  agentCalls: { maxCalls: 4, maxParallel: 2 },
+  handler: async (ctx) => {
+    const answer = await ctx.agents.researcher.run(ctx.input.question, {
+      callId: 'research',
+    })
+    return { answer }
+  },
 })
 ```
 
-The adapter extends `BaseModelProvider`, inherits harness logger/telemetry, and
-normalizes provider HTTP/network errors into `ModelError` with actionable
-metadata.
+Handlers also receive `step`, `fanOut`, child tasks, logging, telemetry,
+metrics, correlation metadata, and, for durable workflows, external waits.
 
-Model aliases accept `retry: true | false | ModelRetryPolicy`. Retry is enabled
-by default for short transient failures and rate limits. Long provider
-`Retry-After` values are surfaced as `ModelError` metadata with
-`retryKind:'deferred'` instead of blocking the current invocation. The
-deferred classification requires `longRetry: 'defer'`; with the default
-`longRetry: 'error'` the call fails with `retryKind:'none'`. Responses
-also keep `finishReason` plus optional `outcome` metadata with raw provider
-finish/status details. Alias-level and per-call retry policies are runtime
-validated; invalid numeric budgets, `longRetry` values, or `retryOn` entries
-throw `HarnessConfigError` before provider execution.
-When the harness actively retried and exhausted `maxAttempts`, the final
-`ModelError` carries `retryKind:'active'` plus attempt metadata.
+## Schemas
 
-`api` selects the OpenAI generation surface: `chat_completions` is the default
-for OpenAI-compatible endpoints, while `responses` routes text/object calls
-through `client.responses.create()`. Use `responses` for reasoning models that
-need function tools with `providerOptions.reasoning_effort`. On
-`chat_completions`, `reasoning_effort` is dropped with a warning when tools are
-present.
+`Schema`, `ModelSchema`, `Infer`, and `InferIn` use Standard Schema. A schema
+whose value is produced by a model must also expose Standard JSON Schema. This
+includes native tool input and standard-agent output. Zod and ArkType satisfy
+both contracts directly; Valibot can use its official JSON Schema wrapper at
+model-facing boundaries.
 
-## Provider Addons
+All values are validated before crossing handler, provider, persistence,
+telemetry, or result boundaries.
 
-The provider addons share the same harness `ModelProvider` boundary. Each
-adapter is intentionally thin over the provider's official SDK and passes
-provider-specific options through instead of recreating provider feature
-matrices in harness code.
+## Lifecycle and persisted state
 
-```ts
-import { anthropic } from '@purista/harness-anthropic'
-import { bedrock } from '@purista/harness-bedrock'
-import { azureFoundry } from '@purista/harness-azure-foundry'
+`session.release()` releases a borrowed live session and retains persisted
+state. `session.destroy()` deletes the session and its persisted state.
+`instance.close()` closes instance-owned resources once. Session history,
+memory, child tasks, and content-free run summaries remain session-scoped.
 
-const claude = anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
-const aws = bedrock({ region: process.env.AWS_REGION ?? 'us-east-1' })
-const azure = azureFoundry({
-  endpoint: process.env.AZURE_AI_ENDPOINT!,
-  apiKey: process.env.AZURE_AI_API_KEY!
-})
-```
-
-Declare only the capabilities supported by the selected provider model or
-endpoint. The adapter package does not infer model-specific capability truth.
-
-## Type Inference
-
-The builder preserves literal keys across models, tools, skills, agents, and
-workflows. Invalid references, such as an agent pointing at a missing model or
-tool, should fail at the builder call site.
-
-Use `harness.$infer` for compile-time inspection of the configured surface.
+Package-specific provider, storage, memory, sandbox, governance, Guardrail, and
+UI adapter APIs are documented in their package READMEs and the corresponding
+guides.

@@ -1,0 +1,207 @@
+import { z } from 'zod'
+
+import { defineAgent } from '../src/definitions/agent.js'
+import { defineHarness } from '../src/definitions/harness.js'
+import { defineWorkflow } from '../src/definitions/workflow.js'
+import {
+	assertHarnessHostToolOwner, createHostOwnerToken, defineHostTool, instantiateHostedHarness, isHarnessTargetContract,
+	visitHostedHarnessTargets,
+	type HarnessHostBindings, type HostedHarnessInstanceConfig, type HostedHarnessTargetEntry, type HostedInvokeOptions,
+} from '../src/integrator/index.js'
+import * as integratorExports from '../src/integrator/index.js'
+import * as rootExports from '../src/index.js'
+import type { AnyHarnessTargetContract } from '../src/ports/target-dispatcher.js'
+import type { ModelProvider } from '../src/ports/model-provider.js'
+import type { HarnessTargetDispatcher } from '../src/ports/target-dispatcher.js'
+import type { HarnessTargetDispatchStream } from '../src/ports/target-dispatcher.js'
+import type { HarnessTargetStream } from '../src/definitions/execution-events.js'
+import type { HarnessTargetRunOutcome } from '../src/runtime/outcomes.js'
+import type { HarnessStorage } from '../src/storage/types.js'
+import type { Logger } from '../src/logger/index.js'
+import type { TelemetryShim } from '../src/telemetry/index.js'
+// @ts-expect-error hosted target entries are integrator-only
+import type { HostedHarnessTargetEntry as RootHostedHarnessTargetEntry } from '../src/index.js'
+// @ts-expect-error hosted target entries are absent from the definitions barrel
+import type { HostedHarnessTargetEntry as DefinitionsHostedHarnessTargetEntry } from '../src/definitions/index.js'
+
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false
+type Expect<T extends true> = T
+
+declare let possibleTarget: unknown
+if (isHarnessTargetContract(possibleTarget)) {
+	type _PredicateNarrowing = Expect<Equal<typeof possibleTarget, AnyHarnessTargetContract>>
+	const predicateNarrowing: _PredicateNarrowing = true
+	void predicateNarrowing
+}
+// @ts-expect-error target authenticity is intentionally absent from the root package
+rootExports.isHarnessTargetContract
+// @ts-expect-error target authenticity is intentionally absent from the root package
+rootExports.assertHarnessTargetContract
+
+type HostContext = Readonly<{ tenantId: string }>
+const owner = createHostOwnerToken<HostContext>()
+const lookup = defineHostTool(owner, 'lookupAccount', {
+	description: 'Look up an account.',
+	input: z.object({ accountId: z.string() }),
+	output: z.object({ balance: z.number() }),
+	async handler(context, input) {
+		const tenantId: string = context.tenantId
+		const accountId: string = input.accountId
+		void tenantId
+		void accountId
+		return { balance: 1 }
+	},
+})
+type _HostToolDefinitionInference = Expect<Equal<typeof lookup.$infer.input, { accountId: string }>>
+type _HostToolDefinitionOutput = Expect<Equal<typeof lookup.$infer.output, { balance: number }>>
+const agent = defineAgent('accountAssistant', { model: 'chat', instructions: 'Help.', tools: [lookup] })
+const workflow = defineWorkflow('hostedWorkflow', { input: z.string(), output: z.number(),
+	async handler({ input }) { return input.length } })
+type _WorkflowDefinitionInference = Expect<Equal<typeof workflow.$infer, typeof workflow.contract.$infer>>
+const dependencyAgent = defineAgent('dependencyAgent', { model: 'chat', instructions: 'Dependency only.' })
+const dependencyWorkflow = defineWorkflow('dependencyWorkflow', { agents: [dependencyAgent],
+	async handler() { return 'done' } })
+const harness = defineHarness({ name: 'hosted', revision: 'v1' }).addAgent(agent).addWorkflow(workflow).addWorkflow(dependencyWorkflow)
+visitHostedHarnessTargets(harness, entry => {
+	type ExpectedTarget = typeof agent.contract | typeof workflow.contract | typeof dependencyWorkflow.contract | typeof dependencyAgent.contract
+	type _VisitorTarget = Expect<Equal<typeof entry.target, ExpectedTarget>>
+	type _VisitorVisibility = Expect<Equal<typeof entry.visibility, 'root' | 'dependency'>>
+	const sameEntry: HostedHarnessTargetEntry<ExpectedTarget> = entry
+	void sameEntry
+})
+// @ts-expect-error hosted target visitation is intentionally absent from the package root
+rootExports.visitHostedHarnessTargets
+void (0 as unknown as RootHostedHarnessTargetEntry)
+void (0 as unknown as DefinitionsHostedHarnessTargetEntry)
+assertHarnessHostToolOwner(harness, owner)
+// @ts-expect-error host ownership assertion requires a factory-authentic owner token
+assertHarnessHostToolOwner(harness, {})
+// @ts-expect-error host ownership assertion is intentionally absent from the package root
+rootExports.assertHarnessHostToolOwner
+// @ts-expect-error host-owner inspection remains package private
+integratorExports.hostToolOwner
+// @ts-expect-error host-owner authentication remains package private
+integratorExports.isHostOwnerToken
+
+declare const provider: ModelProvider
+declare const storage: HarnessStorage
+const config: HostedHarnessInstanceConfig<typeof harness.requirements> = {
+	models: { chat: { provider, model: 'model' } },
+	storage,
+}
+void config
+
+const options: HostedInvokeOptions<typeof agent.contract> = { sessionId: 'session' }
+void options
+// @ts-expect-error trace context is owned by the host boundary
+const callerTrace: HostedInvokeOptions<typeof agent.contract> = { sessionId: 'session', traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' }
+void callerTrace
+const callerLogger: HostedHarnessInstanceConfig<typeof harness.requirements> = {
+	models: { chat: { provider, model: 'model' } }, storage,
+	// @ts-expect-error hosted runtime configuration cannot replace the host logger
+	logger: { trace() {}, debug() {}, info() {}, warn() {}, error() {}, fatal() {}, child() { return this } },
+}
+void callerLogger
+const callerTelemetry: HostedHarnessInstanceConfig<typeof harness.requirements> = {
+	models: { chat: { provider, model: 'model' } }, storage,
+	// @ts-expect-error hosted runtime configuration cannot replace host telemetry
+	telemetry: {} as TelemetryShim,
+}
+void callerTelemetry
+
+// @ts-expect-error host-aware graphs require persistent storage in hosted configuration
+const missingStorage: HostedHarnessInstanceConfig<typeof harness.requirements> = { models: { chat: { provider, model: 'model' } } }
+void missingStorage
+
+declare const dispatcher: HarnessTargetDispatcher
+declare const logger: Logger
+declare const telemetry: TelemetryShim
+const hostBindings: HarnessHostBindings<Readonly<{ authorization: string }>, HostContext> = {
+	hostOwner: owner, targetDispatcher: dispatcher,
+	projectIdentity: () => ({ tenantId: 'tenant' }), projectTraceContext: () => undefined,
+	createHostContext: () => ({ tenantId: 'tenant' }), logger, telemetry,
+}
+const hostedInstance = instantiateHostedHarness(harness, config, hostBindings)
+hostedInstance.then(instance => {
+	const agentRun = instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 'hello', invokeOptions: { sessionId: 'session' },
+		hostInvocation: { authorization: 'token' }, authorize: () => {} })
+	const workflowRun = instance.runHosted({ delivery: 'fresh', target: workflow.contract, wireInput: 'hello', input: 'hello', invokeOptions: { sessionId: 'session' },
+		hostInvocation: { authorization: 'token' }, authorize: () => {} })
+	const agentStream = instance.streamHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 'hello', invokeOptions: { sessionId: 'stream-session' },
+		hostInvocation: { authorization: 'token' }, authorize: () => {} })
+	const dispatchedStream = instance.streamDispatched({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 'hello', invocation: {
+		sessionId: 'child-session', invocationId: 'child-run', rootRunId: 'root-run', parentRunId: 'parent-run',
+		parentAgentId: 'parent-agent', depth: 1, remainingDepth: 1, signal: new AbortController().signal,
+	}, hostInvocation: { authorization: 'token' } })
+	const dependencyStream = instance.streamDispatched({ delivery: 'fresh', target: dependencyAgent.contract,
+		wireInput: 'hello', input: 'hello', invocation: {
+			sessionId: 'dependency-session', invocationId: 'dependency-run', rootRunId: 'root-run', parentRunId: 'parent-run',
+			parentWorkflowId: dependencyWorkflow.id, depth: 1, remainingDepth: 1, signal: new AbortController().signal,
+		}, hostInvocation: { authorization: 'token' } })
+	type _AgentRun = Expect<Equal<typeof agentRun, Promise<HarnessTargetRunOutcome<typeof agent.contract>>>>
+	type _WorkflowRun = Expect<Equal<typeof workflowRun, Promise<HarnessTargetRunOutcome<typeof workflow.contract>>>>
+	type _AgentStream = Expect<Equal<typeof agentStream, Promise<HarnessTargetStream<typeof agent.contract>>>>
+	type _DispatchedStream = Expect<Equal<typeof dispatchedStream,
+		Promise<HarnessTargetDispatchStream<typeof agent.contract.$infer.output, typeof agent.contract.$infer.interrupt>>>>
+	type _DependencyStream = Expect<Equal<typeof dependencyStream,
+		Promise<HarnessTargetDispatchStream<typeof dependencyAgent.contract.$infer.output, typeof dependencyAgent.contract.$infer.interrupt>>>>
+	// @ts-expect-error dependency-only targets are not application-facing hosted roots
+	instance.runHosted({ delivery: 'fresh', target: dependencyAgent.contract, wireInput: 'hello', input: 'hello', invokeOptions: { sessionId: 'session' },
+		hostInvocation: { authorization: 'token' }, authorize: () => {} })
+	// @ts-expect-error targets outside the retained compiled graph cannot be dispatched
+	instance.streamDispatched({ delivery: 'fresh', target: defineAgent('outsideDependency', { model: 'chat', instructions: 'Outside.' }).contract,
+		wireInput: 'hello', input: 'hello', invocation: {
+			sessionId: 'outside-session', invocationId: 'outside-run', rootRunId: 'root-run', parentRunId: 'parent-run',
+			parentWorkflowId: dependencyWorkflow.id, depth: 1, remainingDepth: 1, signal: new AbortController().signal,
+		}, hostInvocation: { authorization: 'token' } })
+	instance.streamDispatched({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 'hello',
+		// @ts-expect-error a dispatched child has exactly one parent target kind
+		invocation: { sessionId: 'child-session', invocationId: 'child-run', rootRunId: 'root-run', parentRunId: 'parent-run',
+			depth: 1, remainingDepth: 1, signal: new AbortController().signal },
+		hostInvocation: { authorization: 'token' } })
+	instance.streamDispatched({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 'hello',
+		// @ts-expect-error agent and workflow ancestry are mutually exclusive
+		invocation: { sessionId: 'child-session', invocationId: 'child-run', rootRunId: 'root-run', parentRunId: 'parent-run',
+			parentAgentId: 'agent', parentWorkflowId: 'workflow', depth: 1, remainingDepth: 1,
+			signal: new AbortController().signal },
+		hostInvocation: { authorization: 'token' } })
+	// @ts-expect-error a resume delivery has no already transformed logical input
+	instance.streamDispatched({ delivery: 'resume', target: agent.contract, wireInput: 'hello', input: 'hello', invocation: {
+		sessionId: 'child-session', invocationId: 'child-run', rootRunId: 'root-run', parentRunId: 'parent-run',
+		parentAgentId: 'parent-agent', depth: 1, remainingDepth: 1, signal: new AbortController().signal,
+	}, resume: { type: 'tool-approval', runId: 'child-run', interruptId: 'interrupt', revision: 'revision',
+		eventId: 'event', decisions: [] }, hostInvocation: { authorization: 'token' } })
+	instance.streamDispatched({ delivery: 'resume', target: agent.contract, wireInput: 'hello', invocation: {
+		sessionId: 'child-session', invocationId: 'child-run', rootRunId: 'root-run', parentRunId: 'parent-run',
+		parentAgentId: 'parent-agent', depth: 1, remainingDepth: 1, signal: new AbortController().signal,
+	}, resume: { type: 'tool-approval', runId: 'child-run', interruptId: 'interrupt', revision: 'revision',
+		eventId: 'event', decisions: [] }, hostInvocation: { authorization: 'token' } })
+	instance.streamDispatched({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 'hello', invocation: {
+		sessionId: 'child-session', invocationId: 'child-run', rootRunId: 'root-run', parentRunId: 'parent-run',
+		parentAgentId: 'parent-agent', depth: 1, remainingDepth: 1, signal: new AbortController().signal,
+		// @ts-expect-error dispatched identity is projected from HostInvocation
+		identity: { tenantId: 'caller-controlled' },
+	}, hostInvocation: { authorization: 'token' } })
+	// @ts-expect-error hosted targets are exact contracts mounted in this Harness
+	instance.runHosted({ delivery: 'fresh', target: defineAgent('outsideAgent', { model: 'chat', instructions: 'Outside.' }).contract, wireInput: 'hello', input: 'hello',
+		invokeOptions: { sessionId: 'session' }, hostInvocation: { authorization: 'token' }, authorize: () => {} })
+	// @ts-expect-error agent input is the exact validated logical input
+	instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 1, invokeOptions: { sessionId: 'session' },
+		hostInvocation: { authorization: 'token' }, authorize: () => {} })
+	// @ts-expect-error workflow output typing does not change its string input contract
+	instance.streamHosted({ delivery: 'fresh', target: workflow.contract, wireInput: 'hello', input: 1, invokeOptions: { sessionId: 'session' },
+		hostInvocation: { authorization: 'token' }, authorize: () => {} })
+	// @ts-expect-error HostInvocation is required and exact at the hosted boundary
+	instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 'hello', invokeOptions: { sessionId: 'session' }, hostInvocation: {}, authorize: () => {} })
+	// @ts-expect-error hosted targets are contracts, not string ids
+	instance.runHosted({ delivery: 'fresh', target: 'accountAssistant', wireInput: 'hello', input: 'hello', invokeOptions: { sessionId: 'session' },
+		hostInvocation: { authorization: 'token' }, authorize: () => {} })
+})
+
+// @ts-expect-error ordinary getInstance never accepts host-owned binding maps
+harness.getInstance({ models: { chat: { provider, model: 'model' } }, storage, hostTools: { lookupAccount: lookup.handler } })
+defineHostTool(createHostOwnerToken<{ wrong: true }>(), 'badContext', {
+	description: 'Bad.', input: z.string(), output: z.string(),
+	// @ts-expect-error owner context determines the host tool handler context
+	handler: lookup.handler,
+})

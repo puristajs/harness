@@ -1,0 +1,31 @@
+tickets:
+  TICKET-001:
+    lifecycle: accepted
+    current_proof: Core types, validation, projection cache, runtime consumers, conformance tests, package build, and type tests pass; independent review approved runtime defaults, malformed-validator closure, and retry-safe cache reuse.
+    resume_notes: Accepted by independent review; repository owner controls commit and release.
+    affected_spec_refs: [ai-harness/specs/39-standard-schema-boundaries/03-contracts/schema-types.md#CTR-SS-SCHEMA, ai-harness/specs/39-standard-schema-boundaries/03-contracts/schema-types.md#CTR-SS-BUILDERS, ai-harness/specs/39-standard-schema-boundaries/03-contracts/runtime-validation.md#CTR-SS-VALIDATION, ai-harness/specs/39-standard-schema-boundaries/03-contracts/model-projection.md#CTR-SS-PROJECTION]
+  TICKET-002:
+    lifecycle: skipped
+    current_proof: Its requirement, capability, paths and acceptance rows moved to TICKET-001 because the old split cannot produce a buildable intermediate state.
+    resume_notes: Retained for plan history only; do not execute.
+    affected_spec_refs: [ai-harness/specs/39-standard-schema-boundaries/03-contracts/runtime-validation.md#CTR-SS-VALIDATION, ai-harness/specs/39-standard-schema-boundaries/03-contracts/runtime-validation.md#CTR-SS-ERRORS]
+  TICKET-003:
+    lifecycle: skipped
+    current_proof: Its requirement, capability, paths and acceptance rows moved to TICKET-001 because the old split cannot produce a buildable intermediate state.
+    resume_notes: Retained for plan history only; do not execute.
+    affected_spec_refs: [ai-harness/specs/39-standard-schema-boundaries/03-contracts/model-projection.md#CTR-SS-PROJECTION]
+  TICKET-004:
+    lifecycle: accepted
+    current_proof: OpenAI, Anthropic, Bedrock, and Azure Foundry SDK-seam tests assert exact Draft 2020-12 pass-through, one-call mapped rejection, and compatible-schema recovery; independent review approved all provider boundaries.
+    resume_notes: Accepted by independent review; repository owner controls commit and release.
+    affected_spec_refs: [ai-harness/specs/39-standard-schema-boundaries/03-contracts/model-projection.md#CTR-SS-PROVIDERS]
+  TICKET-005:
+    lifecycle: accepted
+    current_proof: Canonical Harness/PURISTA docs, website, examples, and skill mirrors are updated; skill, knowledge, handbook, website build, and 2,068-page internal-link audit all pass.
+    resume_notes: Independent review approved the published boundary matrix, provider caveat, generated API links, and canonical-to-mirror alignment.
+    affected_spec_refs: [ai-harness/specs/39-standard-schema-boundaries/04-delivery/consumers.md#CTR-SS-CONSUMERS]
+  TICKET-006:
+    lifecycle: accepted
+    current_proof: Permanent Standard Schema scans and negative fixtures pass; full Harness CI passes with 1,017 core tests and 80.22% branch coverage, including durable examples; independent review approved scan precision, application preflight semantics, and clean-cut release evidence.
+    resume_notes: Accepted by independent review; repository owner controls commit and release.
+    affected_spec_refs: [ai-harness/specs/39-standard-schema-boundaries/04-delivery/consumers.md#CTR-SS-CLEANUP]

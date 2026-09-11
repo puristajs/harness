@@ -1,65 +1,56 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { defineHarness, inMemorySandbox } from '../src/index.js'
-import { recordEvents } from '../src/testing/recordEvents.js'
-import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
+import { defineWorkflow as defineWorkflowV4 } from '../src/definitions/workflow.js'
+import { defineAgent as defineAgentV4 } from '../src/definitions/agent.js'
+import type { ExecutionEvent } from '../src/definitions/execution-events.js'
+import { createWorkflowExecutionRuntime } from '../src/workflows/index.js'
+function testRoute(target: { readonly kind: 'agent' | 'workflow'; readonly id: string }) {
+	return { schemaVersion: 1 as const, kind: 'harness_target_route' as const, target: { kind: target.kind, id: target.id }, bindingDigest: `sha256:${'0'.repeat(64)}` }
+}
 
-describe('workflow fan-out', () => {
-  it('queues typed child invocations within the workflow delegation ceiling and preserves input order', async () => {
-    let active = 0
-    let peak = 0
-    const harness = defineHarness()
-      .sandbox(inMemorySandbox())
-      .models({ fake: { provider: new FakeModelProvider(), model: 'fake', capabilities: ['object'] } })
-      .agents(({ agent }) => ({
-        worker: agent({
-          model: 'fake', input: z.number(), output: z.number(), builtinTools: false, instructions: 'Return input.',
-          handler: async (ctx) => {
-            active += 1
-            peak = Math.max(peak, active)
-            await new Promise((resolve) => setTimeout(resolve, (4 - ctx.input) * 4))
-            active -= 1
-            return ctx.input * 2
-          }
-        })
-      }))
-      .workflows(({ workflow }) => ({
-        fan: workflow({
-          input: z.array(z.number()), output: z.array(z.number()),
-          delegation: { agents: ['worker'], maxParallelChildAgentCalls: 2 },
-          handler: (ctx) => ctx.fanOut(ctx.input, (item) => ctx.agents.worker(item), { concurrency: 10 })
-        })
-      }))
-      .build()
 
-    const session = await harness.getSession('fanout')
-    const events = await recordEvents(session.workflows.fan.stream([1, 2, 3]))
+describe('v4 workflow fan-out admission', () => {
+	it('bounds workers, preserves input order, and does not consume the workflow agent-call budget', async () => {
+		const workflow = defineWorkflowV4('workersOnly', { input: z.string(), output: z.string(), agentCalls: { maxCalls: 1, maxParallel: 2 }, async handler({ input }) { return input } })
+		let active = 0; let peak = 0; let opens = 0
+		const runtime = createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { assertTarget: target => testRoute(target), open: async () => { opens += 1; throw new Error('unexpected') } },
+			signal: new AbortController().signal, sessionId: 'session', runId: 'run', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
+			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 } })
+		await expect(runtime.fanOut([1, 2, 3], async item => {
+			active += 1
+			peak = Math.max(peak, active)
+			await new Promise(resolve => setTimeout(resolve, (4 - item) * 4))
+			active -= 1
+			return item * 2
+		}, { concurrency: 9 })).resolves.toEqual([2, 4, 6])
+		expect(peak).toBeLessThanOrEqual(2)
+		expect(peak).toBe(2)
+		expect(opens).toBe(0)
+	})
 
-    expect(peak).toBe(2)
-    expect(events.find((event) => event.type === 'fanout.started')).toMatchObject({ count: 3, concurrency: 2 })
-    expect(events.find((event) => event.type === 'fanout.finished')).toMatchObject({ count: 3, status: 'succeeded' })
-    const finished = events.find((event) => event.type === 'run.finished')
-    expect(finished).toMatchObject({ output: [2, 4, 6] })
-    await harness.shutdown()
-  })
+	it('rejects invalid concurrency before starting work', async () => {
+		const workflow = defineWorkflowV4('invalidConcurrency', {
+			input: z.string(), output: z.string(),
+			async handler({ input }) { return input },
+		})
+		const runtime = createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { assertTarget: target => testRoute(target), open: async () => { throw new Error('unexpected') } },
+			signal: new AbortController().signal, sessionId: 'session', runId: 'run', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
+			defaults: { maxWorkflowAgentCalls: 1, maxParallelWorkflowAgentCalls: 1 } })
+		await expect(runtime.fanOut(['x'], async value => value, { concurrency: 0 })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
+	})
 
-  it('rejects invalid fan-out concurrency before starting work', async () => {
-    const harness = defineHarness()
-      .sandbox(inMemorySandbox())
-      .models({ fake: { provider: new FakeModelProvider(), model: 'fake', capabilities: ['object'] } })
-      .agents(({ agent }) => ({
-        worker: agent({ model: 'fake', input: z.string(), output: z.string(), builtinTools: false, instructions: 'Return input.', handler: async (ctx) => ctx.input })
-      }))
-      .workflows(({ workflow }) => ({
-        invalid: workflow({
-          input: z.string(), output: z.array(z.string()), delegation: { agents: ['worker'] },
-          handler: (ctx) => ctx.fanOut([ctx.input], (item) => ctx.agents.worker(item), { concurrency: 0 })
-        })
-      }))
-      .build()
-
-    const session = await harness.getSession('fanout-invalid')
-    await expect(session.workflows.invalid.prompt('x')).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
-    await harness.shutdown()
-  })
+	it('lets bounded fan-out workers make agent calls without acquiring a fan-out slot', async () => {
+		const agent = defineAgentV4('fanWorker', { model: 'chat', input: z.number(), output: z.number(), instructions: 'Work.', prompt: value => ({ role: 'user', content: String(value) }) })
+		const workflow = defineWorkflowV4('fanCalls', { input: z.string(), output: z.string(), agents: [agent], agentCalls: { maxCalls: 3, maxParallel: 2 }, async handler({ input }) { return input } })
+		const runtime = createWorkflowExecutionRuntime({ workflow, models: {}, targetDispatcher: { assertTarget: target => testRoute(target), open: async request => {
+			const outcome = { status: 'completed' as const, runId: request.invocation.invocationId, output: (request.input as number) * 2 }
+			return {
+			result: Promise.resolve(outcome),
+			async *[Symbol.asyncIterator]() { yield { eventId: 'event-1', sequence: 1, type: 'run.finished', runId: request.invocation.invocationId, parentRunId: request.invocation.parentRunId,
+				parentInvocationId: request.invocation.invocationId, at: 'now', outcome } as ExecutionEvent }, async cancel() {},
+			}
+		} }, signal: new AbortController().signal, sessionId: 'session', runId: 'run', rootRunId: 'root', invocationId: 'invocation', depth: 0, remainingDepth: 1,
+			defaults: { maxWorkflowAgentCalls: 3, maxParallelWorkflowAgentCalls: 2 } })
+		await expect(runtime.fanOut([1, 2, 3], (item, index) => runtime.agents.fanWorker.run(item, { callId: `fan-${index}` }), { concurrency: 2 })).resolves.toEqual([2, 4, 6])
+	})
 })

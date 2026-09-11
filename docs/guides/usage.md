@@ -1,293 +1,161 @@
-# Usage Guide
+# Use a Harness Instance
 
-Build a system by composing a harness, then run work through a session. The
-session is the application API. Adapters are infrastructure.
+Applications call agents and workflows through a session. The model provider,
+storage, memory, sandbox, and MCP transports remain behind the Harness instance.
 
-## Choose The Execution Shape
-
-```mermaid
-flowchart TD
-  Task["User or service task"] --> One{"Can one agent finish it?"}
-  One -- "Yes" --> Direct["Use session.agents.<id>"]
-  One -- "No" --> Multi{"Need sequencing, review, fan-out, or writes?"}
-  Multi -- "Yes" --> Workflow["Use session.workflows.<id>"]
-  Multi -- "No" --> Direct
-```
-
-Use a direct agent when the work is one typed LLM conversation loop: chat, Q&A,
-summarization, classification, extraction, or a simple tool-backed task. The
-agent may call tools multiple times, but the model loop remains the unit of
-work.
-
-Use a workflow when your application needs to orchestrate multiple agent
-invocations or combine agents with deterministic steps: ingest, review,
-triage, planning, reflection, judging, report creation, reconciliation,
-approval gates, or durable writes.
-
-## Define A Harness
+## Create one instance
 
 ```ts
-import { z } from 'zod'
-import { defineHarness, JsonLogger } from '@purista/harness'
-import { openai } from '@purista/harness-openai'
-
-const answerInput = z.object({ question: z.string() })
-const answerOutput = z.object({
-  answer: z.string(),
-  citations: z.array(z.string())
+const assistant = defineAgent('assistant', {
+  model: 'chat',
+  input,
+  output,
+  instructions: 'Answer with verified information.',
+  tools: [searchDocs],
 })
 
-const harness = defineHarness({ name: 'docs-example' })
-  .logger(new JsonLogger({ level: 'info' }))
-  .models({
-    fast: {
-      provider: openai({ apiKey: process.env.OPENAI_API_KEY! }),
-      model: process.env.OPENAI_MODEL ?? 'gpt-5-mini',
-      capabilities: ['object', 'tool_use']
-    }
-  })
-  .tools({
-    search_docs: {
-      description: 'Search internal documentation.',
-      input: z.object({ query: z.string() }),
-      output: z.object({ hits: z.array(z.object({ id: z.string(), text: z.string() })) }),
-      handler: async (_ctx, input) => ({
-        hits: [{ id: 'intro', text: `Result for ${input.query}` }]
-      })
-    }
-  })
-  .agents(({ agent }) => ({
-    answerer: agent({
-      model: 'fast',
-      input: answerInput,
-      output: answerOutput,
-      tools: ['search_docs'],
-      builtinTools: false,
-      instructions: 'Search docs before answering. Return a cited object.'
-    })
-  }))
-  .workflows(({ workflow }) => ({
-    answer_with_review: workflow({
-      input: answerInput,
-      output: answerOutput,
-      delegation: { agents: ['answerer'] },
-      handler: async (ctx) => ctx.agents.answerer(ctx.input)
-    })
-  }))
-  .build()
-```
-
-## Open A Session
-
-```ts
-const session = await harness.getSession('tenant-a:user-42')
-```
-
-A session provides:
-
-| API | Purpose |
-|---|---|
-| `session.agents.<id>.prompt(input)` | Direct agent call. |
-| `session.agents.<id>.stream(input)` | Direct agent call with run events. |
-| `session.workflows.<id>.prompt(input)` | Workflow call. |
-| `session.workflows.<id>.stream(input)` | Workflow call with run events. |
-| `session.history.list()` | Conversation messages for this session. |
-| `session.memory.read/write/delete/list()` | Adapter-backed JSON memory scoped to the session. |
-| `session.release()` | Close live sandbox/MCP resources while retaining persisted history and runs. |
-| `session.close()` | Destructively close the session and remove its persisted session state. |
-
-Sessions enforce one active run at a time. Use different session IDs for
-parallel user threads.
-
-## Invoke A Direct Agent
-
-A direct agent call enters the conversation loop for one configured agent. The
-agent can call models and tools until it has a validated output.
-When a model response contains multiple independent tool calls, the harness
-executes that batch concurrently and sends the results back to the next model
-call in the original tool-call order.
-To control whether the provider may emit multiple tool calls in one turn, set
-`parallelToolCalls` on the model alias defaults. Direct model calls can override
-it per call.
-To apply local backpressure when a provider returns a wide batch, set
-`maxParallelToolCalls` in harness defaults.
-
-Pass an `AbortSignal` or per-call timeout when a caller can disconnect or a run
-has a stricter SLA:
-
-```ts
-const controller = new AbortController()
-const result = await session.agents.answerer.prompt(input, {
-  signal: controller.signal,
-  timeoutMs: 30_000
+const definition = defineHarness({ name: 'support' }).addAgent(assistant)
+const instance = await definition.getInstance({
+  models: { chat: { provider, model: 'gpt-5-mini' } },
 })
 ```
 
-The harness propagates cancellation into workflow/custom-agent handlers, model
-calls, tools, memory, and sandbox operations. Workflow and custom-agent handlers
-are raced against the run signal so cancellation can finalize the run even if
-handler code is not cooperative, but handler code should still check
-`ctx.signal` to stop side effects promptly.
+Create the instance once during service startup. It owns adapter configuration
+and shared runtime resources.
+
+## Borrow a session
 
 ```ts
-const result = await session.agents.answerer.prompt({
-  question: 'How do tools work?'
+const session = await instance.getSession('conversation-42')
+try {
+  const outcome = await session.agents.assistant.run(input)
+  if (outcome.status === 'completed') return outcome.output
+  return { approvalRequired: outcome.interrupt }
+} finally {
+  await session.release()
+}
+```
+
+Use a stable session id for one conversation or application session.
+`release()` returns the borrowed runtime resources while keeping persisted
+history. `destroy()` removes the session state.
+
+## Choose aggregate or streaming execution
+
+`run(input, options)` waits for a `completed` or `interrupted` `RunOutcome`.
+Failed and cancelled aggregate executions reject with normalized Harness
+errors:
+
+```ts
+const outcome = await session.agents.assistant.run(input, {
+  timeoutMs: 30_000,
+  idempotencyKey: 'message-42',
+  metadata: { requestId: 'request-42' },
 })
-
-console.log(result.answer)
 ```
 
-## Stream A Run
+`stream(input, options)` starts the same target and returns ordered
+`ExecutionEvent` values. Its terminal `run.finished` outcome can also be
+`failed` or `cancelled`:
 
 ```ts
-for await (const event of session.agents.answerer.stream({
-  question: 'How do tools work?'
-})) {
-  if (event.type === 'tool.started') console.log('tool:', event.toolId)
-  if (event.type === 'run.finished') console.log(event.output)
-}
-```
+const stream = session.agents.assistant.stream(input)
 
-Streaming reports lifecycle and tool events. The default agent loop uses
-`object(...)`, so it emits final `model.object` events rather than text deltas.
-When workflow code or a custom agent handler consumes `ctx.models.alias.textStream(...)`,
-those chunks stay private by default. Pass `{ emitRunEvents: true }` to that
-specific stream call to publish `model.delta` events. The same opt-in on
-`ctx.models.alias.objectStream(...)` publishes `model.object.partial` events
-and a final `model.object` event.
-
-Harness streams are typed `RunEvent` values. They are not the Vercel stream
-protocol; application HTTP or SSE routes can map them to whatever client event
-shape they own.
-
-```ts
-for await (const chunk of ctx.models.publicAnswer.textStream(
-  { messages },
-  ctx.signal,
-  { emitRunEvents: true }
-)) {
-  // Still consume provider chunks in workflow code.
-}
-
-for await (const event of session.workflows.research.stream(input)) {
-  if (event.type === 'model.delta') process.stdout.write(event.delta)
-  if (event.type === 'model.object.partial') renderDraft(event.partial)
-  if (event.type === 'run.finished') renderFinal(event.output)
-}
-```
-
-Harness-emitted model stream events include source metadata for UI grouping:
-`streamId`, `modelAlias`, and, when available, `workflowId` and `agentId`.
-`streamId` is generated by harness and is unique to that model stream
-invocation. Use `streamId` to aggregate chunks from one stream invocation, and
-map producer ids to UI labels or client event names in your SSE/WebSocket
-adapter.
-
-## Tune The Default Agent Loop
-
-Use `prepareStep` when an agent needs small per-round adjustments without a
-custom handler:
-
-```ts
-agents: {
-  answerer: {
-    model: 'reasoning',
-    instructions: 'Answer with citations.',
-    tools: ['search'],
-    prepareStep: ({ step }) => step === 0
-      ? { activeTools: ['search'] }
-      : { activeTools: [] }
+for await (const event of stream) {
+  switch (event.type) {
+    case 'output.text.delta':
+      process.stdout.write(event.delta)
+      break
+    case 'approval.requested':
+      showApproval(event)
+      break
+    case 'run.finished':
+      storeTerminalOutcome(event.outcome)
+      break
   }
 }
 ```
 
-`prepareStep` can switch to another configured model alias, narrow the active
-tool list, override instructions or messages for one model call, and pass
-per-call model options. Use `stopWhen` to end after a known model response:
+Use `stream.cancel(reason)` when the execution itself must stop. Returning
+from the iterator only stops this consumer.
+
+The consumer chooses aggregate or streaming delivery; the agent definition
+declares whether progressive output is text deltas or object snapshots.
+
+## Handle interruptions
+
+Approval and external-wait pauses are normal outcomes:
 
 ```ts
-stopWhen: ({ step, toolCalls }) => step >= 2 || toolCalls.some((call) => call.name === 'finalize')
+if (outcome.status === 'interrupted' &&
+    outcome.interrupt.type === 'tool-approval') {
+  renderApproval(outcome.runId, outcome.interrupt)
+}
 ```
 
-Keep business orchestration in workflows. Loop controls are for bounded local
-generation policy, not for replacing workflow state machines.
+After the application authenticates and authorizes the decision, resume the
+same target call with `options.resume` and the durable run identity. Do not
+turn an approval request into an exception or generic server error.
 
-## Use Provider Runtime Capabilities
-
-Declare the model operations each alias may use. Structured outputs use the
-`object` vocabulary; legacy `json` capability names should not appear in new
-docs or examples.
-
-`text(...)` and `object(...)` are request-response operations and return only
-final results. `textStream(...)` and `objectStream(...)` expose provider chunks;
-inside a session run, harness mirrors those chunks as `RunEvent` values only
-when the stream call opts in with `{ emitRunEvents: true }`.
+For browser chat, use the AI SDK UI adapter:
 
 ```ts
-.models({
-  reasoning: {
-    provider: openai({ apiKey: process.env.OPENAI_API_KEY! }),
-    model: process.env.OPENAI_MODEL ?? 'gpt-5-mini',
-    capabilities: ['text', 'object', 'object_stream', 'tool_use', 'vision_input']
-  },
-  retrieval: {
-    provider: openai({ apiKey: process.env.OPENAI_API_KEY! }),
-    model: process.env.OPENAI_EMBEDDING_MODEL ?? 'text-embedding-3-small',
-    capabilities: ['embeddings']
-  },
-  ranker: {
-    provider: customRanker,
-    model: 'ranker-v1',
-    capabilities: ['rerank']
-  }
+import {
+  createHarnessUIMessageStreamResponse,
+  parseHarnessUIMessageRequest,
+} from '@purista/harness-ai-sdk-ui/v1'
+
+const parsed = await parseHarnessUIMessageRequest(await httpRequest.json())
+const input = parsed.lastUserMessage.parts
+  .filter(part => part.type === 'text')
+  .map(part => part.text)
+  .join('')
+const targetStream = session.agents.assistant.stream(
+  input,
+  parsed.resume === undefined ? undefined : { resume: parsed.resume },
+)
+const events = {
+  result: targetStream.result.finally(() => session.release()),
+  cancel: (reason?: string) => targetStream.cancel(reason),
+  [Symbol.asyncIterator]: () => targetStream[Symbol.asyncIterator](),
+}
+return createHarnessUIMessageStreamResponse(events, {
+  sessionId: parsed.sessionId,
+  ...(parsed.assistantMessageId === undefined
+    ? {}
+    : { messageId: parsed.assistantMessageId }),
 })
 ```
 
-Object generation is the typed structured-output path. Multimodal inputs are
-normal model message parts, gated by `vision_input`, `audio_input`, or
-`file_input` depending on the part kind. Embeddings and reranking are provider
-operations for retrieval workflows; vector storage and RAG orchestration remain
-application or workflow code.
+The adapter emits AI SDK UI Message Stream v1 with the standard response
+headers. It maps text, status, tool parts, and approval requests without a
+PURISTA-specific browser library.
 
-## Invoke A Workflow
-
-A workflow call enters your orchestration code. That code can invoke one agent,
-invoke several agents in sequence or parallel, run deterministic checks, ask
-for human review, and decide whether to write state or artifacts.
+## Call workflows
 
 ```ts
-const result = await session.workflows.answer_with_review.prompt({
-  question: 'How do tools work?'
-})
+const outcome = await session.workflows.reviewIncident.run(input)
 ```
 
-The workflow handler owns orchestration. It can call one agent, many agents,
-tools, state, or human-review logic before returning validated output.
+Agent and workflow invokers have the same `run` and `stream` surface.
+Workflows decide which declared agents and models to call internally.
 
-For deeper workflow patterns, including fan-out/fan-in, durable `ctx.step(...)`
-boundaries, streaming, cancellation, and tests, see
-[Workflows](./workflows.md).
-
-## Manage Memory And History
+## Inspect session state
 
 ```ts
-await session.memory.write('last-topic', { topic: 'tools' })
-const lastTopic = await session.memory.read<{ topic: string }>('last-topic')
-
-const messages = await session.history.list({ limit: 20 })
+const recent = await session.history.list({ limit: 20 })
+const summary = await session.getRunSummary(runId)
+const memory = await session.memory.read('customer-preference')
 ```
 
-Memory is session-scoped. History is persisted through the configured
-`StateStore`.
+History and memory are session-scoped application state. Store business records
+in your application database and expose only approved operations through tools.
 
-## Shut Down
+## Shut down
 
 ```ts
-// End an idle request/session without deleting its conversation history.
-await session.release()
-await harness.shutdown()
+await instance.close()
 ```
 
-Call `harness.shutdown()` during service shutdown so adapters and MCP runners
-can close cleanly. Use `session.close()` only when the conversation and its
-persisted session record should be deleted.
+Close the instance during service shutdown. It releases instance-owned
+adapters, MCP clients, sessions, and background work.

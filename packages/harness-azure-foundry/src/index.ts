@@ -18,6 +18,7 @@ import type {
 } from '@purista/harness'
 import {
   BaseModelProvider,
+  ModelCapabilityError,
   accumulateStreamToolCallDeltas,
   createStreamToolCallState,
   finalizeStreamToolCalls,
@@ -29,6 +30,7 @@ import ModelClient, { type ModelClientOptions } from '@azure-rest/ai-inference'
 import { AzureKeyCredential, type KeyCredential, type TokenCredential } from '@azure/core-auth'
 import { createSseStream } from '@azure/core-sse'
 
+/** Configuration for the Azure AI Foundry model provider factory. */
 export interface AzureFoundryFactoryOptions extends ModelClientOptions {
   /** Azure AI Foundry model endpoint. Not required when `client` is injected. */
   endpoint?: string
@@ -209,7 +211,9 @@ class AzureFoundryModelProvider extends BaseModelProvider {
   }
 }
 
+/** Narrow Azure AI Inference SDK surface accepted for test or custom transport injection. */
 export type AzureFoundryClient = {
+  /** Selects one of the Azure inference endpoints used by the adapter. */
   path(path: '/chat/completions' | '/embeddings'): {
     post(options: unknown): Promise<any> & { asNodeStream?: () => Promise<any> }
   }
@@ -332,7 +336,22 @@ function toContentItem(part: ContentPart): any {
   if (part.kind === 'image') return { type: 'image_url', image_url: { url: `data:${part.mimeType};base64,${part.dataBase64}` } }
   if (part.kind === 'image_url') return { type: 'image_url', image_url: { url: part.url } }
   if (part.kind === 'audio') return { type: 'input_audio', input_audio: { data: part.dataBase64, format: part.mimeType.split('/')[1] ?? 'wav' } }
-  return { type: 'text', text: `[unsupported ${part.kind} content omitted]` }
+  return unsupportedContentPart('azure-foundry', part)
+}
+
+function unsupportedContentPart(providerId: string, part: { readonly kind: string }): never {
+  const method = part.kind === 'image' || part.kind === 'image_url'
+    ? 'vision_input'
+    : part.kind === 'audio'
+      ? 'audio_input'
+      : part.kind === 'file' || part.kind === 'file_url'
+        ? 'file_input'
+        : `${part.kind}_input`
+  throw new ModelCapabilityError('Model provider does not support this content part.', {
+    alias: providerId,
+    method,
+    reason: 'missing_capability',
+  })
 }
 
 function toTools(tools: ChatRequest['tools']): any[] | undefined {

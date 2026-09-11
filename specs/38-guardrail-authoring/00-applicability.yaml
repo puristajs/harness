@@ -1,0 +1,195 @@
+applicability_version: 1
+concerns:
+  - concern_id: representation_reuse
+    status: applicable
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+  - concern_id: sdk_contracts
+    status: applicable
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+  - concern_id: security_privacy
+    status: applicable
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+  - concern_id: async_cancellation
+    status: applicable
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+  - concern_id: observability
+    status: applicable
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+  - concern_id: testing
+    status: applicable
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+  - concern_id: dependency_research
+    status: applicable
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+  - concern_id: file_structure
+    status: applicable
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+  - concern_id: documentation
+    status: applicable
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+  - concern_id: release_cleanup
+    status: applicable
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+  - concern_id: data_integrity
+    status: applicable
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+  - concern_id: frontend_ux
+    status: not_applicable
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    rationale: Existing documentation routes/components only; no application screen or interaction contract changes. Site rendering/copy/link correctness is covered under documentation.
+  - concern_id: voyage_application
+    status: not_applicable
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    rationale: Owner explicitly excludes Voyage from reads, writes, verification and acceptance.
+  - concern_id: new_infrastructure
+    status: not_applicable
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    rationale: No service, endpoint, database, queue, worker, container or provider installation.
+  - concern_id: migrations
+    status: not_applicable
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    rationale: Owner forbids compatibility and migrations; direct code/config cut with no persistent data changes or resets.
+  - concern_id: live_external_checks
+    status: not_applicable
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    rationale: Default verification uses existing fakes and local artifacts; no secrets or external provider/detector calls.
+  - concern_id: business_compliance
+    status: not_applicable
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    rationale: No business workflow, legal policy, payment or approval semantics are altered.

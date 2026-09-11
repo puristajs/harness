@@ -1,0 +1,90 @@
+contract_version: 1
+public_api_inventory:
+  - SandboxPolicy
+  - SandboxBindingOptions
+  - SandboxOwnerAuthorizationContext
+  - SessionOptions
+  - SandboxOwner
+  - SandboxPartition
+  - SandboxScope
+  - SandboxOwnerRegistrationOptions
+  - SessionSandboxBinding
+  - SandboxAdministration
+  - SandboxSelector
+  - SandboxResourceSummary
+  - SandboxResourcePage
+  - SandboxListOptions
+  - SandboxPurgeOptions
+  - SandboxPurgeResult
+  - SandboxSweepOptions
+  - SandboxSweepResult
+  - SandboxSnapshotDeleteOptions
+  - SandboxPermissionDeniedError
+  - SandboxConflictError
+  - SandboxQuotaExceededError
+  - SandboxAdministrationOptions
+  - WorkspaceAdministrationOptions
+  - SandboxSnapshotPolicy
+  - InMemoryDurableWorkspaceOptions
+  - Session.disposeSandbox
+  - AgentSandboxManifest
+execution_semantics:
+  registration: metadata only; persist acknowledgement before first compute
+  create: first-use partition admission within registered owner; never reset known missing state
+  attach: existing owner and partition only
+  restore: committed aggregate workspace after all old attachments fenced
+  dispose: owned resource purge preserving receipts; borrowed detach only
+  purge: durable revocation before deletion and reconciliation before completed
+  sweep: bounded eligibility scan; no deletion of recovery pins or revocation barriers
+contracts:
+  - contract_id: CTR-SOWN-POLICY
+    canonical_source: api.md#CTR-SOWN-POLICY
+    closed_fields: [groups, defaultPolicy, authorizeOwner]
+    policy_variants: [inherit, private, group]
+    group_limit: 64
+    group_max_length: 64
+  - contract_id: CTR-SOWN-OWNER
+    canonical_source: api.md#CTR-SOWN-OWNER
+    owner_fields: [namespace, id, instanceId, identity]
+    binding_fields: [owner, relation, registration, policyDigest, disposed]
+    partition_variants: [shared, agent, workflow, group]
+    scope_fields: [owner, partition, lifetime, runId]
+    registration_modes: [create, attach]
+  - contract_id: CTR-SOWN-OPEN
+    canonical_source: api.md#CTR-SOWN-OPEN
+    request_fields: [scope, mode, identity, signal]
+    modes: [create, attach, restore]
+    unchanged_result_contract: spec34-SandboxOpenResult
+  - contract_id: CTR-SOWN-ADMIN
+    canonical_source: api.md#CTR-SOWN-ADMIN
+    methods: [list, purge, sweep, deleteSnapshot]
+    selector_variants: [owner, tenant, principal]
+    resource_kinds: [sandbox, workspace, snapshot]
+    resource_states: [provisioning, active, paused, terminal, cleanup_pending, deleted, state_lost]
+    purge_states: [cleanup_pending, completed]
+    default_page_limit: 100
+    maximum_page_limit: 1000
+  - contract_id: CTR-SOWN-WORKSPACE
+    canonical_source: api.md#CTR-SOWN-WORKSPACE
+    metadata_fields: [sandboxOwner, sandboxPolicyDigest, sandboxPartitions]
+    pin_methods: [pinCheckpoint, releaseCheckpoint]
+    terminal_method: finish
+    terminal_states: [succeeded, failed, cancelled]
+    quota_fields_added: [maxSnapshotsPerWorkspace, maxRetainedSnapshotBytes]
+  - contract_id: CTR-SOWN-ERRORS
+    canonical_source: api.md#CTR-SOWN-ERRORS
+    new_codes: [SANDBOX_PERMISSION_DENIED, SANDBOX_CONFLICT, SANDBOX_QUOTA_EXCEEDED]
+    new_validation_location: sandbox_options
+  - contract_id: CTR-SOWN-PURISTA
+    canonical_source: ../05-purista.md#CTR-SOWN-PURISTA
+    policy_fields: [adapter, options, sharing, owner]
+    removed_fields: [enabled]
+    session_id_prefix: "agent-session:"
+    durable_run_id_prefix: "agent-run:"
+    manifest_fields: [sharing, groups, defaultPolicy, usesExplicitOwner]
+    executable_binding: AttachedAgentDefinition.sandboxPolicy
+  - contract_id: CTR-SOWN-OPTIONS
+    canonical_source: api.md#CTR-SOWN-OPTIONS
+    sandbox_admin_fields: [maxCatalogEntries, selectorRevocationReserve, maxActiveSandboxes]
+    workspace_admin_fields: [maxCatalogEntries, selectorRevocationReserve]
+    snapshot_fields: [maxSnapshotsPerOwner, maxRetainedSnapshotBytes, maxSnapshotBytes, unpinnedTtlMs]

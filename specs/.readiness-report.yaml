@@ -108,6 +108,142 @@ deterministic_check:
   command: "rg -n \"TBD|TODO|as appropriate|if needed|where possible|handle errors|recover gracefully|best effort\" specs/10-workflows.md specs/21-durable-workspaces.md specs/22-local-durable-execution.md specs/23-provider-outcomes-and-retry.md"
   status: passed
 follow_up_waves:
+  - id: "2026-08-25-distributed-sandbox-lifecycle"
+    status: approved
+    human_approval:
+      status: approved
+      approved_at: "2026-08-26"
+      approver: "repo owner (interactive Codex task)"
+      source: "User auto-approved the sandbox lifecycle specifications and clean-break plan, including the independent local Docker adapter package."
+      approval_ref: "codex-task-01a038ca-2438-7573-b474-3a3b3319bf34#owner-clean-break-tightening-and-standing-auto-approval"
+      manifest_digest: "sha256:d5cf72b589728648eefb39a78cd393d80c14c4c382dc0a234fccc1a16a9af30f"
+    scope:
+      specs:
+        - specs/34-distributed-sandbox-lifecycle
+        - specs/00-overview.md
+        - specs/01-architecture.md
+        - specs/04-state-queue-stream.md
+        - specs/05-sandbox.md
+        - specs/11-sessions.md
+        - specs/13-public-api.md
+        - specs/14-otel-conventions.md
+        - specs/15-error-catalog.md
+        - specs/16-testing.md
+        - specs/21-durable-workspaces.md
+        - specs/22-local-durable-execution.md
+        - specs/25-static-harness-modules.md
+        - specs/32-harness-storage.md
+        - specs/README.md
+    summary:
+      updated_at: "2026-08-26"
+      purpose: "Specify one topology-transparent Sandbox lifecycle with adapter-private coordination, an optional local Docker/OrbStack package, durable-file recovery boundaries, PURISTA dependency boundaries, shared tests, and separate production provider gates."
+    confirmed_decisions:
+      - "Harness remains standalone; PURISTA Core depends only on the public Harness API and maps framework identity/policy at its integration boundary."
+      - "HarnessStorage gains immutable session incarnation and explicit write/delete intent; it never stores sandbox generations, leases, fences, provider references, retention, or cleanup work."
+      - "There is one topology-transparent Sandbox lifecycle interface with no runtime multi-instance capability, subtype, alternate method family, or business-logic branch."
+      - "A production Sandbox adapter or its private control plane owns coordination and must reject stale mutations at the compute boundary; distributed behavior is verified by adapter conformance tests."
+      - "Create, attach, and restore modes make creation authority explicit, so an existing persisted scope never becomes an empty first-use sandbox after local or provider state loss."
+      - "Committed DurableWorkspace files are the recovery guarantee; a missing sandbox is never silently replaced with empty state."
+      - "Lifecycle configuration, retention, cleanup retry, and orphan reclamation belong to the adapter, not Harness defaults or a Harness maintenance API."
+      - "Production provider implementation remains blocked until the common E2B/Daytona bake-off produces an approved provider/control-plane decision."
+      - "The optional @purista/harness-sandbox-docker package targets one local engine, including OrbStack via Docker context, without a second interface or production-provider gate dependency."
+      - "Initial Docker scope is retained local files and real container execution, not checkpoint recovery; unsupported restore and missing state fail without empty replacement."
+      - "Every existing sandbox variant, fake, caller, and active guide must use the one new contract, with no compatibility layer; the local-directory rewrite has an explicit implementation owner and one complete integration gate."
+      - "The owner subsequently authorized end-to-end implementation except E2B/Daytona; standing auto-approval is freshly bound to the audited lifecycle specification digest."
+    gates:
+      deterministic_spec_check:
+        status: passed
+      independent_readiness_review:
+        status: passed
+        evidence: "The repository owner supplied standing auto-approval and waived a separate approval round; the boundary-simplification semantic review has zero blocking findings."
+      human_approval:
+        status: passed
+      implementation_wave_readiness:
+        status: pending_ticket_format
+      provider_adapter_implementation:
+        status: blocked
+      sandbox_ticket_format:
+        status: pending
+        evidence: "Unexecuted sandbox tickets remain planned or provider-blocked. The generic planner check fails the pre-existing compact plan/index layout and unrelated stale hashes; machine-executable promotion requires separate format reconciliation."
+      local_implementation_verification:
+        status: passed
+        evidence: "plans/2026-08-26-sandbox-completion-audit.md; scoped contract/runtime tests and live OrbStack evidence, with publication and untested engines explicitly excluded."
+  - id: "2026-08-25-generic-evaluation-runs"
+    status: approved
+    human_approval:
+      status: approved
+      approved_at: "2026-08-28"
+      approver: "repo owner (interactive Codex task)"
+      source: "Repository owner explicitly auto-approved this workstream, selected clean-breaking refactoring over legacy/migration/compatibility, and authorized end-to-end implementation after the revised observation, score-only, trial, accounting, and OTel contract."
+      approval_ref: "codex-task-01a038ca-2055-7ce0-9110-06a4502dee31#evaluation-observation-contract-and-implementation-authorization"
+      scope_digest: "sha256:5c10b24dad67e626629acb7dcb7127976e81615ee5bea6c74d263078c958c7dc"
+      digest_algorithm: "SHA-256 over the LC_ALL=C-sorted shasum -a 256 output for every file in scope.specs; order independent."
+    scope:
+      specs:
+        - specs/00-overview.md
+        - specs/06-models.md
+        - specs/13-public-api.md
+        - specs/14-otel-conventions.md
+        - specs/15-error-catalog.md
+        - specs/16-testing.md
+        - specs/17-implementation-plan.md
+        - specs/19-ai-eval-core.md
+        - specs/35-generic-evaluation-runs.md
+        - specs/README.md
+    summary:
+      updated_at: "2026-08-28"
+      purpose: "Specify generic provider-neutral execution and score-only evaluation, application-owned observations, trials, multi-scorer assessment outcomes, separated model accounting, aggregates, failure control, feedback projection, and privacy-safe telemetry."
+    confirmed_decisions:
+      - "runEvaluation executes and scores; scoreEvaluation re-scores application-owned observations; createDeterministicEvaluationScorer is an optional typed predicate factory."
+      - "The aggregate evaluator and standalone scorer functions/types are deleted with no aliases, wrappers, overloads, deprecation period, transition guide, or dual behavior."
+      - "Harness core owns provider-neutral in-process execution/scoring, observations, bounded evidence, assessment coverage, operational aggregates, failure control, FeedbackRecord projection, and privacy-safe telemetry only."
+      - "Task input excludes assessment material; dimensions explicitly distinguish scored, not applicable, and inconclusive outcomes; trials are not retries."
+      - "Existing TokenUsage and nested model telemetry remain canonical; task, scorer, and invocation wall measurements are separate and unknown accounting is never zero."
+      - "Dataset/experiment storage and UI, annotation, dashboards, hosted judges, reporter/sink ports, and vendor SDKs remain outside Harness core."
+      - "Owner authorization covers implementation of this clean-break contract; vendor SDKs, persistence, dashboards, annotation, and dataset UIs remain outside core."
+    gates:
+      deterministic_check:
+        status: passed_with_flat_spec_exception
+        evidence: "Targeted ambiguity, link, stale-reference, diff-whitespace, and scope-digest checks pass. The repository-wide modern checker expects a structured manifest tree not used by this existing flat specification set."
+      independent_readiness_review:
+        status: passed
+        evidence: "The repository owner supplied standing auto-approval for this spec workstream and waived a separate approval round; Codex completed the semantic checklist review with zero blocking evaluation findings."
+      human_approval:
+        status: passed
+      contradiction_check:
+        status: passed
+      public_api_alignment:
+        status: passed
+        evidence: "Specs 06, 13, 14, 16, 17, 19, and 35 define one clean-break execute-and-score/score-only surface, existing TokenUsage reuse, and an explicit obsolete-symbol removal list."
+      clean_rebuild_boundary_gate:
+        status: passed
+        evidence: "The evaluation module is rebuilt behind the new contracts; stale aliases, callback mirrors, compatibility wrappers, and old behavior tests are prohibited."
+      representation_reuse_gate:
+        status: passed
+        evidence: "The in-process observation is application-owned content and the result is a distinct content-minimized projection; the only further mapping is the explicitly lossy EvaluationRunResult-to-FeedbackRecord projection. No wire or persistence representation is in scope."
+      async_semantics_gate:
+        status: passed
+      end_to_end_definition_gate:
+        status: passed
+      security_privacy_gate:
+        status: passed
+      observability_gate:
+        status: passed
+      performance_resilience_gate:
+        status: passed
+      current_dependency_research_gate:
+        status: passed
+        evidence: "Core adds no dependency; optional provider examples are sequenced after the substrate and cite current official Langfuse, Datadog, and Phoenix documentation in the approved plan."
+      checklist_walk_gate:
+        status: passed
+        blocking_findings_count: 0
+        evidence: "Core, execute-and-score/score-only end-to-end behavior, architecture/structure, contracts, testing, privacy, AI automation, async/trials, model cost/usage, OTel, and reporting/aggregation are covered or explicitly outside the in-process core boundary."
+      semantic_judge_gate:
+        status: passed
+        reviewer: "Codex spec semantic review under repository-owner auto-approval"
+        blocking_findings_count: 0
+      implementation_wave_readiness:
+        status: passed
   - id: "2026-08-14-static-modules-context-testing"
     status: approved
     human_approval:
@@ -211,3 +347,505 @@ follow_up_waves:
       - "Workflow child-agent delegation is opt-in per workflow or via harness delegation defaults."
       - "Local durable execution ships in core behind built-in Node SQLite; no new runtime dependencies."
       - "Provider retry policy is harness-owned; first-party adapters disable hidden SDK retries by default."
+  - id: "2026-08-23-nemo-shaped-guardrails"
+    status: approved
+    human_approval:
+      status: approved
+      approved_at: "2026-08-23"
+      approver: "repo owner (interactive Codex task)"
+      source: "User explicitly requested and auto-approved a complete NeMo-shaped guardrails implementation for AI Harness, including deterministic tests, docs, skills, example, and CI integration."
+    scope:
+      specs:
+        - specs/00-overview.md
+        - specs/02-harness-config.md
+        - specs/09-agents.md
+        - specs/13-public-api.md
+        - specs/13-public-api.md
+        - specs/14-otel-conventions.md
+        - specs/15-error-catalog.md
+        - specs/16-testing.md
+        - specs/30-guardrails.md
+        - specs/README.md
+    summary:
+      updated_at: "2026-08-23"
+      purpose: "Approve optional typed NeMo-shaped input/output/tool/retrieval guardrails while retaining Harness ownership of models, state, tools, governance, errors, logging, and telemetry."
+    confirmed_decisions:
+      - "Harness receives only generic default-loop interception; the guardrails addon is optional and has no Core dependency."
+      - "Portable NeMo YAML concepts are supported, but Python actions, Colang, dialog/execution runtime, provider creation, servers, and vector stores are rejected rather than approximated."
+      - "Actions are application-owned, ordered, transform-aware, and fail closed; no implicit fail-open exists."
+      - "Guardrail telemetry, errors, logs, events, and fixtures are content-free by default."
+      - "Every guardrail evaluation has an explicit content-free outcome in traces and metrics; blocks are expected enforcement results, while action failures and timeouts are error spans."
+      - "Standalone retrieval rails accept typed model/cancellation/observability context and retain the global OTel parent when no scoped Harness interceptor exists."
+      - "The Harness testing adapter is the required deterministic evidence path."
+    gates:
+      deterministic_check:
+        status: passed
+        evidence: "Spec has explicit phase ordering, closed outcomes, migration diagnostics, ownership, no-invention gate, acceptance paths, and bounded dependencies."
+      semantic_judge_gate:
+        status: passed
+        evidence: "Repository-owner approval is bound to this requested scope; all supported and unsupported NeMo behaviors have a named final state."
+      contradiction_check:
+        status: passed
+      security_privacy_gate:
+        status: passed
+      observability_gate:
+        status: passed
+      implementation_wave_readiness:
+        status: passed
+
+  - id: "2026-08-26-sandbox-ownership-and-administration"
+    status: approved
+    human_approval:
+      status: approved
+      approved_at: "2026-08-26"
+      source: "Repository owner requested specs and autonomous implementation plan only under standing specification auto-approval."
+    scope:
+      specs:
+        - specs/36-sandbox-ownership-and-administration
+    approval_evidence:
+      manifest_digest: sha256:9578b59d21602ef020997d76a876d99df6e98728ea41834c8fd981c0d38e0acb
+      evidence_ref: specs/36-sandbox-ownership-and-administration/06-readiness-evidence.md
+    summary:
+      purpose: "One Sandbox contract with definition sharing, exact owner identity, bounded administration and public-only PURISTA integration."
+      implementation_authority: not_started_specs_and_plan_only
+      plan_ref: plans/sandbox-ownership/implementation-plan.md
+      strict_spec_check: passed
+      strict_plan_check: passed
+      production_provider_gate: unchanged
+      release_prerequisites: "Fresh authorized local Docker evidence and strict packed Core consumer declarations; existing dependency failures are not waived."
+  - id: "2026-09-04-composable-definitions-and-catalogs"
+    status: approved
+    human_approval:
+      status: approved
+      approved_at: "2026-09-08"
+      approver: "repo owner (active interactive Codex task)"
+      source: "The repository owner explicitly approved the Harness-first design, clean breaking v4 release, removal of legacy and compatibility APIs, AI SDK UI Message Stream v1 interoperability, autonomous implementation, the trusted-host integrator target visitor, the strict hosted fresh/resume and request-authorizer boundary, the explicit same-tenant stored-run-owner approval-resume mode, canonical HarnessDefinition generic order, invariant phantom inference, and nominal branded remote target contracts. Earlier content-bound review evidence remains historical; the repaired digest passed fresh independent review on 2026-09-09."
+      approval_ref: "active-codex-task#harness-v4-clean-break-owner-approval"
+      scope_digest: "sha256:f754659b76875700de88ff9e8e1fb763979b1620e813d431471c406d5437d78b"
+      digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
+    scope:
+      specs:
+        - specs/00-overview.md
+        - specs/01-architecture.md
+        - specs/02-harness-config.md
+        - specs/04-state-queue-stream.md
+        - specs/07-tools.md
+        - specs/08-skills.md
+        - specs/09-agents.md
+        - specs/10-workflows.md
+        - specs/11-sessions.md
+        - specs/12-streaming.md
+        - specs/13-public-api.md
+        - specs/15-error-catalog.md
+        - specs/17-implementation-plan.md
+        - specs/19-ai-eval-core.md
+        - specs/22-local-durable-execution.md
+        - specs/25-static-harness-modules.md
+        - specs/28-workflow-child-tasks.md
+        - specs/32-harness-storage.md
+        - specs/33-enterprise-memory/00-conventions.md
+        - specs/33-enterprise-memory/00-architecture-overview.md
+        - specs/33-enterprise-memory/03-contracts/contracts.yaml
+        - specs/36-sandbox-ownership-and-administration/01-behavior.md
+        - specs/36-sandbox-ownership-and-administration/03-contracts/api.md
+        - specs/29-agent-plugins.md
+        - specs/30-guardrails.md
+        - specs/38-guardrail-authoring/03-contracts/callbacks.md
+        - specs/38-guardrail-authoring/03-contracts/actions-and-binding.md
+        - specs/40-declarative-registration-and-guardrails-binding.md
+        - specs/41-opa-policy-adapter.md
+        - specs/37-decision-boundaries/03-contracts/decisions.md
+        - specs/37-decision-boundaries/03-contracts/provider-continuation.md
+        - specs/39-standard-schema-boundaries/03-contracts/model-projection.md
+        - specs/39-standard-schema-boundaries/03-contracts/schema-types.md
+        - specs/42-composable-definitions-and-catalogs.md
+        - specs/README.md
+        - ../purista/specs/20-agents/88-harness-first-service-integration.md
+    summary:
+      updated_at: "2026-09-09"
+      purpose: "Specify the Harness v4 composition model and its PURISTA host boundary: standalone immutable definitions; canonical Catalog/Name/Graph inference; exact inferred runtime requirements; authenticated trusted-host closure visitation; strict hosted fresh/resume authorization; invariant local and nominal branded remote target inference; typed dispatch; standard streaming and approval behavior, including same-tenant stored-run-owner resume; and address-first PURISTA mounting."
+      implementation_status: approved_for_planning_and_implementation
+    precedence: "Spec 42 supersedes conflicting Harness construction, registration, module, agent, workflow, tool, Skill, runtime-instantiation, and host-binding APIs. PURISTA spec 88 is the authoritative companion projection of the same contracts into ServiceBuilder, EventBridge, Hono, CLI, export metadata, and testing."
+    compatibility: "Clean break: no legacy aliases, deprecated overloads, wrappers, shims, dual behavior, migration runtime, or backward-compatible builder/module surface. Migration material contains source rewrites only."
+    amendment_evidence:
+      status: passed_after_independent_rereview
+      requested_at: "2026-09-08"
+      source_revision: "72462ce1d68ddc2f39efd6c6b7718f878759bbfe"
+      changed_spec: "specs/42-composable-definitions-and-catalogs.md"
+      changed_spec_digest: "sha256:30053752a1572ade257208e776db13b05abef0cfa92b8dcad8c7f13248bf24cc"
+      storage_spec: "specs/32-harness-storage.md"
+      storage_spec_digest: "sha256:865701cc4b1cde9b145b47d40e229c521a1144927f901dee35ae86d40e51d299"
+      companion_spec: "../purista/specs/20-agents/88-harness-first-service-integration.md"
+      companion_spec_digest: "sha256:1ae997183804f8ab03a5dea715f4308c7081b962a21fe3f0a06812f40f66d2be"
+      scope_digest: "sha256:f754659b76875700de88ff9e8e1fb763979b1620e813d431471c406d5437d78b"
+      evidence: "The independently reviewed amendment closes the reported Harness and PURISTA companion blockers: canonical public inference with the full invariant schema witness and declaration-safe external emit; nominal local, remote, and queue authenticity; trusted closure visitation; strict hosted fresh/resume authorization and stored-owner privacy; strict own-enumerable canonical JSON; no wire-input fallback for fresh validated input; durable validatedInput retention and terminal receipt re-read; prior-receipt run and stream cleanup; generated validation-only remote contracts; and concrete server-side AI SDK UI Message Stream v1 protocol projection without a client library. The exact source set contains no excluded product reference, compiled-graph exposure, or compatibility API."
+      repaired_findings:
+        count: 8
+        status: repaired_and_independently_reviewed
+        items:
+          - "All normative HarnessDefinition declarations use Catalog, Name, Graph and require exact direct-root/catalog inference proofs."
+          - "The visitor is a trusted-host TCB with full preflight, deterministic empty/success/callback-failure behavior, exact foreign-definition paths, and integrator-only exports."
+          - "Hosted roots use one strict wire-preserving fresh/resume union and a required Core-owned request authorizer after identity, trace, stored-run, wire, and same-tenant validation but before events or effects; stored identity remains restricted to trusted execution scopes."
+          - "Generated remote contracts use factory-authentic validation-only schema witnesses, exact address/digest/queue projection, and nominal Core branding without executing or claiming a producer transform."
+          - "Scratch TypeScript proof requires a hidden invariant target-inference witness over the exact wire, validated, output, update-kind, and interrupt-kinds tuple, exposed only through the Harness inference helper while runtime $infer remains the frozen empty phantom."
+          - "Scratch nominal-authenticity proof requires private type and runtime identity for local and hydrated remote contracts and queue capabilities; structural copies, forged brands, and handwritten inference cannot become authority."
+          - "Hosted JSON boundaries accept only strict own-enumerable ordinary JSON, never invoke accessors, and fail before createRun when the trusted fresh validated input is absent instead of falling back to wire input."
+          - "Hosted run and stream resume paths map empty identity to session_identity_mismatch, release lease and active claim for an immediately prior approval receipt, emit declaration-safe external factories, and accept an exact concrete HarnessTargetStream at the server-side AI SDK UI adapter."
+      deterministic_checks:
+        yaml_parse: passed
+        diff_whitespace: passed
+        targeted_ambiguity_scan: passed
+        scope_digest_recalculation: passed
+        generic_structured_spec_checker:
+          status: existing_flat_spec_exception
+          evidence: "The shared checker requires newer structured spec-root artifacts that this repository's approved flat spec set does not contain. The exact flat scope digest, YAML parse, ambiguity scan, zero-excluded-reference scan, and independent readiness review provide the applicable gates."
+    independent_reviews:
+      - review: "independent contract and architecture readiness review"
+        status: passed
+        evidence: "PASS after definition ownership, composition, runtime requirements, standalone behavior, PURISTA separation, and representation boundaries were made deterministic."
+      - review: "independent end-to-end API and runtime readiness review"
+        status: passed
+        evidence: "PASS after prompt roles, memory, durability/workspace, local budgets, workflow call replay, RuntimeRequirements, MCP, hosted SPI, and owner branding were resolved."
+      - review: "independent final hosted-dispatch readiness review"
+        status: passed
+        evidence: "PASS after hidden-identity dispatcher binding tables, Contracts-constrained hosted calls, sender/receiver depth ceilings, per-run HostInvocation, nested-target handling, and standard SSE framing were resolved."
+      - review: "independent exact event and PURISTA streaming-boundary review"
+        status: passed
+        evidence: "PASS after the canonical ExecutionEvent union, terminal outcome parity, one-time input validation, before-start errors, after-guard terminal replacement, directional JSON Schema export, and standard SSE failure behavior were made exact."
+      - review: "independent catalog and private-registry implementation-readiness review"
+        status: passed
+        evidence: "PASS after exact original-definition catalog maps, MCP nesting and owner identity, shared non-MCP tool contracts, normalized requirements ownership, stable compiler errors, a private cycle test seam, and sanitized inspection were made exact."
+      - review: "independent catalog implementation semantic review"
+        status: passed_after_contract_repair
+        evidence: "The review rejected missing catalog/Harness identity, erased Guardrail and presence requirements, and inexact inferred MCP owner types. The approved contract and ticket now require all four repairs before acceptance."
+      - review: "independent exact runtime-binding readiness review"
+        status: passed_after_contract_repair
+        evidence: "PASS after exact conditional configuration, pure deterministic validation, provider and MCP capability checks, Skill-runtime metadata, stable error precedence, and separated initialization and lifecycle ownership were made implementation-exact."
+      - review: "independent tools, Skills, and MCP implementation-readiness review"
+        status: passed_after_contract_repair
+        evidence: "PASS after exact built-in capabilities, private executable-binding ownership, deterministic protected two-tier Skill disclosure, bounded immutable Skill snapshots, explicit read-only mount/runtime contracts, current Agent Skills frontmatter, exact content-free Skill errors, one-bundle-per-server MCP lifecycle, and H4-005 common-pipeline ownership were made testable."
+      - review: "independent agent-loop, governance, registry, resume, and digest implementation-readiness review"
+        status: passed_after_contract_repair
+        evidence: "PASS after agent governance was bound to the complete model-facing tool map, approval durability and revisions became statically decidable, trusted host identity/trace projection was explicit, nested continuation trees and provider-turn stream ids were closed, cross-process digest preimages were fully typed, staged executor ownership was aligned, and generated read_skill bindings were assigned to their owning agent identity."
+      - review: "independent workflow orchestration and child-task implementation-readiness review"
+        status: passed_after_contract_repair
+        evidence: "PASS after workflow-local call budgets and graph digest ownership, exact fulfilled/failed/cancelled replay, stable durable comparison, lifetime timeout and terminal races, approval-capable task prohibition, fanOut no-budget behavior, strict persisted projections, and one shared caller-neutral target-stream consumer were made deterministic."
+      - review: "independent hosted runtime and durable host-tool implementation-readiness review"
+        status: passed_after_contract_repair
+        evidence: "PASS after hosted configuration, immutable owner and target identity, root-scoped binding overlays, exact RunCheckpoint projections, stable host occurrence ids, terminal replay, continuation frames, validation precedence, and shared runtime ownership were made deterministic."
+      - review: "independent hosted nested-call continuation identity review"
+        status: passed_after_contract_repair
+        evidence: "PASS after the host frame retained the exact nested target, wire input, run, invocation, and session tuple and resume was required to recompute every derived identity before child dispatch or another effect."
+      - review: "independent H4-009 hosted runtime implementation review"
+        status: passed_after_runtime_repair
+        evidence: "PASS after max-depth enforcement, trusted trace propagation on resume, global checkpoint sequencing, exact direct-run identity, strict in-flight call tuple validation, complete descendant stream lifecycles, and unconditional hosted-environment cleanup were verified."
+      - review: "independent v4 addon and catalog feasibility review"
+        status: passed_after_contract_repair
+        evidence: "PASS after Agent Plugin exported types, deterministic immutable digest snapshots, total diagnostics/errors, Core-owned MCP redirect safety, OPA trace reuse and error/transport bounds, exact Guardrail dependency projection, and explicit sandbox runtime metadata were made implementation-feasible. The review found defineCatalog sufficient and rejected separate public runtime registries."
+      - review: "independent v4 addon semantic readiness review"
+        status: passed_after_contract_repair
+        evidence: "PASS after deterministic plugin path/order/precedence and diagnostics, exact header and timer bounds, content-free OPA construction/runtime errors, content-bound Agent Plugins schemas and pinned OPA conformance artifact, representation ownership, and atomic release staging were closed. No implementation behavior remains to be invented."
+      - review: "independent post-second-judge-repair v4 semantic review"
+        status: passed
+        reviewed_at: "2026-09-07"
+        reviewer: "independent third-pass hard gate"
+        harness_commit: "7dcc024ba4cd5014f9aadb3e426da030f03f082f"
+        purista_commit: "1f3b469fa6ca409e837ed9b8d90114af31566be2"
+        scope_digest: "sha256:71d2ff8ad62b47f3d20144ba8e7cfd5ff233f9b65bcd5d739854603d7d553338"
+        refinement_digest: "sha256:1987144acbf542637af76c05f42deb7d55254d839c1a9bf254794cfea47728a2"
+        blocking_findings_count: 0
+        evidence: "PASS with zero implementation-blocking decisions after exact root/private hosted dispatch, caller-correlated event and workflow-model streaming authority, terminal/session/ancestry semantics, MCP header conformance, lifecycle and policy ownership, legacy API cleanup, raw standalone versus Core-wrapped aggregate outcomes, private closure and authoring-catalog handler visibility, the package-real integrator path, v4 evaluation/session usage, and exact PURISTA queue receipt typing were verified together."
+      - review: "independent hosted integrator, authorization, invariant inference, and nominal remote-contract amendment re-review"
+        status: passed
+        reviewed_at: "2026-09-09"
+        reviewer: "independent final Harness/PURISTA readiness reviewer"
+        scope_digest: "sha256:94c2b123aeb39df55d86c54335ae50ca17dac8df4cf832334bc82ce8f0acd615"
+        blocking_findings_count: 0
+        evidence: "PASS with zero blockers after review of public target inference and its full invariant schema witness, nominal remote and queue authenticity, strict fresh/resume authorization, durable validatedInput creation identity and terminal receipt re-read, trusted closure visitation, server-side protocol versus UI-client separation, and zero excluded product references."
+      - review: "independent existential target wildcard and downstream compile-scope amendment review"
+        status: passed
+        reviewed_at: "2026-09-09"
+        reviewer: "independent TypeScript contract hard gate"
+        scope_digest: "sha256:94c1f0ab8658fe1151f5bff9278638f7464eb4b507ffbd19d93a491395a199f4"
+        blocking_findings_count: 0
+        evidence: "PASS under TypeScript 6.0.3. The existing AnyHarnessTargetContract uses seventh-generic any only as TypeScript's existential consumer wildcard; exact concrete targets retain invariant wire, validated-input, output, update, and interrupt inference plus runtime authenticity. The implementation scope includes every compile-affected execution-event, AI SDK UI adapter, example, and OPA consumer, with zero excluded-repository references."
+      - review: "independent strict JSON, storage snapshots, and adapter-schema amendment review"
+        status: passed_after_plan_scope_repair
+        reviewed_at: "2026-09-09"
+        reviewer: "independent storage contract hard gate"
+        scope_digest: "sha256:433fb6ca99665afbae3e96952110a022f0605a20121ee393f55f93657d91f3fa"
+        blocking_findings_count: 0
+        evidence: "PASS after the canonical plan took ownership of the shared canonical JSON source and tests plus the Harness model JSON and session-lifecycle remediation paths. The contract requires descriptor-only traversal without getter invocation, rejects hidden/accessor/symbol/sparse/custom-prototype values, returns fresh deeply frozen adapter snapshots, forbids fresh wire-input fallback, maps empty resume identity deterministically, cleans lease and active claim for prior-receipt run and stream resumes, emits external declarations without the hidden witness, accepts exact concrete HarnessTargetStream values, and verifies the semantic SQLite/PostgreSQL validated-input constraint rather than trusting its name. A renamed equivalent constraint passes; missing, weakened, or non-equivalent constraints fail."
+      - review: "independent conversation append-order amendment review"
+        status: passed_after_runtime_repair
+        reviewed_at: "2026-09-09"
+        reviewer: "independent Harness storage/runtime reviewer"
+        scope_digest: "sha256:f754659b76875700de88ff9e8e1fb763979b1620e813d431471c406d5437d78b"
+        blocking_findings_count: 0
+        evidence: "PASS after the storage contract defined append and replace order explicitly and the in-memory, SQLite, and PostgreSQL adapters preserved that order for equal timestamps. Focused contract, retention, cursor, replacement, reopen, schema-integrity, and two-client PostgreSQL tests cover the repaired behavior; the live test remains credential-gated and does not claim execution without configuration."
+    conversation_append_order_amendment:
+      status: passed_after_independent_runtime_review
+      reviewed_at: "2026-09-09"
+      storage_contract: "specs/04-state-queue-stream.md"
+      storage_contract_digest: "sha256:851f1a57a54d501f3889be502e6621ad5e40b5961aa7429a1c50400f383d7be1"
+      testing_contract: "specs/16-testing.md"
+      testing_contract_digest: "sha256:96d6ade97b115adbea26f30940701994df09add30c413870e72f2f153922cffb"
+      scope_digest: "sha256:f754659b76875700de88ff9e8e1fb763979b1620e813d431471c406d5437d78b"
+      evidence: "The amendment removes timestamp-plus-id ordering ambiguity and requires adapters to preserve append order, including tied timestamps, cursor and limit reads, replacement, retention, reopen, and concurrent PostgreSQL append batches."
+    dependency_and_ui_protocol_evidence:
+      captured_at: "2026-09-05"
+      standard_schema:
+        manifest: packages/harness/package.json
+        version: "@standard-schema/spec 1.1.0"
+      mcp:
+        manifest: packages/harness/package.json
+        version: "@modelcontextprotocol/client ^2.0.0"
+        evidence: "Spec 42 separates typed MCP server declarations from exact HTTP or stdio runtime bindings and requires discovered-schema equality before instance creation."
+      agent_skills:
+        captured_at: "2026-09-04"
+        specification_version: "unversioned current specification"
+        frontmatter_fields: "required name and description; optional license, compatibility, metadata, and experimental allowed-tools"
+        evidence: "Spec 42 follows the current official Agent Skills field set, keeps allowed-tools as untrusted content rather than authority, and adds Harness-owned bounded loading and progressive disclosure rules."
+        official_sources:
+          - https://agentskills.io/specification
+          - https://github.com/agentskills/agentskills/blob/main/docs/specification.mdx
+      agent_plugins:
+        specification_version: "1.0.0"
+        reviewed_at: "2026-09-05"
+        bundled_schema_artifacts:
+          - path: packages/harness-agent-plugins/schemas/1.0.0/plugin.schema.json
+            sha256: fd74dfcbccea4a5b8768d9bc87b9da27449213ca5d464ace724ca48ec4bc074b
+          - path: packages/harness-agent-plugins/schemas/1.0.0/mcp.schema.json
+            sha256: 9b9863a18c18c2a4c53772e6099b13ae3c2e7eab1bd5330e9b98dca59af71e5f
+        evidence: "Spec 29 projects only explicitly selected local Skill and Streamable HTTP MCP data from a trusted, digest-pinned immutable snapshot; it executes no plugin code, does not claim stdio support, and tests the bundled reviewed schemas without network access."
+        official_sources:
+          - https://agent-plugins.org/specification
+      opa:
+        interface: "OPA Data API v1"
+        reviewed_at: "2026-09-05"
+        tested_release: "OPA 1.17.0"
+        image: "docker.io/openpolicyagent/opa@sha256:3c6e9e4d433b6e94df424c3385134312a95042aa991cdfc8e01944115675fb9d"
+        evidence: "Spec 41 uses the documented POST /v1/data/{path} input/result envelope, bounds all HTTP input/output, and keeps Rego deployment and decision-log policy application-owned. A separate hermetic real-OPA conformance job verifies the pinned image version, loopback health, repository policy fixture, allow/deny/undefined decisions, and cleanup; deterministic package tests use FakeOpaDataApi."
+        official_sources:
+          - https://www.openpolicyagent.org/docs/rest-api#execute-a-simple-query
+      trace_context:
+        specification: "W3C Trace Context Level 2"
+        reviewed_at: "2026-09-05"
+        evidence: "Core owns and exports the one trace-carrier normalizer; first-party addons reuse it rather than freezing a second version/flag parser."
+        official_sources:
+          - https://www.w3.org/TR/trace-context-2/
+      ai_sdk_ui:
+        manifest: packages/harness-ai-sdk-ui/package.json
+        tested_version: "ai 7.0.90"
+        peer_range: "ai ^7.0.0"
+        protocol: "AI SDK UI Message Stream v1"
+        evidence: "Spec 42 pins the current official DefaultChatTransport/UI-message parts contract, standard tool approval request/response flow, official stream reader conformance, data-only framework SSE events, and a single [DONE] sentinel without custom client libraries."
+        official_sources:
+          - https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
+          - https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-tool-usage
+          - https://ai-sdk.dev/docs/reference/ai-sdk-ui/use-chat
+    gates:
+      human_approval:
+        status: passed
+      scope_digest:
+        status: passed
+      independent_readiness_reviews:
+        status: passed
+        completed_count: 19
+        pending_count: 0
+      contradiction_check:
+        status: passed
+      strong_boundary_type_gate:
+        status: passed
+      clean_rebuild_boundary_gate:
+        status: passed
+      representation_ownership_gate:
+        status: passed
+      standalone_and_hosted_parity_gate:
+        status: passed
+      async_streaming_and_approval_gate:
+        status: passed
+      security_privacy_gate:
+        status: passed
+      current_dependency_research_gate:
+        status: passed
+      implementation_wave_readiness:
+        status: passed
+
+decision_boundary_refactor_2026_08_26:
+  status: approved
+  source: repository-owner explicitly approved updated specs and clean breaking refactor in task 01a03d51-6262-7480-89eb-baa163905ef6
+  authority: specs/37-decision-boundaries/.readiness-report.yaml
+  manifest: specs/37-decision-boundaries/spec-manifest.yaml
+  plan: plans/decision-boundaries/implementation-plan.md
+  scope: shared decision evidence and cancellation, permissions/governance/immediate approval, canonical tool replay, final-output rails, strict waits, application review claims, consumers, docs and cleanup
+  precedence: This scoped approval supersedes earlier guardrail/governance callback, error, event and lifecycle definitions; unrelated approved workstreams remain unchanged.
+  compatibility: no aliases, legacy paths, migrations, data resets or dual readers
+  implementation_status: pending
+
+guardrail_authoring_2026_08_26:
+  status: approved
+  source: Repository owner explicitly requested updated auto-approved specs and an implementation plan only in task 01a03d51-6262-7480-89eb-baa163905ef6.
+  authority: specs/38-guardrail-authoring/.readiness-report.yaml
+  manifest: specs/38-guardrail-authoring/spec-manifest.yaml
+  plan: plans/guardrail-authoring/implementation-plan.md
+  scope: Optional YAML and canonical config, action tokens, build dependency preflight, callback/schema inference, docs/skills/website and cleanup.
+  precedence: Scoped spec38 supersedes authoring/config declarations only; spec37 runtime decision semantics remain authoritative.
+  compatibility: No legacy aliases, compatibility or migrations.
+  implementation_status: not_started
+declarative_registration_and_guardrails_binding_2026_08_30:
+  status: superseded
+  historical_status: approved
+  record_kind: historical_decision_evidence_only
+  former_authority: specs/40-declarative-registration-and-guardrails-binding.md
+  superseded_by: specs/42-composable-definitions-and-catalogs.md
+  evidence: "The owner approved the earlier direct Guardrails-binding cleanup. Spec 40 now retains only that decision record; it defines no active registration or runtime surface."
+
+clean_builder_and_runtime_api_2026_08_30:
+  status: superseded
+  historical_status: approved_and_implemented
+  record_kind: historical_decision_evidence_only
+  former_authority: specs/42-clean-builder-and-runtime-api.md
+  superseded_by: specs/42-composable-definitions-and-catalogs.md
+  evidence: "This record describes the prior builder-based release and grants no active API, compatibility path, or implementation authority."
+
+harness_v4_minimal_dx_refinement_2026_09_07:
+  status: approved
+  authority: specs/42-composable-definitions-and-catalogs.md
+  human_approval:
+    status: passed
+    approved_at: "2026-09-07"
+    source: "Repository owner approved the minimal immutable catalog/runtime design and requested autonomous spec refinement in the active Codex task."
+  scope:
+    specs:
+      - ../purista/specs/20-agents/88-harness-first-service-integration.md
+      - specs/00-overview.md
+      - specs/01-architecture.md
+      - specs/02-harness-config.md
+      - specs/03-foundation.md
+      - specs/05-sandbox.md
+      - specs/06-models.md
+      - specs/07-tools.md
+      - specs/08-skills.md
+      - specs/09-agents.md
+      - specs/10-workflows.md
+      - specs/11-sessions.md
+      - specs/12-streaming.md
+      - specs/13-public-api.md
+      - specs/15-error-catalog.md
+      - specs/16-testing.md
+      - specs/17-implementation-plan.md
+      - specs/18-living-wiki-jaeger-example.md
+      - specs/19-ai-eval-core.md
+      - specs/21-durable-workspaces.md
+      - specs/22-local-durable-execution.md
+      - specs/23-provider-outcomes-and-retry.md
+      - specs/24-governance-policy.md
+      - specs/25-static-harness-modules.md
+      - specs/26-context-projection-and-compaction.md
+      - specs/32-harness-storage.md
+      - specs/33-enterprise-memory/00-architecture-overview.md
+      - specs/33-enterprise-memory/00-conventions.md
+      - specs/33-enterprise-memory/00-file-structure.md
+      - specs/33-enterprise-memory/00-module-boundaries.yaml
+      - specs/33-enterprise-memory/00-policy-profile.yaml
+      - specs/33-enterprise-memory/00-reuse-inventory.yaml
+      - specs/33-enterprise-memory/00-traceability.yaml
+      - specs/33-enterprise-memory/00-vision.md
+      - specs/33-enterprise-memory/02-capabilities/capability-inventory.md
+      - specs/33-enterprise-memory/03-contracts/contracts.yaml
+      - specs/33-enterprise-memory/03-contracts/generation-map.yaml
+      - specs/33-enterprise-memory/03-flows/e2e-coverage.md
+      - specs/33-enterprise-memory/04-delivery/migration-requirements.md
+      - specs/36-sandbox-ownership-and-administration/00-file-structure.md
+      - specs/36-sandbox-ownership-and-administration/00-module-boundaries.yaml
+      - specs/36-sandbox-ownership-and-administration/00-reuse-inventory.yaml
+      - specs/36-sandbox-ownership-and-administration/00-vision.md
+      - specs/36-sandbox-ownership-and-administration/01-behavior.md
+      - specs/36-sandbox-ownership-and-administration/02-capabilities/capability-inventory.md
+      - specs/36-sandbox-ownership-and-administration/03-contracts/api.md
+      - specs/36-sandbox-ownership-and-administration/03-flows/e2e-coverage.md
+      - specs/36-sandbox-ownership-and-administration/04-delivery.md
+      - specs/36-sandbox-ownership-and-administration/04-verification.md
+      - specs/36-sandbox-ownership-and-administration/05-purista.md
+      - specs/37-decision-boundaries/00-conventions.md
+      - specs/37-decision-boundaries/00-reuse-inventory.yaml
+      - specs/37-decision-boundaries/00-traceability.yaml
+      - specs/37-decision-boundaries/02-capabilities/capability-inventory.md
+      - specs/37-decision-boundaries/03-contracts/decisions.md
+      - specs/37-decision-boundaries/03-flows/e2e-coverage.md
+      - specs/37-decision-boundaries/04-delivery/consumers.md
+      - specs/38-guardrail-authoring/00-architecture-overview.md
+      - specs/38-guardrail-authoring/00-conventions.md
+      - specs/38-guardrail-authoring/00-file-structure.md
+      - specs/38-guardrail-authoring/00-module-boundaries.yaml
+      - specs/38-guardrail-authoring/00-traceability.yaml
+      - specs/38-guardrail-authoring/00-vision.md
+      - specs/38-guardrail-authoring/02-capabilities/capability-inventory.md
+      - specs/38-guardrail-authoring/03-contracts/actions-and-binding.md
+      - specs/38-guardrail-authoring/03-contracts/callbacks.md
+      - specs/38-guardrail-authoring/03-contracts/configuration.md
+      - specs/38-guardrail-authoring/03-flows/e2e-coverage.md
+      - specs/38-guardrail-authoring/04-delivery/consumers.md
+      - specs/38-guardrail-authoring/04-nfr/requirements.md
+      - specs/38-guardrail-authoring/04-operations/runbook.md
+      - specs/38-guardrail-authoring/evidence/readiness-review.md
+      - specs/39-standard-schema-boundaries/00-architecture-overview.md
+      - specs/39-standard-schema-boundaries/00-conventions.md
+      - specs/39-standard-schema-boundaries/00-file-structure.md
+      - specs/39-standard-schema-boundaries/00-module-boundaries.yaml
+      - specs/39-standard-schema-boundaries/00-traceability.yaml
+      - specs/39-standard-schema-boundaries/00-vision.md
+      - specs/39-standard-schema-boundaries/02-capabilities/capability-inventory.md
+      - specs/39-standard-schema-boundaries/03-contracts/contracts.yaml
+      - specs/39-standard-schema-boundaries/03-contracts/generation-map.yaml
+      - specs/39-standard-schema-boundaries/03-contracts/model-projection.md
+      - specs/39-standard-schema-boundaries/03-contracts/schema-types.md
+      - specs/39-standard-schema-boundaries/03-flows/e2e-coverage.md
+      - specs/39-standard-schema-boundaries/04-nfr/requirements.md
+      - specs/39-standard-schema-boundaries/_registry.yaml
+      - specs/41-opa-policy-adapter.md
+      - specs/42-composable-definitions-and-catalogs.md
+      - specs/43-distributed-production-reference-stack.md
+      - specs/README.md
+  approval_evidence:
+    scope_digest: "sha256:1987144acbf542637af76c05f42deb7d55254d839c1a9bf254794cfea47728a2"
+    digest_algorithm: "From the ai-harness repository root: sort the exact scope.specs path strings by raw byte order (LC_ALL=C); for each path hash the raw file bytes with SHA-256; concatenate one UTF-8 line '<file-sha256>  <path>\\n' per sorted path; SHA-256 the concatenated bytes."
+  confirmed_decisions:
+    - "defineCatalog is the only immutable public registry-like abstraction; direct references grant capabilities and public maps contain explicit exports only."
+    - "Harness composes only explicit agent/workflow roots through addAgent, addWorkflow, and use; recursive closure remains private and non-callable."
+    - "A Harness exposes no catalog or compiled graph property; an unexported invariant phantom retains the exact private graph type for hosted binding checks, while authoring catalogs retain only explicitly listed original definitions and handlers."
+    - "Hosted runHosted and streamHosted accept only explicit roots; streamDispatched retains the compiled graph type and alone admits authentic dependency-only targets for nested delivery."
+    - "Agents infer prompt, response mode, updates, and exact interrupts; target contracts, definitions, catalogs, and Harness expose one consistent $infer shape."
+    - "Workflows declare exact agent, tool, and model references; managed calls use stable call ids and undeclared memory is unavailable."
+    - "Runtime model configuration uses additive model plus exact non-primary models; storage and memory remain legal optional enhancements when not required."
+    - "Every model, output, tool, native-tool, host-tool, and MCP call uses one closed caller union: an agent caller may retain workflowId, while a direct workflow caller has workflowId and forbids agentId."
+    - "Direct workflow model streams use workflow-only model.output activity with required callId on the existing workflow run; they never become target output or AI SDK assistant content."
+    - "Public and dispatcher streams resolve result with the exact completed, interrupted, failed, or cancelled terminal event; the sole package-private root adapter forwards result and cancellation while narrowing events."
+    - "Standalone target run returns the raw RunOutcome; only PURISTA Core owns the generated address-first aggregate wrapper that pairs the resolved sessionId with that unchanged outcome."
+    - "PURISTA resolves omitted public session ids once from its Core-generated root invocation id, retains identity isolation, and uses complete RFC 8785 terminal equality plus exact XOR nested ancestry."
+    - "PURISTA queue bindings infer payload from the exact target input, expose enqueue only through an explicitly queued contract, and settle the typed receipt with the unchanged Core HarnessTargetRunResult and resolved session id."
+    - "inMemoryAgentAdmission provides bounded FIFO, cancellation/deadline-aware, root-run-reentrant process-local admission; durable queueing remains host-owned."
+  deterministic_checks:
+    git_diff_check:
+      command: "git diff --check"
+      status: passed
+    scoped_ambiguity_scan:
+      status: passed_after_negative_requirement_inspection
+      patterns: "TBD|TODO|as appropriate|if needed|where possible|handle errors|recover gracefully|best effort|replacement in progress"
+      evidence: "The only textual match is the Standard Schema acceptance rule that explicitly prohibits TODOs; it is a requirement, not an unresolved marker."
+    strict_spec_checker:
+      command: "node /Users/sebastianwessel/.agents/skills/spec-readiness-review/scripts/check_specs.mjs specs"
+      status: expected_failure_legacy_flat_layout_and_root_readiness_shape
+      evidence: "The checker reports the repository's pre-existing flat-layout artifacts and legacy root readiness shape, including unrelated unresolved markers and missing modern root gates. Targeted scope, link, stale-API, ambiguity, YAML, whitespace, digest, and content-bound independent semantic checks are authoritative for this approved refinement."
+  independent_semantic_review:
+    status: passed
+    reviewed_at: "2026-09-07"
+    reviewer: "independent third-pass hard gate"
+    harness_commit: "7dcc024ba4cd5014f9aadb3e426da030f03f082f"
+    purista_commit: "1f3b469fa6ca409e837ed9b8d90114af31566be2"
+    scope_digest: "sha256:1987144acbf542637af76c05f42deb7d55254d839c1a9bf254794cfea47728a2"
+    blocking_findings_count: 0
+    evidence: "PASS after all first-, second-, and third-pass repairs were reviewed as one content-bound Harness/PURISTA contract, including hosted closure dispatch, event and workflow stream authority, session and terminal identity, policy and MCP behavior, private graph/catalog visibility, aggregate projection ownership, evaluation APIs, and queue typing."
+  blocking_findings_count: 0
+  implementation_status: approved_for_planning_and_implementation

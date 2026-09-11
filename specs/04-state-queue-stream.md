@@ -1,22 +1,27 @@
 # State and Events
 
-**Purpose.** Defines the `StateStore` foundation port for session history, run records, and run events, its in-memory default, ordering and durability guarantees, the persisted shapes, and how per-run events are streamed in-process. There is no `Stream` port; per-run streaming uses an internal in-process buffered queue owned by the harness (see [12-streaming](./12-streaming.md)).
+**Purpose.** Defines the `HarnessStorage` foundation port for session history, run records, and run events, its in-memory default, ordering and durability guarantees, the persisted shapes, and how per-run events are streamed in-process. There is no `Stream` port; per-run streaming uses an internal in-process buffered queue owned by the harness (see [12-streaming](./12-streaming.md)).
 
-Session memory is NOT held in the StateStore. It is served by the configured `MemoryAdapter`; see [11-sessions](./11-sessions.md) §"Session memory" and [20-memory-adapters](./20-memory-adapters.md). Durable workspace snapshots and checkpoint payload storage are NOT held in the StateStore; see [21-durable-workspaces](./21-durable-workspaces.md).
+Session memory is NOT held in `HarnessStorage`. It is served by the configured `MemoryAdapter`; see [11-sessions](./11-sessions.md) §"Session memory" and [20-memory-adapters](./20-memory-adapters.md). Durable step checkpoints are part of `HarnessStorage`; durable file/workspace snapshots remain in the separate `DurableWorkspace` port described in [21-durable-workspaces](./21-durable-workspaces.md).
 
-## StateStore port
+## HarnessStorage port
 
-`StateStore` persists session conversation history, run records, and run events. It is not the memory persistence port.
-State adapters that extend `StateStoreAdapterBase` inherit the harness logger,
-telemetry shim, and defaults through `configureHarnessContext(...)`; custom
-state adapters may implement the same hook directly.
+`HarnessStorage` is the sole structured persistence boundary for sessions,
+conversation history, run records, run events, durable leases/checkpoints, and
+external waits. It is not a generic key/value store and is not the memory or
+workspace port. Implementations receive logger and telemetry context through
+the optional `configureHarnessContext(...)` hook.
 
 ```ts
-interface StateStore {
+interface HarnessStorage {
+  readonly info: HarnessStorageInfo
+  readonly capabilities: readonly AdapterCapability[]
+  configureHarnessContext?(context: HarnessAdapterContext): void
+
   // Sessions
   getSession(id: string): Promise<SessionRecord | undefined>
-  upsertSession(record: SessionRecord): Promise<void>
-  closeSession(id: string): Promise<void>
+  upsertSession(record: SessionRecord, mode: 'create' | 'update'): Promise<boolean>
+  closeSession(id: string, expectedInstanceId: string): Promise<void>
 
   // Messages (append-only, plus full-clear / bulk-replace for history management)
   appendMessages(sessionId: string, messages: Message[]): Promise<void>
@@ -27,7 +32,7 @@ interface StateStore {
   replaceMessages?(sessionId: string, messages: Message[]): Promise<void>
 
   // Runs
-  createRun(record: RunRecord): Promise<void>
+  createRun(request: CreateRunRequest): Promise<RunRecord>
   finishRun(runId: string, patch: FinishRunPatch): Promise<void>
   getRun(runId: string): Promise<RunRecord | undefined>
   listRuns(sessionId: string, opts?: { limit?: number; before?: string }): Promise<RunRecord[]>
@@ -36,10 +41,25 @@ interface StateStore {
   appendEvents(runId: string, events: PersistedRunEvent[]): Promise<void>
   listEvents(runId: string, opts?: { limit?: number; after?: string }): Promise<PersistedRunEvent[]>
 
+  // Recoverable execution
+  acquireRun(request: AcquireRunRequest): Promise<DurableRunLease>
+  loadCheckpoint(runId: string, stepId?: string): Promise<RunCheckpoint | undefined>
+  commitCheckpoint(checkpoint: RunCheckpoint): Promise<void>
+  replaceCheckpoint(request: ReplaceCheckpointRequest): Promise<void>
+  finalizeRun(request: FinalizeRunRequest): Promise<void>
+  withSessionLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T>
+
+  // Opaque external waits, transactionally bound to the run/session
+  registerWait(request: BoundExternalWaitRequest): Promise<ExternalWaitRegistration>
+  getWait(waitId: string): Promise<ExternalWaitSnapshot | undefined>
+  signalWait(signal: ExternalWaitSignal): Promise<ExternalWaitSignalResult>
+  cancelWait(waitId: string, eventId: string, observedAt?: string): Promise<ExternalWaitSignalResult>
+
   close?(): Promise<void>
 }
 
-type FinishRunPatch = Pick<RunRecord, 'status' | 'finishedAt' | 'output' | 'error'>
+type FinishRunPatch = Pick<RunRecord, 'status'> &
+  Partial<Pick<RunRecord, 'finishedAt' | 'output' | 'error'>>
 ```
 
 ### Persisted shapes
@@ -49,43 +69,82 @@ type JsonValue = null | boolean | number | string | JsonValue[] | { [k: string]:
 
 interface SessionRecord {
   id: string
+  instanceId: string  // opaque immutable id generated for each new session record
   createdAt: string   // ISO 8601 UTC
   updatedAt: string
   runCount: number
+  identity?: HarnessIdentity
   metadata?: Record<string, JsonValue>
 }
 
 interface Message {
   id: string                      // raw ULID, no prefix
+  sessionId: string
+  runId?: string
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string                 // canonical text
   toolCalls?: Array<{
     id: string
-    toolId: string
-    input: JsonValue
+    name: string
+    arguments: JsonValue
   }>
   toolResults?: Array<{
-    callId: string
+    toolCallId: string
     output?: JsonValue
     error?: { code: string; message: string }
   }>
   timestamp: string               // ISO 8601 UTC
 }
 
-type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled'
+type RunStatus = 'running' | 'waiting' | 'interrupted' |
+  'succeeded' | 'failed' | 'cancelled'
 
-interface RunRecord {
-  id: string                      // run_<ulid>
-  sessionId: string
-  kind: 'workflow'                // locked: only workflows produce runs
-  target: string                  // workflow id
-  startedAt: string
-  finishedAt?: string
-  status: RunStatus
-  input?: JsonValue
-  output?: JsonValue
-  error?: SerializedError         // see 12-streaming
-}
+type RunCreationBase = Readonly<{
+  readonly id: string
+  readonly sessionId: string
+  readonly target: string
+  readonly startedAt: string
+  readonly metadata?: Readonly<Record<string, JsonValue>>
+}>
+
+type RunInputFields =
+  | Readonly<{
+      kind: 'workflow' | 'agent'
+      input: JsonValue              // canonical pre-transform wire input
+      validatedInput: JsonValue     // result of the one root schema transform
+    }>
+  | Readonly<{
+      kind: 'child_task'
+      input: JsonValue              // canonical child-call input
+      validatedInput?: never
+    }>
+
+type CreateRunRequest = RunCreationBase & RunInputFields
+
+type RunRecordBase = Readonly<{
+  readonly id: string                      // run_<ulid>
+  readonly sessionId: string
+  readonly target: string                  // target agent/workflow id
+  readonly startedAt: string
+  readonly finishedAt?: string
+  readonly status: RunStatus
+  readonly revision: number                // positive storage CAS revision; starts at 1
+  readonly output?: JsonValue
+  readonly error?: SerializedError         // see 12-streaming
+  readonly attempt?: number
+  readonly workerId?: string
+  readonly initialStepId?: string
+  readonly metadata?: Readonly<Record<string, JsonValue>>
+}>
+
+type RunRecord = RunRecordBase & (
+  | (Extract<RunInputFields, { kind: 'workflow' | 'agent' }> & Readonly<{
+      approvalReceipt?: TerminalApprovalReceiptV1 // exact v4 shape in spec 32; terminal only
+    }>)
+  | (Extract<RunInputFields, { kind: 'child_task' }> & Readonly<{
+      approvalReceipt?: never
+    }>)
+)
 
 interface PersistedRunEvent {
   id: string                      // ulid (sortable)
@@ -96,28 +155,68 @@ interface PersistedRunEvent {
 }
 ```
 
+`CreateRunRequest` is the strict caller-owned creation projection. Storage adds
+`status:'running'` and `revision:1`; request values cannot supply revision,
+status, terminal result/error/receipt fields, attempt, worker, initial step, or
+lease data. `input` is required for every run kind. For root `agent` and
+`workflow` runs it is the authoritative canonical pre-transform wire input
+used by approval resume, and `validatedInput` is the required canonical JSON
+result of the one initial schema transform. A `child_task` retains the
+canonical child-call input required by spec 28 and forbids an own
+`validatedInput` key, including when its value is `undefined`.
+`approvalReceipt` is permitted only on a terminal `agent` or `workflow`
+record; it is forbidden on `child_task` and every non-terminal record.
+Storage copies and recursively freezes both root inputs. They are written once
+at run creation, participate in spec 32's exact canonical creation identity,
+and remain unchanged through revision/status transitions and terminalization
+after checkpoints are deleted. `validatedInput` is trusted stored application
+data for the selected Harness execution path and authorizer; it is never
+exposed through public outcomes, errors, events, inspection, logs, metrics, or
+spans. No resume reconstructs it from a checkpoint or reruns a transform.
+`revision` starts at `1` when `createRun` wins and increases by exactly one for
+each successful acquisition, checkpoint mutation, resumable release/wait
+transition, or terminal mutation. Event and message appends do not change it.
+
 `SerializedError` is defined in [12-streaming](./12-streaming.md) and reused here.
 
 ### Guarantees
 
 - `appendMessages` and `appendEvents` are atomic per call. Partial writes MUST NOT be observable.
 - `appendMessages` rejects duplicate message ids with `StateError{meta.reason:'duplicate_message_id'}`.
-- When a harness configures durable `historyRetention`, its StateStore MUST
+- When a harness configures durable `historyRetention`, its HarnessStorage MUST
   implement atomic `replaceMessages`; harness construction rejects adapters
   without it. A clear-then-append fallback is forbidden for retained history.
 - `clearMessages` is atomic: either every message for the session is removed or none is.
-- `listMessages` returns messages in ascending order by `(timestamp, id)`. `before` cursor is a message id; pagination is exclusive.
+- `listMessages` returns messages in their canonical append order, or in the caller-provided replacement order after `replaceMessages`. Timestamps MAY tie and do not determine message order. `before` is an existing message id cursor: it exclusively returns only messages before that id in canonical order. `limit` selects the newest matching messages while preserving ascending canonical order.
 - `listRuns` returns runs in descending order by `startedAt` then by `id` descending. `before` cursor is a run id; pagination is exclusive.
 - `appendEvents` / `listEvents` preserve insertion order; `after` cursor is an event id; pagination is exclusive.
 - Persisted event payloads MUST follow the privacy-safe mapping in [12-streaming](./12-streaming.md). Content-bearing fields are redacted regardless of telemetry span content capture until a future spec adds a dedicated persisted-event content flag.
-- `upsertSession` is idempotent: if `id` exists, `updatedAt` and `runCount` are overwritten with the supplied record.
-- `createRun` is normally insert-only. For durable workflow retries, the harness
-  acquires the durable runtime lease before calling `createRun`; if a
-  non-terminal run with the same id already exists and the new record matches
-  `sessionId`, `kind`, and `target`, `createRun` is idempotent and must not
-  reset messages, events, or committed durable checkpoints. Existing terminal
-  runs are never overwritten.
-- StateStore methods MUST throw [`StateError`](./15-error-catalog.md) on backend failure.
+- `upsertSession(record, mode)` requires explicit `create` or `update` intent.
+  Create atomically returns `true` only for the first insert, which
+  binds immutable `instanceId`, `createdAt`, and exact optional identity. Existing identity
+  mismatch fails with `StateError`; creation against an existing same-identity
+  record returns `false` without mutating it. Update requires the exact stored
+  instance, creation time, and identity; missing or changed instances fail with
+  `StateError` (`session_instance_mismatch`) and never insert. Valid updates
+  return `false` and cannot regress `updatedAt` or `runCount`. Callers reread the
+  stored record after creation to obtain the winning instance id. A proposed
+  different instance cannot overwrite the stored record. This is ordinary
+  session binding; storage owns no sandbox lifecycle records.
+- `closeSession(id, expectedInstanceId)` atomically deletes the session and its
+  owned records only when the stored instance matches. Stale and absent closes
+  are no-ops; they never delete a new conversation that reused the same id.
+- `createRun` atomically inserts the strict request as a revision-one running
+  record and returns the authoritative recursively frozen record. For agent,
+  workflow, and child-task retries, an exact creation-identity retry returns
+  the current authoritative record without resetting its status, revision,
+  messages, events, lease, or checkpoints. Any mismatch uses spec 32's
+  content-free `StateError{op:'createRun',reason:'run_conflict'}`. Existing
+  terminal runs are never overwritten.
+- Durable run acquisition, checkpoint commits, wait registration, and terminal
+  transitions follow [32-harness-storage](./32-harness-storage.md). A new wait
+  MUST atomically mark its run `waiting` and release the lease.
+- HarnessStorage methods MUST throw [`StateError`](./15-error-catalog.md) or the
+  more specific durable/wait error on backend or lifecycle failure.
 
 ### In-memory default
 
@@ -135,12 +234,12 @@ The harness exposes per-run streaming via `Session.agents[id].stream(...)` and `
 - `stream()` returns an `AsyncIterable<RunEvent>` reading from that queue.
 - Breaking out of a stream iterator detaches that consumer only. It does not cancel the run; pass `opts.signal` for explicit run cancellation.
 - Overflow: consumer slowness may drop oldest non-terminal live events and emit `stream.overflow`. See [12-streaming](./12-streaming.md) for full ordering, overflow, and persistence semantics.
-- Persistence-of-events for audit goes through `StateStore.appendEvents` inside the run lifecycle; there is no separate persistence span and no separate stream port.
+- Persistence-of-events for audit goes through `HarnessStorage.appendEvents` inside the run lifecycle; there is no separate persistence span and no separate stream port.
 
 ## Cross-references
 
 - [03-foundation](./03-foundation.md) — error categories.
-- [11-sessions](./11-sessions.md) — how sessions use StateStore (history and runs).
+- [11-sessions](./11-sessions.md) — how sessions use HarnessStorage (history and runs).
 - [20-memory-adapters](./20-memory-adapters.md) — memory persistence port.
 - [21-durable-workspaces](./21-durable-workspaces.md) — durable replay workspace references and checkpoint linkage.
 - [12-streaming](./12-streaming.md) — `SerializedError`, bounded in-process queue, overflow, privacy-safe persistence.

@@ -1,0 +1,13 @@
+policy_profile_version: 1
+profile: PURISTA schema-first clean-break refactor
+source_refs: [00-conventions.md#CONV-SS-PURISTA, 04-nfr/requirements.md]
+coverage: existing checked-in thresholds plus mandatory cross-vendor and type fixtures
+default_network: forbidden
+secret_access: forbidden
+approval_policy: D0/D1 implementation choices only; all D2 schema semantics are frozen here
+allowed_default_refs: [POL-SS-PURISTA]
+profiles:
+  - policy_ref: POL-SS-PURISTA
+    name: PURISTA Standard Schema and exact inference policy
+    source_ref: 00-conventions.md#CONV-SS-PURISTA
+    allowed_classes: [D0, D1]

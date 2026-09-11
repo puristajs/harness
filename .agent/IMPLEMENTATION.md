@@ -17,9 +17,12 @@ review material and previous implementation code are not source of truth.
 
 ## Project Shape
 
-The v1 repository is npm-workspace based and library-first. The only published
-packages are `@purista/harness` and `@purista/harness-openai`; examples are
-private workspaces used for integration and documentation.
+The repository is npm-workspace based and library-first. `@purista/harness`
+owns provider-neutral runtime contracts. Published provider packages include
+OpenAI, Anthropic, Bedrock, and Azure Foundry; `@purista/harness-guardrails`
+owns content rails and its optional detector packages own concrete detection.
+These addons consume public core exports, not private runtime modules.
+Examples are private workspaces used for integration and documentation.
 
 Expected root:
 
@@ -62,6 +65,14 @@ Expected root:
   the developer edits, what the runtime owns, and what output to expect.
 - Example code should use real package names, exported types, and npm commands
   from this repo.
+- Register native TypeScript tools only through `.tools(({ tool }) => ({
+  name: tool({ ... }) }))`. The helper is builder-local so it preserves schema,
+  handler, and sandbox inference; raw native tool objects fail during
+  `.tools(...)` registration. MCP literal tools remain their explicit
+  external-integration form.
+- Configure Guardrails only as an inline `defineGuardrails({ config, actions })`
+  object. Create opaque action tokens with `defineGuardrailAction`, bind model
+  checks to direct registered aliases, and scope structured tools explicitly.
 
 ## Dependency Boundaries
 

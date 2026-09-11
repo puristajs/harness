@@ -1,5 +1,6 @@
 import { access, readFile, readdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { verifyPackageBoundaries } from './package-boundaries.mjs'
 
 const root = process.cwd()
 const sourcePath = resolve(root, 'architecture/capability-catalog.yaml')
@@ -35,18 +36,6 @@ const manifests = await Promise.all(packageDirectories.filter((entry) => entry.i
   const manifest = JSON.parse(await readFile(resolve(root, 'packages', entry.name, 'package.json'), 'utf8'))
   return manifest
 }))
-for (const manifest of manifests) {
-  const dependencies = { ...manifest.dependencies, ...manifest.peerDependencies, ...manifest.devDependencies }
-  const harnessDependencies = Object.keys(dependencies).filter((name) => name === '@purista/harness' || name.startsWith('@purista/harness-'))
-  if (manifest.name === '@purista/harness' && harnessDependencies.some((name) => name !== '@purista/harness')) {
-    throw new Error('Core @purista/harness must not depend on a provider or adapter package.')
-  }
-  if (manifest.name !== '@purista/harness' && manifest.name.startsWith('@purista/harness-')) {
-    const forbidden = harnessDependencies.filter((name) => name !== '@purista/harness' && name !== manifest.name)
-    if (forbidden.length > 0) {
-      throw new Error(`${manifest.name} must not depend on another provider or adapter package: ${forbidden.join(', ')}`)
-    }
-  }
-}
+verifyPackageBoundaries(manifests)
 
 console.log(`Verified ${normalized.families.length} capability family entries.`)

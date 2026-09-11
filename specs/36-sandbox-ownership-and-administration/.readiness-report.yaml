@@ -1,0 +1,112 @@
+status: approved
+language: en
+open_decisions: []
+human_approval:
+  status: approved
+approval_evidence:
+  status: approved
+  approver_id: repository-owner
+  approved_at: 2026-08-26
+  approval_ref: codex-task-01a038ca-2438-7573-b474-3a3b3319bf34#standing-spec-auto-approval-and-latest-planning-only-request
+  manifest_digest: sha256:d428914333a9eab9a1f84659f3c4724028c5c4ca96c20be3c13c9edc4c4365cc
+  scope_refs: [REQ-SOWN-POLICY, REQ-SOWN-OWNER, REQ-SOWN-DURABLE, REQ-SOWN-ADMIN, REQ-SOWN-BOUNDS, REQ-SOWN-PURISTA, REQ-SOWN-SAFETY, REQ-SOWN-DELIVERY]
+gates:
+  no_drift_gate:
+    status: passed
+  ambiguity_gate:
+    status: passed
+  semantic_alignment_gate:
+    status: passed
+  spec_structure_gate:
+    status: passed
+  visualization_gate:
+    status: passed
+  requirements_quality_gate:
+    status: passed
+  end_to_end_definition_gate:
+    status: passed
+  file_structure_gate:
+    status: passed
+  current_dependency_research_gate:
+    status: passed
+  concise_spec_gate:
+    status: passed
+  client_consumer_coverage_gate:
+    status: passed
+  frontend_ux_integration_gate:
+    status: passed
+  standards_first_gate:
+    status: passed
+  machine_readable_contract_gate:
+    status: passed
+  async_semantics_gate:
+    status: passed
+  clean_rebuild_boundary_gate:
+    status: passed
+  generation_map_gate:
+    status: passed
+  strong_boundary_type_gate:
+    status: passed
+  representation_reuse_gate:
+    status: passed
+  interface_gate:
+    status: passed
+  e2e_gate:
+    status: passed
+  unhappy_path_gate:
+    status: passed
+  security_privacy_gate:
+    status: passed
+  observability_gate:
+    status: passed
+  performance_resilience_gate:
+    status: passed
+  data_integrity_recovery_gate:
+    status: passed
+  production_readiness_gate:
+    status: passed
+  supply_chain_gate:
+    status: passed
+  wave_readiness:
+    status: passed
+  migration_gate:
+    status: passed
+  checklist_walk_gate:
+    status: passed
+  contradiction_check:
+    status: passed
+  spec_judge_loop:
+    status: passed
+  semantic_judge_gate:
+    status: passed
+  self_audit_gate:
+    status: passed
+  gate_simulation:
+    status: passed
+spec_judge_loop:
+  run_timing: approval_only
+  reviewed_flows: [PATH-SOWN-POLICY, PATH-SOWN-OWNER, PATH-SOWN-DURABLE, PATH-SOWN-ADMIN, PATH-SOWN-BOUNDS, PATH-SOWN-PURISTA, PATH-SOWN-SAFETY, PATH-SOWN-DELIVERY]
+  blocking_findings_count: 0
+checklist_walk:
+  topics:
+    architecture_and_package_boundaries: covered
+    contracts_types_and_generation: covered
+    identity_authorization_and_offboarding: covered
+    sharing_and_child_tasks: covered
+    async_retry_cancellation_and_revocation: covered
+    durable_partition_recovery_and_pins: covered
+    quota_retention_and_cleanup: covered
+    privacy_observability_and_errors: covered_with_available_security_checklist_and_explicit_privacy_criteria
+    dependency_research_and_supply_chain: covered_no_new_dependency
+    operations_release_and_tests: covered
+    frontend: not_applicable_library_contract
+  blocking_findings_count: 0
+semantic_judge_evidence:
+  status: passed
+  judge: Independent ownership_spec_edges reviewer plus main-agent final field reconciliation
+  reviewed_at: 2026-08-26
+  evidence_ref: 06-readiness-evidence.md
+execution_authority:
+  status: not_started
+  scope: Specs and plan only; implementation needs a separate request.
+  provider_gate: Production provider work remains separately gated by spec 34.

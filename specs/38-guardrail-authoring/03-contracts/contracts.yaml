@@ -1,0 +1,32 @@
+contract_version: 1
+public_api_inventory:
+  - contract_id: CTR-GA-CONFIG
+    source_ref: 03-contracts/configuration.md#CTR-GA-CONFIG
+    owner: harness_guardrails
+  - contract_id: CTR-GA-GENERATION
+    source_ref: 03-contracts/configuration.md#CTR-GA-GENERATION
+    owner: harness_guardrails
+  - contract_id: CTR-GA-ACTIONS
+    source_ref: 03-contracts/actions-and-binding.md#CTR-GA-ACTIONS
+    owner: harness_guardrails
+  - contract_id: CTR-GA-BINDING
+    source_ref: 03-contracts/actions-and-binding.md#CTR-GA-BINDING
+    owner: harness_core
+  - contract_id: CTR-GA-ERRORS
+    source_ref: 03-contracts/actions-and-binding.md#CTR-GA-ERRORS
+    owner: harness_guardrails
+  - contract_id: CTR-GA-CALLBACKS
+    source_ref: 03-contracts/callbacks.md#CTR-GA-CALLBACKS
+    owner: harness_core
+  - contract_id: CTR-GA-DOCS
+    source_ref: 04-delivery/consumers.md#CTR-GA-DOCS
+    owner: documentation_consumers
+  - contract_id: CTR-GA-CLEANUP
+    source_ref: 04-delivery/consumers.md#CTR-GA-CLEANUP
+    owner: documentation_consumers
+execution_semantics:
+  validation: strict staged parse compile build invocation; one runtime validation path
+  compatibility: none
+  persistence: unchanged; no new durable records
+  ordering: spec37 remains authoritative
+schema_source_policy: Zod derives non-generic types; generic callbacks derive canonical definition members; contracts are normative design, not a second runtime engine.

@@ -1,0 +1,10 @@
+policy_profile_version: 1
+allowed_default_refs:
+  - "POL-DB-PURISTA"
+profiles:
+  - policy_ref: "POL-DB-PURISTA"
+    name: "PURISTA composition schema inference and scoped testing"
+    source_ref: "00-conventions.md#CONV-DB-STYLE"
+    allowed_classes:
+      - "D0"
+      - "D1"

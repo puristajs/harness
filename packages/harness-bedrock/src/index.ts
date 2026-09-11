@@ -17,6 +17,7 @@ import type {
 } from '@purista/harness'
 import {
   BaseModelProvider,
+  ModelCapabilityError,
   parseProviderJson,
   safePartialJson,
   toTokenUsage,
@@ -29,6 +30,7 @@ import {
   type BedrockRuntimeClientConfig
 } from '@aws-sdk/client-bedrock-runtime'
 
+/** Configuration for the Amazon Bedrock model provider factory. */
 export interface BedrockFactoryOptions extends BedrockRuntimeClientConfig {
   /** Optional injected client for tests or custom transport behavior. */
   client?: BedrockClient
@@ -208,7 +210,9 @@ class BedrockModelProvider extends BaseModelProvider {
   }
 }
 
+/** Narrow Amazon Bedrock Runtime SDK surface accepted for test or custom transport injection. */
 export type BedrockClient = {
+  /** Sends a Bedrock runtime command with optional cancellation. */
   send(command: unknown, options?: { abortSignal?: AbortSignal }): Promise<any>
 }
 
@@ -290,7 +294,22 @@ function toContentBlock(part: ContentPart): any {
     const format = part.mimeType.split('/')[1] ?? 'png'
     return { image: { format, source: { bytes: Buffer.from(part.dataBase64, 'base64') } } }
   }
-  return { text: `[unsupported ${part.kind} content omitted]` }
+  return unsupportedContentPart('bedrock', part)
+}
+
+function unsupportedContentPart(providerId: string, part: { readonly kind: string }): never {
+  const method = part.kind === 'image' || part.kind === 'image_url'
+    ? 'vision_input'
+    : part.kind === 'audio'
+      ? 'audio_input'
+      : part.kind === 'file' || part.kind === 'file_url'
+        ? 'file_input'
+        : `${part.kind}_input`
+  throw new ModelCapabilityError('Model provider does not support this content part.', {
+    alias: providerId,
+    method,
+    reason: 'missing_capability',
+  })
 }
 
 function toTools(tools: ChatRequest['tools']): any[] | undefined {

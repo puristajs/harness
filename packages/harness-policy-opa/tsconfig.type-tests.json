@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "incremental": false,
+    "rootDir": "../..",
+    "paths": {
+      "@purista/harness": ["../harness/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "type-tests/**/*.ts"]
+}

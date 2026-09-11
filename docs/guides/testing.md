@@ -9,7 +9,7 @@ fake providers, fake stores, and local fixtures.
 flowchart TD
   Unit["Unit tests: schemas, tools, skills, adapters"] --> Contract["Contract tests: state, sandbox, model providers"]
   Contract --> Integration["Integration tests: session agent/workflow runs"]
-  Integration --> UI["UI tests: SSE, review gates, artifacts"]
+  Integration --> UI["UI tests: SSE, application review tasks, artifacts"]
   UI --> Manual["Manual live-provider smoke test"]
 ```
 
@@ -32,22 +32,24 @@ core gate is statements `80`, branches `75`, functions `80`, and lines `80`.
 ## Test With A Fake Model Provider
 
 ```ts
-const provider = {
-  id: 'fake',
-  genAiSystem: 'fake',
-  async object() {
-    return {
-      object: { answer: 'fake answer', citations: [] },
-      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-      finishReason: 'stop'
-    }
-  }
-}
+const provider = new FakeModelProvider({ strict: true })
+provider.enqueueObject({
+	object: { answer: 'fake answer', citations: [] },
+	usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+	finishReason: 'stop',
+})
 
-const harness = createAppHarness(provider)
-const session = await harness.getSession('test')
-await expect(session.agents.answerer.prompt({ question: 'hi' }))
-  .resolves.toMatchObject({ answer: 'fake answer' })
+const instance = await definition.getInstance({
+	models: { chat: { provider, model: 'fake' } },
+})
+const session = await instance.getSession('test')
+await expect(session.agents.answerer.run({ question: 'hi' })).resolves.toMatchObject({
+	status: 'completed',
+	runId: expect.any(String),
+	output: { answer: 'fake answer' },
+})
+provider.assertExhausted()
+await instance.close()
 ```
 
 ## Test Streaming Events
@@ -55,43 +57,67 @@ await expect(session.agents.answerer.prompt({ question: 'hi' }))
 ```ts
 const events = []
 for await (const event of session.workflows.audit.stream({ scope: 'all' })) {
-  events.push(event.type)
+	events.push(event.type)
 }
 
 expect(events).toContain('run.started')
 expect(events).toContain('run.finished')
 ```
 
-For model streaming behavior, queue provider stream chunks and assert both
-privacy modes. A consumed `textStream(...)` / `objectStream(...)` call should
-not produce model partial run events by default. A call with
-`{ emitRunEvents: true }` should produce `model.delta` for text streams and
-`model.object.partial` plus final `model.object` for object streams. Plain
-`text(...)` / `object(...)` calls should not produce partial events. For
-public stream tests, assert the grouping metadata too: generated `streamId`
-stability per stream invocation, distinct ids across parallel streams,
-`modelAlias`, and available `workflowId` / `agentId`.
+This test consumes the portable `ExecutionEvent` contract. Completed and
+interrupted terminal outcomes use the same `RunOutcome` shape returned by an
+aggregate call; failed and cancelled terminals contain normalized serialized
+errors.
+
+For model streaming, queue deterministic provider chunks and consume the
+target's `.stream(...)` result. Assert the public `ExecutionEvent` sequence,
+including text deltas or object snapshots, tool lifecycle events, and exactly
+one terminal `run.finished` event. Also assert cancellation reaches the
+provider signal and that an interrupted approval never executes the protected
+tool before resume.
+
+For public stream tests, assert only portable execution events and test the
+selected protocol adapter, such as `@purista/harness-ai-sdk-ui/v1`, at its own
+HTTP/SSE boundary.
 
 ## Test Tools
 
 Call TypeScript tool handlers with a small context object and a temporary store.
 Assert both successful output and validation failure behavior.
 
+## Test Sandbox Adapters
+
+All adapters run the base filesystem/lifecycle suite. Adapters that advertise
+bounded search run the additional search suite:
+
+```ts
+import { sandboxContract, sandboxTextSearchContract } from '@purista/harness/testing'
+
+sandboxContract(() => createSandbox(), { executor: 'unavailable' })
+sandboxTextSearchContract(() => createSandbox())
+```
+
+The search contract covers literal and `safe_regex_v1` matching, deterministic
+ordering, cancellation, unsupported syntax, adversarial patterns, and every
+size/count limit. Keep provider-level tests for facts a generic contract cannot
+observe, such as executing inside the correct pod, blocked cross-tenant paths,
+CPU/memory limits, and content-free telemetry.
+
 ## Test Skills
 
-Skill tests should cover both catalog behavior and runtime activation:
+Skill tests should cover definition behavior and runtime activation:
 
 - valid `SKILL.md` frontmatter is parsed without inlining the body into the
   system prompt;
 - invalid strict frontmatter fails before the body can be mounted or logged;
 - discovery reports trust, collisions, and scan-limit diagnostics;
-- an agent with `skills: [...]` has the `read` built-in available before model
+- an agent with `skills: [...]` has the synthesized `read_skill` tool available before model
   I/O starts;
-- reading `/skills/<name>/SKILL.md` returns the mounted skill file and repeated
-  reads do not remount duplicate copies.
+- reading `SKILL.md` through `read_skill({ name, path })` returns the reviewed
+  Skill file and repeated reads do not remount duplicate copies.
 
 Use a temporary skill directory and a scripted model for end-to-end tests. The
-first model response should call the `read` tool for `/skills/<name>/SKILL.md`;
+first model response should call `read_skill` with the Skill name and `path: 'SKILL.md'`;
 the second response should return the final validated object. Assert the first
 request contains the catalog entry and does not contain the skill body.
 
@@ -101,39 +127,45 @@ Workspace replay adapters should pass the shared contract before application
 integration tests use them:
 
 ```ts
-import { durableWorkspaceStoreContract } from '@purista/harness/testing'
+import { durableWorkspaceContract } from '@purista/harness/testing'
 
-durableWorkspaceStoreContract(() => makeDurableWorkspaceStore())
+durableWorkspaceContract(() => makeDurableWorkspace())
 ```
 
-Also test application startup with `.requires(...)` so missing
-`runtime.workspace_checkpoint`, `workspace_store.durable`, `workspace_store.resume`, or
+Also test instance creation with a definition that declares durable workspace
+requirements, so missing
+`storage.workspace_checkpoint`, `workspace.durable`, `workspace.resume`, or
 cleanup/retention/quota capabilities fail before work is queued.
 
-## Test Eval Scorers
+## Test evaluation scorers
 
-Use the testing subpath to validate deterministic scorer definitions before
-running expensive prompt comparisons:
+Use the testing subpath's predicate factory for deterministic scorer fixtures;
+it creates the same `EvaluationScorer` contract used by `runEvaluation` and
+`scoreEvaluation`:
 
 ```ts
-import { evaluateDeterministicScorer } from '@purista/harness/testing'
+import { createDeterministicEvaluationScorer } from '@purista/harness/testing'
 
-await expect(evaluateDeterministicScorer({
-  type: 'contains',
-  path: '/answer',
-  value: 'policy'
-}, {
-  candidateId: 'candidate-a',
-  itemId: 'item-1',
-  output: { answer: 'The policy allows it.' }
-})).resolves.toMatchObject({ score: 1, passed: true })
+const hasPolicy = createDeterministicEvaluationScorer({
+	id: 'contains-policy',
+	version: 'v1',
+	dimension: { id: 'mentions-policy', kind: 'boolean' },
+	evaluate: observation => ({
+		outcome: 'scored',
+		dimensionId: 'mentions-policy',
+		kind: 'boolean',
+		value: observation.output.answer.includes('policy'),
+	}),
+})
 ```
 
-Use `evaluatePromptCandidates(...)` from `@purista/harness` when a test must
-compare multiple candidate prompts against the same item set. Candidate order,
-item order, and tie-breaking are stable so CI output remains deterministic.
-See [Evaluating Prompts](./evaluating-prompts.md) for the full helper contract
-and scorer limitations.
+Test scorer outcomes separately from task behavior. Cover a scored result, a
+legitimate `not_applicable` or `inconclusive` result where relevant, and a
+technical scorer failure. Use a fake model/provider for deterministic task
+tests; use `runEvaluation` only when exercising execution, scheduling, and
+result integration. See [Evaluating AI systems](./evaluating-prompts.md) and
+the [PURISTA evaluation handbook](https://purista.dev/handbook/harness/test-and-evaluate/)
+for the complete workflow.
 
 ## Test MCP
 
@@ -147,15 +179,15 @@ Use local fake MCP servers for contract tests. Stdio MCP should prove:
 HTTP MCP should prove auth failures, protocol failures, schema validation, and
 normal success.
 
-## Test Review Gates
+## Test Application Review Tasks
 
-For human-in-the-loop flows:
+For application-owned human-in-the-loop flows:
 
 - assert no mutation happens before approval;
 - assert answer choices are submitted to the backend;
 - assert decisions are idempotent;
 - assert stale review ids and stale run ids fail cleanly.
 
-The Living Wiki example covers these patterns in
+The Living Wiki example implements and covers these application patterns in
 `examples/living-wiki-jaeger/src/backend/app.test.ts` and
 `examples/living-wiki-jaeger/src/frontend/app.ui.test.tsx`.

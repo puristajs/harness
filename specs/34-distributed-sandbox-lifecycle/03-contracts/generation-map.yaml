@@ -1,0 +1,40 @@
+generation_map_version: 1
+source_contract: 03-contracts/contracts.yaml
+outputs:
+  - contract_ids: [CTR-SBX-DOCKER]
+    destination: packages/harness-sandbox-docker/src/index.ts
+    mode: handwritten_adapter
+    reason: Repository has no approved TypeScript adapter generator; infer options from a closed Zod schema and reuse Sandbox types.
+    checks: [addon type tests, public export diff, sandboxContract, opt-in Docker and OrbStack smoke tests]
+  - contract_ids: [CTR-SBX-SCOPE, CTR-SBX-OPEN, CTR-SBX-SANDBOX]
+    destination: packages/harness/src/sandbox/index.ts
+    mode: handwritten_clean_break
+    reason: Repository has no approved generator for TypeScript public ports.
+    checks: [public export diff, TypeScript type tests, sandboxContract, sandboxMultiClientContract]
+  - contract_ids: [CTR-SBX-OPEN]
+    destination: existing session and durable runtime modules
+    mode: handwritten_integration
+    checks: [session lifecycle tests, durable workspace integration tests, telemetry privacy tests]
+  - contract_ids: [CTR-SBX-SCOPE, CTR-SBX-OPEN, CTR-SBX-SANDBOX]
+    destination: packages/harness/src/local/local-sandbox.ts and existing local bundle binding
+    mode: handwritten_clean_break
+    reason: Rewrite existing concrete adapters in place; no approved public-port generator or compatibility layer.
+    checks: [files-only and exec lifecycle contracts, local durable recovery, path isolation, cleanup ownership]
+  - contract_ids: [CTR-SBX-OPEN, CTR-SBX-SANDBOX]
+    destination: packages/harness/src/testing/fakeSandbox.ts and sandboxSnapshot.ts
+    mode: handwritten_clean_break
+    reason: Existing approved test doubles implement the same source contract; no separate legacy fake.
+    checks: [sandboxContract, sandboxSnapshotContract, testing export diff]
+manual_boundaries:
+  - adapter-private directory generation lease fence provider reference retention and cleanup implementation
+  - provider SDK mapping in a future approved addon
+  - PURISTA mapping over public Harness APIs
+forbidden_outputs:
+  - old open overloads bare-session open results compatibility flags and optional terminate fallbacks
+  - a MultiInstanceSandbox interface or managed method family
+  - a runtime sandbox topology capability option or inspection field
+  - HarnessStorage sandbox lifecycle methods
+  - public lease fence generation or provider-reference shapes
+  - a Harness sandbox maintenance facade or daemon
+  - duplicate provider-specific lifecycle shapes in core
+  - provider credentials or SDK handles in fixtures

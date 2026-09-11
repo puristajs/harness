@@ -1,0 +1,18 @@
+policy_profile_version: 1
+profile: existing PURISTA/Harness conventions; no new coverage threshold
+source_refs:
+  - 00-conventions.md#CONV-GA-STYLE
+  - 04-nfr/requirements.md
+coverage: existing checked-in thresholds unchanged
+default_network: forbidden
+secret_access: forbidden
+approval_policy: only D0/D1 choices; semantic decisions frozen in scoped specs
+allowed_default_refs:
+  - POL-GA-PURISTA
+profiles:
+  - policy_ref: POL-GA-PURISTA
+    name: Existing PURISTA schema inference and scoped verification
+    source_ref: 00-conventions.md#CONV-GA-STYLE
+    allowed_classes:
+      - D0
+      - D1

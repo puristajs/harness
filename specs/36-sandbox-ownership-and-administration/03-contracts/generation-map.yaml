@@ -1,0 +1,14 @@
+generation_map_version: 1
+strategy: existing_compiler_and_schema_inference
+manual_boundary_rationale: No generator exists for local generic TypeScript ports and callback interfaces; adding a codegen framework is out of scope.
+source_contracts: [contracts.yaml, api.md]
+source_implementations: [packages/harness/src/sandbox/ownership.ts, packages/harness/src/sandbox/administration.ts, packages/harness/src/ports/workspace.ts]
+generated_outputs: [packages/harness/dist, packages/harness-sandbox-docker/dist, purista-public-typedoc]
+generator_commands:
+  - npm run build --workspace @purista/harness
+  - npm run build --workspace @purista/harness-sandbox-docker
+drift_commands:
+  - npm run test:types
+  - npm run verify:architecture
+  - npm run verify:sandbox-packages
+verification: Strict runtime DTO schemas infer types; negative public type tests and shared adapter contracts prevent handwritten shape drift.

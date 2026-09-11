@@ -1,0 +1,195 @@
+catalog_version: 1
+applicability:
+  status: applicable
+  scope_refs:
+    - 03-contracts/contracts.yaml
+shapes:
+  - shape_id: SHAPE-HARNESS-IDENTITY
+    representation_class: domain
+    canonical_source: 03-contracts/contracts.yaml
+    owner: harness_core
+    stability: versioned
+    open_policy: closed
+    allowed_consumers:
+      - harness_core
+      - purista_core
+      - sqlite_engine
+      - postgres_engine
+      - redis_engine
+      - nats_engine
+    source_contract_refs:
+      - CTR-MEM-IDENTITY
+    mapping_refs:
+      - MAP-IDENTITY-SCOPE
+      - MAP-PURISTA-IDENTITY
+  - shape_id: SHAPE-MEMORY-SCOPE
+    representation_class: boundary
+    canonical_source: 03-contracts/contracts.yaml
+    owner: harness_core
+    stability: versioned
+    open_policy: closed
+    allowed_consumers:
+      - harness_core
+      - sqlite_engine
+      - postgres_engine
+      - redis_engine
+      - nats_engine
+    source_contract_refs:
+      - CTR-MEM-ENGINE
+    mapping_refs:
+      - MAP-IDENTITY-SCOPE
+  - shape_id: SHAPE-MEMORY-RECORD
+    representation_class: domain
+    canonical_source: 03-contracts/contracts.yaml
+    owner: harness_core
+    stability: versioned
+    open_policy: closed
+    allowed_consumers:
+      - harness_core
+      - sqlite_engine
+      - postgres_engine
+      - redis_engine
+      - nats_engine
+    source_contract_refs:
+      - CTR-MEM-RECORD
+    mapping_refs:
+      - MAP-RECORD-SQLITE
+      - MAP-RECORD-POSTGRES
+      - MAP-RECORD-REDIS
+      - MAP-RECORD-NATS
+  - shape_id: SHAPE-SQLITE-RECORD
+    representation_class: persistence
+    canonical_source: 03-contracts/contracts.yaml
+    owner: sqlite_engine
+    stability: internal
+    open_policy: closed
+    allowed_consumers:
+      - sqlite_engine
+    source_contract_refs:
+      - CTR-MEM-RECORD
+      - CTR-MEM-SQLITE
+    mapping_refs:
+      - MAP-RECORD-SQLITE
+  - shape_id: SHAPE-POSTGRES-RECORD
+    representation_class: persistence
+    canonical_source: 03-contracts/contracts.yaml
+    owner: postgres_engine
+    stability: internal
+    open_policy: closed
+    allowed_consumers:
+      - postgres_engine
+    source_contract_refs:
+      - CTR-MEM-RECORD
+    mapping_refs:
+      - MAP-RECORD-POSTGRES
+  - shape_id: SHAPE-REDIS-RECORD
+    representation_class: persistence
+    canonical_source: 03-contracts/contracts.yaml
+    owner: redis_engine
+    stability: internal
+    open_policy: closed
+    allowed_consumers:
+      - redis_engine
+    source_contract_refs:
+      - CTR-MEM-RECORD
+    mapping_refs:
+      - MAP-RECORD-REDIS
+  - shape_id: SHAPE-NATS-RECORD
+    representation_class: persistence
+    canonical_source: 03-contracts/contracts.yaml
+    owner: nats_engine
+    stability: internal
+    open_policy: closed
+    allowed_consumers:
+      - nats_engine
+    source_contract_refs:
+      - CTR-MEM-RECORD
+      - CTR-MEM-NATS
+    mapping_refs:
+      - MAP-RECORD-NATS
+  - shape_id: SHAPE-PURISTA-MESSAGE-IDENTITY
+    representation_class: boundary
+    canonical_source: 03-contracts/contracts.yaml
+    owner: purista_core
+    stability: stable
+    open_policy: closed
+    allowed_consumers:
+      - purista_core
+      - harness_core
+    source_contract_refs:
+      - CTR-MEM-PURISTA
+    mapping_refs:
+      - MAP-PURISTA-IDENTITY
+mappings:
+  - mapping_id: MAP-IDENTITY-SCOPE
+    from_shape: SHAPE-HARNESS-IDENTITY
+    to_shape: SHAPE-MEMORY-SCOPE
+    direction: domain_to_boundary
+    allowed_differences:
+      - Scope adds lifetime identifiers and a canonical scope key.
+    redaction_or_loss_policy: No identity value is lost; logs and metrics use fingerprints instead of values.
+    field_operations:
+      - Copy tenantId and principalId with exact optional presence.
+      - Add application, session, run, or agent lifetime identifiers.
+    verification:
+      - Memory scope unit tests cover all four identity combinations and six lifetimes.
+  - mapping_id: MAP-RECORD-POSTGRES
+    from_shape: SHAPE-MEMORY-RECORD
+    to_shape: SHAPE-POSTGRES-RECORD
+    direction: domain_to_persistence
+    allowed_differences:
+      - JSON fields use PostgreSQL jsonb and vectors use pgvector storage.
+    redaction_or_loss_policy: The mapping is lossless; expired rows remain stored until cleanup but are query-invisible.
+    field_operations:
+      - Encode JsonValue as jsonb and vector as the pgvector parameter format.
+      - Decode timestamps and metadata into the canonical shape.
+    verification:
+      - PostgreSQL engine contract and migration tests compare canonical round trips.
+  - mapping_id: MAP-RECORD-SQLITE
+    from_shape: SHAPE-MEMORY-RECORD
+    to_shape: SHAPE-SQLITE-RECORD
+    direction: domain_to_persistence
+    allowed_differences:
+      - JSON is canonical text, FTS5 stores index text, and sqlite-vec stores finite float vectors when enabled.
+    redaction_or_loss_policy: The mapping is lossless; expired rows are query-invisible until lazy or explicit cleanup.
+    field_operations:
+      - Encode JsonValue, tags, metadata, and descriptors with canonical JSON serialization.
+      - Update the base row and enabled index rows in one SQLite transaction.
+    verification:
+      - SQLite engine contract, schema, restart, FTS5, sqlite-vec, and rollback tests compare canonical round trips.
+  - mapping_id: MAP-RECORD-REDIS
+    from_shape: SHAPE-MEMORY-RECORD
+    to_shape: SHAPE-REDIS-RECORD
+    direction: domain_to_persistence
+    allowed_differences:
+      - Redis hashes encode JSON strings and vectors encode binary float arrays.
+    redaction_or_loss_policy: The mapping is lossless; TTL expiration removes the complete record and index entry.
+    field_operations:
+      - Encode values and metadata with canonical JSON serialization.
+      - Encode finite vectors in the format required by the Redis index.
+    verification:
+      - Redis engine contract and schema tests compare canonical round trips.
+  - mapping_id: MAP-PURISTA-IDENTITY
+    from_shape: SHAPE-PURISTA-MESSAGE-IDENTITY
+    to_shape: SHAPE-HARNESS-IDENTITY
+    direction: boundary_to_domain
+    allowed_differences:
+      - PURISTA branded string types become Harness strings at the package boundary.
+    redaction_or_loss_policy: Optional presence and values are preserved exactly.
+    field_operations:
+      - Map message.tenantId to identity.tenantId.
+      - Map message.principalId to identity.principalId.
+    verification:
+      - PURISTA runtime tests cover absent, tenant-only, principal-only, and combined identity.
+  - mapping_id: MAP-RECORD-NATS
+    from_shape: SHAPE-MEMORY-RECORD
+    to_shape: SHAPE-NATS-RECORD
+    direction: domain_to_persistence
+    allowed_differences:
+      - Canonical JSON is stored as one KV value and the canonical scope key is encoded into the NATS key grammar.
+    redaction_or_loss_policy: The mapping is lossless; expired values are hidden and lazily deleted while untouched expired values may remain physically stored within bucket limits.
+    field_operations:
+      - Encode the complete canonical record with deterministic JSON.
+      - Validate and encode scope and record keys into legal non-sensitive NATS key tokens.
+    verification:
+      - NATS engine contract, restart, scope isolation, key enumeration limit, expiry, and revision-conflict tests compare canonical round trips.

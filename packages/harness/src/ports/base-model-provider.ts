@@ -7,6 +7,8 @@ import type { Logger } from '../logger/index.js'
 import type {
   EmbeddingRequest,
   EmbeddingResponse,
+  ImageProviderResponse,
+  ImageRequest,
   ModelProvider,
   ModelRetryPolicy,
   ModelRetrySetting,
@@ -15,10 +17,15 @@ import type {
   ObjectStreamChunk,
   RerankRequest,
   RerankResponse,
+  SpeechProviderResponse,
+  SpeechRequest,
   TextRequest,
   TextResponse,
   TextStreamChunk,
-  TokenUsage
+  TokenUsage,
+  VideoProviderResponse,
+  VideoProviderStreamChunk,
+  VideoRequest,
 } from './model-provider.js'
 import type { JsonValue } from '../models/json.js'
 import type { SpanAttrs, TelemetryShim } from '../telemetry/index.js'
@@ -32,8 +39,8 @@ export interface BaseModelProviderOptions {
   timeoutMs?: number
 }
 
-type ProviderMethod = 'text' | 'textStream' | 'object' | 'objectStream' | 'embed' | 'rerank'
-type ProviderRequest = TextRequest | ObjectRequest | EmbeddingRequest | RerankRequest
+type ProviderMethod = 'text' | 'textStream' | 'object' | 'objectStream' | 'embed' | 'rerank' | 'image' | 'speech' | 'video' | 'videoStream'
+type ProviderRequest = TextRequest | ObjectRequest | EmbeddingRequest | RerankRequest | ImageRequest | SpeechRequest | VideoRequest
 
 type ResolvedRetryPolicy = Required<Omit<ModelRetryPolicy, 'retryOn' | 'maxDeferredDelayMs'>> & {
   maxDeferredDelayMs?: number
@@ -56,12 +63,16 @@ const DEFAULT_RETRY_POLICY: ResolvedRetryPolicy = {
   }
 }
 
+const finalizeOperationsSymbol = Symbol('purista.harness.finalize-model-provider-operations')
+
 /**
  * Base class for model adapters.
  *
  * Adapter packages should map provider-specific requests/responses in protected
  * `do*` methods. The base class owns cross-cutting harness behavior:
  * cancellation, timeout, safe logs, metrics/spans, and error normalization.
+ * Each public optional operation is installed only when its corresponding
+ * protected `do*` method is implemented by the adapter.
  */
 export abstract class BaseModelProvider implements ModelProvider {
   public readonly id: string
@@ -76,6 +87,8 @@ export abstract class BaseModelProvider implements ModelProvider {
     this.logger = options.logger
     this.telemetry = options.telemetry
     this.timeoutMs = options.timeoutMs
+
+    this[finalizeOperationsSymbol]()
   }
 
   /**
@@ -84,6 +97,7 @@ export abstract class BaseModelProvider implements ModelProvider {
    * constructor options win over inherited values.
    */
   public configureHarnessContext(context: HarnessAdapterContext): void {
+    this[finalizeOperationsSymbol]()
     this.logger ??= context.logger
     this.telemetry ??= context.telemetry
     if (this.timeoutMs === undefined) {
@@ -91,28 +105,42 @@ export abstract class BaseModelProvider implements ModelProvider {
     }
   }
 
-  public text(req: TextRequest): Promise<TextResponse> {
-    return this.call('text', req, (next) => this.doText(next as TextRequest))
-  }
+  public declare readonly text?: (req: TextRequest) => Promise<TextResponse>
+  public declare readonly textStream?: (req: TextRequest) => AsyncIterable<TextStreamChunk>
+  public declare readonly object?: <T extends JsonValue = JsonValue>(req: ObjectRequest<T>) => Promise<ObjectResponse<T>>
+  public declare readonly objectStream?: <T extends JsonValue = JsonValue>(req: ObjectRequest<T>) => AsyncIterable<ObjectStreamChunk<T>>
+  public declare readonly embed?: (req: EmbeddingRequest) => Promise<EmbeddingResponse>
+  public declare readonly rerank?: (req: RerankRequest) => Promise<RerankResponse>
+  public declare readonly image?: (req: ImageRequest) => Promise<ImageProviderResponse>
+  public declare readonly speech?: (req: SpeechRequest) => Promise<SpeechProviderResponse>
+  public declare readonly video?: (req: VideoRequest) => Promise<VideoProviderResponse>
+  public declare readonly videoStream?: (req: VideoRequest) => AsyncIterable<VideoProviderStreamChunk>
 
-  public textStream(req: TextRequest): AsyncIterable<TextStreamChunk> {
-    return this.stream('textStream', req, (next) => this.doTextStream(next as TextRequest))
-  }
-
-  public object<T extends JsonValue = JsonValue>(req: ObjectRequest<T>): Promise<ObjectResponse<T>> {
-    return this.call('object', req, (next) => this.doObject(next as ObjectRequest<T>))
-  }
-
-  public objectStream<T extends JsonValue = JsonValue>(req: ObjectRequest<T>): AsyncIterable<ObjectStreamChunk<T>> {
-    return this.stream('objectStream', req, (next) => this.doObjectStream(next as ObjectRequest<T>))
-  }
-
-  public embed(req: EmbeddingRequest): Promise<EmbeddingResponse> {
-    return this.call('embed', req, (next) => this.doEmbed(next as EmbeddingRequest))
-  }
-
-  public rerank(req: RerankRequest): Promise<RerankResponse> {
-    return this.call('rerank', req, (next) => this.doRerank(next as RerankRequest))
+  /**
+   * Finalize public operation exposure after derived class fields initialize.
+   * Call this at the end of a derived constructor when a protected `do*`
+   * implementation is declared as a class field instead of a prototype method.
+   * Redeclare each supported public operation as non-nullable on the adapter
+   * class so its declaration exposes that capability as callable.
+   *
+   * @example
+   * ```ts
+   * class TextAdapter extends BaseModelProvider {
+   *   public declare readonly text: NonNullable<BaseModelProvider['text']>
+   *   protected override doText = async () => ({
+   *     content: 'ok',
+   *     usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+   *     finishReason: 'stop' as const,
+   *   })
+   *   constructor() {
+   *     super({ id: 'text-adapter', genAiSystem: 'custom' })
+   *     this.finalizeOperations()
+   *   }
+   * }
+   * ```
+   */
+  protected finalizeOperations(): void {
+    this[finalizeOperationsSymbol]()
   }
 
   protected doText(_req: TextRequest): Promise<TextResponse> {
@@ -137,6 +165,22 @@ export abstract class BaseModelProvider implements ModelProvider {
 
   protected doRerank(_req: RerankRequest): Promise<RerankResponse> {
     throw this.methodMissing('rerank')
+  }
+
+  protected doImage(_req: ImageRequest): Promise<ImageProviderResponse> {
+    throw this.methodMissing('image')
+  }
+
+  protected doSpeech(_req: SpeechRequest): Promise<SpeechProviderResponse> {
+    throw this.methodMissing('speech')
+  }
+
+  protected doVideo(_req: VideoRequest): Promise<VideoProviderResponse> {
+    throw this.methodMissing('video')
+  }
+
+  protected doVideoStream(_req: VideoRequest): AsyncIterable<VideoProviderStreamChunk> {
+    throw this.methodMissing('videoStream')
   }
 
   protected getLogger(): Logger | undefined {
@@ -355,12 +399,29 @@ export abstract class BaseModelProvider implements ModelProvider {
     }
   }
 
-  private methodMissing(method: ProviderMethod): ModelCapabilityError {
+  protected methodMissing(method: ProviderMethod): ModelCapabilityError {
     return new ModelCapabilityError('Model provider method is not implemented.', {
       alias: this.id,
       method,
       reason: 'method_missing'
     })
+  }
+
+  private expose(method: ProviderMethod, operation: object): void {
+    Object.defineProperty(this, method, { configurable: false, enumerable: false, writable: false, value: operation })
+  }
+
+  private [finalizeOperationsSymbol](): void {
+    if (!Object.hasOwn(this, 'text') && this.doText !== BaseModelProvider.prototype.doText) this.expose('text', (req: TextRequest) => this.call('text', req, next => this.doText(next as TextRequest)))
+    if (!Object.hasOwn(this, 'textStream') && this.doTextStream !== BaseModelProvider.prototype.doTextStream) this.expose('textStream', (req: TextRequest) => this.stream('textStream', req, next => this.doTextStream(next as TextRequest)))
+    if (!Object.hasOwn(this, 'object') && this.doObject !== BaseModelProvider.prototype.doObject) this.expose('object', <T extends JsonValue = JsonValue>(req: ObjectRequest<T>) => this.call('object', req, next => this.doObject(next as ObjectRequest<T>)))
+    if (!Object.hasOwn(this, 'objectStream') && this.doObjectStream !== BaseModelProvider.prototype.doObjectStream) this.expose('objectStream', <T extends JsonValue = JsonValue>(req: ObjectRequest<T>) => this.stream('objectStream', req, next => this.doObjectStream(next as ObjectRequest<T>)))
+    if (!Object.hasOwn(this, 'embed') && this.doEmbed !== BaseModelProvider.prototype.doEmbed) this.expose('embed', (req: EmbeddingRequest) => this.call('embed', req, next => this.doEmbed(next as EmbeddingRequest)))
+    if (!Object.hasOwn(this, 'rerank') && this.doRerank !== BaseModelProvider.prototype.doRerank) this.expose('rerank', (req: RerankRequest) => this.call('rerank', req, next => this.doRerank(next as RerankRequest)))
+    if (!Object.hasOwn(this, 'image') && this.doImage !== BaseModelProvider.prototype.doImage) this.expose('image', (req: ImageRequest) => this.call('image', req, next => this.doImage(next as ImageRequest)))
+    if (!Object.hasOwn(this, 'speech') && this.doSpeech !== BaseModelProvider.prototype.doSpeech) this.expose('speech', (req: SpeechRequest) => this.call('speech', req, next => this.doSpeech(next as SpeechRequest)))
+    if (!Object.hasOwn(this, 'video') && this.doVideo !== BaseModelProvider.prototype.doVideo) this.expose('video', (req: VideoRequest) => this.call('video', req, next => this.doVideo(next as VideoRequest)))
+    if (!Object.hasOwn(this, 'videoStream') && this.doVideoStream !== BaseModelProvider.prototype.doVideoStream) this.expose('videoStream', (req: VideoRequest) => this.stream('videoStream', req, next => this.doVideoStream(next as VideoRequest)))
   }
 
   private attrs(method: ProviderMethod, req: ProviderRequest): SpanAttrs {

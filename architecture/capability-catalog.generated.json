@@ -3,11 +3,19 @@
   "families": [
     {
       "conformance": "@purista/harness/testing:modelProviderContract",
-      "consumer": "packages/harness-openai/test/static-module-consumer.test.ts",
+      "consumer": "packages/harness-openai/test/v4-runtime-binding.test.ts",
       "id": "model-provider-openai",
       "owner": "@purista/harness-openai",
       "port": "@purista/harness:ModelProvider",
       "provider": "@purista/harness-openai"
+    },
+    {
+      "conformance": "@purista/harness/testing:sandboxContract",
+      "consumer": "packages/harness-sandbox-docker/src/index.test.ts",
+      "id": "sandbox-docker",
+      "owner": "@purista/harness-sandbox-docker",
+      "port": "@purista/harness:Sandbox",
+      "provider": "@purista/harness-sandbox-docker"
     }
   ]
 }

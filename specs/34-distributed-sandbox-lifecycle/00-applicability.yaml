@@ -1,0 +1,56 @@
+applicability_version: 1
+concerns:
+  - concern_id: representation_reuse
+    status: applicable
+    scope_refs: [CAP-SBX-IDENTITY, CAP-SBX-OPEN, CAP-SBX-FENCE]
+  - concern_id: contracts_generation
+    status: applicable
+    scope_refs: [CAP-SBX-CONTRACT]
+  - concern_id: data_persistence_and_recovery
+    status: applicable
+    scope_refs: [CAP-SBX-RECOVER]
+  - concern_id: security_privacy_and_tenancy
+    status: applicable
+    scope_refs: [CAP-SBX-IDENTITY, CAP-SBX-FENCE, CAP-SBX-OBSERVE]
+  - concern_id: external_provider_selection
+    status: applicable
+    scope_refs: [CAP-SBX-BAKEOFF]
+  - concern_id: local_container_runtime
+    status: applicable
+    scope_refs: [CAP-SBX-DOCKER]
+  - concern_id: docker_checkpoint_implementation
+    status: not_applicable
+    scope_refs: [CAP-SBX-DOCKER]
+    rationale: The first Docker slice is Sandbox-only; missing state and unsupported workspace restore fail explicitly without replacement. Compatible checkpoint recovery is a separate follow-up.
+  - concern_id: frontend_and_client_ux
+    status: not_applicable
+    scope_refs: [CAP-SBX-CONTRACT]
+    rationale: The scope is a provider-neutral library and adapter contract with no frontend.
+topics:
+  sdk_and_api:
+    applicability: relevant
+    evidence: [03-contracts/contracts.yaml]
+  worker_and_async:
+    applicability: relevant
+    evidence: [03-flows/e2e-coverage.md]
+  data_lifecycle:
+    applicability: relevant
+    evidence: [04-nfr/requirements.md]
+  operations_and_cleanup:
+    applicability: relevant
+    evidence: [04-operations/runbook-requirements.md]
+  security_and_tenancy:
+    applicability: relevant
+    evidence: [00-vision.md, 04-nfr/requirements.md]
+  third_party_provider:
+    applicability: relevant_but_selection_blocked
+    evidence: [04-operations/runbook-requirements.md]
+  frontend_ux:
+    applicability: not_applicable
+    reason: This scope is a provider-neutral library and adapter contract with no frontend.
+  admin_ui:
+    applicability: not_applicable
+    reason: Adapter operations are configuration and runbook concerns; Harness adds no maintenance UI or API.
+  payments_notifications_search_i18n:
+    applicability: not_applicable
+    reason: These product domains do not participate in sandbox lifecycle correctness.

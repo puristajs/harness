@@ -1,0 +1,99 @@
+reuse_inventory_version: 1
+discovery_revision: c378607de9e7f19e3e985b8f8dbd84457ae5592a plus preserved working tree inspected 2026-08-26
+assets:
+  - asset_id: core.decisions
+    kind: module
+    path: ai-harness/packages/harness/src/decisions
+    public_export: decisionResultSchema, runDecisionOperation, evidence
+    owner: core
+    stability: existing
+    consumers:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    extension_policy: retain one decision lifecycle
+  - asset_id: core.json
+    kind: module
+    path: ai-harness/packages/harness/src/models/json.ts
+    public_export: JsonValue, isJsonValue
+    owner: core
+    stability: existing
+    consumers:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    extension_policy: reuse validator; remove addon copy
+  - asset_id: core.builtins
+    kind: module
+    path: ai-harness/packages/harness/src/tools/index.ts
+    public_export: BUILTIN_TOOL_NAMES
+    owner: core
+    stability: existing
+    consumers:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    extension_policy: reuse internal resolution; no addon list
+  - asset_id: core.definitions
+    kind: module
+    path: ai-harness/packages/harness/src/harness/defineHarness.ts
+    public_export: TsToolDefinition, AgentDefinition, WorkflowDefinition
+    owner: core
+    stability: existing
+    consumers:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    extension_policy: derive helpers and function types; no field copies
+  - asset_id: addon.sensitive
+    kind: module
+    path: ai-harness/packages/harness-guardrails/src/sensitive-data.ts
+    public_export: detector and codec contracts
+    owner: addon
+    stability: existing
+    consumers:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    extension_policy: reuse detector algorithms through action constructor
+  - asset_id: docs.projection
+    kind: module
+    path: purista/web/src/data/harness-markdown.ts
+    public_export: existing Markdown route data
+    owner: docs
+    stability: existing
+    consumers:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    extension_policy: share scoped phase prose; no renderer replacement

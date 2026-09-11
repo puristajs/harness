@@ -1,0 +1,141 @@
+readiness_version: 1
+status: approved
+language: en
+reviewed_at: 2026-08-25T15:30:00+02:00
+open_decisions: []
+approval_evidence:
+  status: approved
+  approver_id: workspace-user
+  approved_at: 2026-08-25T15:30:00+02:00
+  approval_ref: user-standing-instruction-specs-auto-approved
+  manifest_digest: sha256:31ac7db905fa8695b24e51f148e122748fd7e2dfcbacddfe1edea24fe081fa52
+  scope_refs:
+    - 00-vision.md
+    - 03-contracts/contracts.yaml
+    - 00-traceability.yaml
+human_approval:
+  status: approved
+  evidence: User explicitly instructed that specification updates are auto-approved before planning.
+gates:
+  no_drift_gate:
+    status: passed
+  ambiguity_gate:
+    status: passed
+  semantic_alignment_gate:
+    status: passed
+  spec_structure_gate:
+    status: passed
+  visualization_gate:
+    status: passed
+  requirements_quality_gate:
+    status: passed
+  end_to_end_definition_gate:
+    status: passed
+  file_structure_gate:
+    status: passed
+  current_dependency_research_gate:
+    status: passed
+  concise_spec_gate:
+    status: passed
+  client_consumer_coverage_gate:
+    status: passed
+  frontend_ux_integration_gate:
+    status: passed
+  standards_first_gate:
+    status: passed
+  machine_readable_contract_gate:
+    status: passed
+  async_semantics_gate:
+    status: passed
+  clean_rebuild_boundary_gate:
+    status: passed
+  generation_map_gate:
+    status: passed
+  strong_boundary_type_gate:
+    status: passed
+  representation_reuse_gate:
+    status: passed
+  interface_gate:
+    status: passed
+  e2e_gate:
+    status: passed
+  unhappy_path_gate:
+    status: passed
+  security_privacy_gate:
+    status: passed
+  observability_gate:
+    status: passed
+  performance_resilience_gate:
+    status: passed
+  data_integrity_recovery_gate:
+    status: passed
+  production_readiness_gate:
+    status: passed
+  supply_chain_gate:
+    status: passed
+  wave_readiness:
+    status: passed
+  migration_gate:
+    status: passed
+  checklist_walk_gate:
+    status: passed
+  contradiction_check:
+    status: passed
+  spec_judge_loop:
+    status: passed
+  semantic_judge_gate:
+    status: passed
+  self_audit_gate:
+    status: passed
+  gate_simulation:
+    status: passed
+spec_judge_loop:
+  status: passed
+  run_timing: approval_only
+  reviewed_flows:
+    - builder and type inference
+    - session identity binding and isolation
+    - key value and indexed write
+    - text semantic and hybrid search
+    - summary success and failed enrichment
+    - SQLite base and optional-vector failure and recovery
+    - PostgreSQL PGlite development proof and real release proof
+    - Redis failure and recovery
+    - NATS bounded KV and no-search failure behavior
+    - PURISTA propagation
+    - migration release and operations
+  blocking_findings_count: 0
+checklist_walk:
+  status: passed
+  topics:
+    core: Contract ownership defaults errors testing and no legacy path are explicit.
+    end_to_end: Every requirement maps to a capability path acceptance and ticket target.
+    architecture_structure: Core engine-package testing PURISTA docs and website ownership are fixed.
+    contracts_generation: Closed TypeScript contracts representation mappings and declaration drift checks are specified.
+    security_privacy: Identity isolation content classification redaction deletion and authorization boundary are specified.
+    performance_capacity: Limits candidate bounds connection ownership and benchmark evidence are specified.
+    runtime_platform: Node and Bun gates cancellation shutdown readiness and rollout are specified.
+    data_persistence: Atomicity descriptor consistency TTL deletion migrations backup and restore are specified.
+    ai_ml_automation: Model capability routing prompt output schema tokens cost and deterministic fakes are specified.
+    dependencies_research: Official dated sources direct dependency ownership optional sqlite-vec PGlite test-only use NATS v3 and Dapr exclusion are specified.
+    operations_release: Runbooks migration package release SBOM provenance rollback and support evidence are specified.
+    missing_installed_reference: The installed readiness skill references checklist-secrets-privacy.md but that file is absent; equivalent privacy and secret controls were reviewed through security-abuse data-persistence operations and the loaded checklist indexes.
+  blocking_findings_count: 0
+semantic_judge_evidence:
+  status: passed
+  judge: codex-main-agent
+  evidence_ref: 03-flows/e2e-coverage.md
+  reviewed_at: 2026-08-25T15:30:00+02:00
+self_audit:
+  contradictions: 0
+  unresolved_decisions: 0
+  vague_phrases: 0
+  fake_runtime_paths: 0
+  compatibility_layers: 0
+  conclusions:
+    - HarnessStorage stays the execution and conversation source of truth.
+    - Memory remains a separate recall and retrieval concern.
+    - Core owns orchestration and model calls; database packages implement engines only.
+    - SQLite PostgreSQL Redis and NATS memory packages live in the Harness repository while PURISTA StateStores remain independent.
+    - Dapr is excluded and PGlite remains private testing evidence rather than a production engine.
+    - The minimum setup remains zero configuration and advanced features are explicit.

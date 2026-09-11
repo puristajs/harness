@@ -111,8 +111,8 @@ Rules:
 
 The backend builds one harness using:
 
-- `defineHarness()`;
-- an in-memory or local-file state store suitable for the example;
+- `defineHarness({ name: 'livingWiki' })`;
+- in-memory or local-file Harness storage suitable for the example;
 - a local sandbox rooted at the example workspace;
 - the OpenAI provider when `OPENAI_API_KEY` is present;
 - fake provider scripts for tests;
@@ -120,7 +120,8 @@ The backend builds one harness using:
 - local TypeScript tools for wiki operations;
 - optional MCP tools only when configured.
 
-The default model alias is `main`. The default real model is `gpt-5-mini`.
+This example application chooses `main` as its model alias and binds
+`gpt-5-mini` by default. Neither name is a Harness-wide default.
 
 Privacy defaults:
 
@@ -753,7 +754,10 @@ interface ResolvedMcpTool {
 }
 ```
 
-No network, process, or MCP SDK work happens during `.tools(...)` or `.build()`.
+No network, process, or MCP SDK work happens while calling `defineMcpServer`,
+`defineAgent`, `defineWorkflow`, or composing the Harness definition. Runtime
+MCP initialization starts only during `getInstance(...)` or the first use, as
+specified below.
 For an agent that allowlists MCP tools, schemas are initialized immediately
 before the first model call of the run. Initialization creates/reuses the runner,
 runs optional stdio install commands inside the sandbox, calls `tools/list`,

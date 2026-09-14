@@ -27,6 +27,8 @@ import {
 export const HARNESS_UI_APPROVAL_PROTOCOL = 'purista-harness/tool-approval' as const
 /** Wire format version of the approval descriptor. */
 export const HARNESS_UI_APPROVAL_VERSION = 1 as const
+/** Protocol identifier used by hosts that expose AI SDK UI Message Stream v1. */
+export const AI_SDK_UI_MESSAGE_STREAM_V1_PROTOCOL = 'ai-sdk-ui-message-stream-v1' as const
 /** Reserved HTTP headers required by AI SDK UI Message Stream v1 clients. */
 export const AI_SDK_UI_MESSAGE_STREAM_V1_HEADERS = Object.freeze({
   'content-type': 'text/event-stream',
@@ -101,6 +103,13 @@ export interface ParsedHarnessUIMessageRequest {
 
 /** Data-only SSE record accepted by a host-owned stream writer. */
 export type HarnessUIMessageSseEvent = Readonly<{ event: 'data'; data: UIMessageChunk<unknown, HarnessUIDataTypes> | '[DONE]' }>
+/** Minimal host-owned stream sink used by {@link pipeHarnessUIMessageStream}. */
+export interface HarnessUIMessageStreamSink {
+  readonly cancelled: boolean
+  write(event: HarnessUIMessageSseEvent): Promise<void>
+  close(): Promise<void>
+  onCancel(callback: (reason?: string) => void): void
+}
 /** Standard Response options plus Harness projection settings. */
 export type HarnessUIMessageStreamResponseOptions = Omit<Parameters<typeof createUIMessageStreamResponse>[0], 'stream'> & HarnessUIMessageStreamOptions
 
@@ -340,6 +349,71 @@ export async function* createHarnessUIMessageSseEvents<const Stream>(
   } finally {
     if (!completed) await reader.cancel('consumer stopped reading')
     reader.releaseLock()
+  }
+}
+
+/**
+ * Project a Harness target stream into a host-owned AI SDK UI message stream.
+ *
+ * The helper forwards data-only protocol records, writes the completion marker,
+ * propagates consumer cancellation to Harness, and closes the sink after a
+ * successful projection. A parsed request can be passed directly so resumed or
+ * regenerated responses keep their assistant message id.
+ *
+ * @example
+ * ```ts
+ * const request = await parseHarnessUIMessageRequest(payload)
+ * const events = await agent.stream(input, { sessionId: request.sessionId })
+ * await pipeHarnessUIMessageStream(events, writer, request)
+ * ```
+ */
+export async function pipeHarnessUIMessageStream<const Stream>(
+  events: ExactHarnessTargetStream<Stream>,
+  sink: HarnessUIMessageStreamSink,
+  request: Pick<ParsedHarnessUIMessageRequest, 'sessionId' | 'assistantMessageId'>,
+  options: Pick<HarnessUIMessageStreamOptions, 'onIgnoredEvent'> = {},
+): Promise<void> {
+  const reader = createHarnessUIMessageStream(events, {
+    sessionId: request.sessionId,
+    ...(request.assistantMessageId === undefined ? {} : { messageId: request.assistantMessageId }),
+    ...(options.onIgnoredEvent === undefined ? {} : { onIgnoredEvent: options.onIgnoredEvent }),
+  }).getReader()
+  let completed = false
+  let projectionFailed = false
+  let cancellationFailed = false
+  let cancellationFailure: unknown
+  let cancellation: Promise<void> | undefined
+
+  const cancel = (reason?: string) => {
+    cancellation ??= reader.cancel(reason).catch(error => {
+      cancellationFailed = true
+      cancellationFailure = error
+    })
+  }
+  sink.onCancel(cancel)
+
+  try {
+    while (!sink.cancelled) {
+      const next = await reader.read()
+      if (next.done) {
+        completed = true
+        break
+      }
+      await sink.write({ event: 'data', data: next.value })
+    }
+
+    if (!sink.cancelled) {
+      await sink.write({ event: 'data', data: '[DONE]' })
+      await sink.close()
+    }
+  } catch (error) {
+    projectionFailed = true
+    throw error
+  } finally {
+    if (!completed && cancellation === undefined) cancel('consumer stopped reading')
+    await cancellation
+    reader.releaseLock()
+    if (!projectionFailed && cancellationFailed) throw cancellationFailure
   }
 }
 

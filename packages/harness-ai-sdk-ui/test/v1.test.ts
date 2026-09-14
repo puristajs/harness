@@ -12,12 +12,14 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   AI_SDK_UI_MESSAGE_STREAM_V1_HEADERS,
+  AI_SDK_UI_MESSAGE_STREAM_V1_PROTOCOL,
   createHarnessUIMessageSseEvents,
   createHarnessUIMessageStream,
   createHarnessUIMessageStreamResponse,
   HARNESS_UI_APPROVAL_PROTOCOL,
   parseHarnessToolApprovalResume,
   parseHarnessUIMessageRequest,
+  pipeHarnessUIMessageStream,
   type HarnessUIApprovalDescriptor,
   type HarnessUIStatus,
 } from '../src/index.js'
@@ -40,6 +42,12 @@ function acceptsExactConcreteTarget(stream: HarnessTargetStream<ExactObjectTarge
   createHarnessUIMessageStream(stream, { sessionId: 'session-1' })
   createHarnessUIMessageStreamResponse(stream, { sessionId: 'session-1' })
   createHarnessUIMessageSseEvents(stream, { sessionId: 'session-1' })
+  pipeHarnessUIMessageStream(stream, {
+    cancelled: false,
+    write: async () => {},
+    close: async () => {},
+    onCancel: () => {},
+  }, { sessionId: 'session-1' })
 }
 void acceptsExactConcreteTarget
 // @ts-expect-error Caller identity is one exact discriminated union, not independent optional fields.
@@ -49,6 +57,10 @@ const exactWorkflowToolStatus: HarnessUIStatus = { phase: 'tool-running', runId:
 void [staleToolStatus, exactAgentToolStatus, exactWorkflowToolStatus]
 
 describe('AI SDK UI Message Stream v1', () => {
+  it('exports the protocol identifier used by host transports', () => {
+    expect(AI_SDK_UI_MESSAGE_STREAM_V1_PROTOCOL).toBe('ai-sdk-ui-message-stream-v1')
+  })
+
   it('opens one step per provider turn and remains consumable by the official reader', async () => {
     const chunks = await collect(createHarnessUIMessageStream(stream([
       event({ type: 'run.started', runId: 'run-1', at: '2026-09-02T10:00:00.000Z' }),
@@ -317,6 +329,64 @@ describe('AI SDK UI Message Stream v1', () => {
     await reader.cancel('browser disconnected')
     expect(cancel).toHaveBeenCalledWith('browser disconnected')
     expect(iteratorReturn).toHaveBeenCalled()
+  })
+
+  it('pipes records into a host sink and owns completion and cancellation', async () => {
+    const records: unknown[] = []
+    const close = vi.fn(async () => {})
+    const completedSink = {
+      cancelled: false,
+      write: async (record: unknown) => { records.push(record) },
+      close,
+      onCancel: (_callback: (reason?: string) => void) => {},
+    }
+
+    await pipeHarnessUIMessageStream(stream(completedEvents()), completedSink, {
+      sessionId: 'session-1',
+      assistantMessageId: 'assistant-1',
+    })
+
+    expect(records).toContainEqual({ event: 'data', data: { type: 'start', messageId: 'assistant-1' } })
+    expect(records.at(-1)).toEqual({ event: 'data', data: '[DONE]' })
+    expect(close).toHaveBeenCalledOnce()
+
+    const cancel = vi.fn(async (_reason?: string) => {})
+    const source = stream(completedEvents())
+    const cancellableSource = { ...source, cancel } as HarnessTargetStream<UITestTarget>
+    let cancelled = false
+    let onCancel: ((reason?: string) => void) | undefined
+    const cancelledSink = {
+      get cancelled() { return cancelled },
+      write: async () => {
+        cancelled = true
+        onCancel?.('browser disconnected')
+      },
+      close: vi.fn(async () => {}),
+      onCancel: (callback: (reason?: string) => void) => { onCancel = callback },
+    }
+
+    await pipeHarnessUIMessageStream(cancellableSource, cancelledSink, { sessionId: 'session-2' })
+
+    expect(cancel).toHaveBeenCalledWith('browser disconnected')
+    expect(cancelledSink.close).not.toHaveBeenCalled()
+
+    const failedCancelSource = {
+      ...stream(completedEvents()),
+      cancel: async () => { throw new Error('cancel failed') },
+    } as HarnessTargetStream<UITestTarget>
+    let cancelWithFailure: ((reason?: string) => void) | undefined
+    let failedSinkCancelled = false
+    const failedSink = {
+      get cancelled() { return failedSinkCancelled },
+      write: async () => {
+        failedSinkCancelled = true
+        cancelWithFailure?.('browser disconnected')
+      },
+      close: async () => {},
+      onCancel: (callback: (reason?: string) => void) => { cancelWithFailure = callback },
+    }
+    await expect(pipeHarnessUIMessageStream(failedCancelSource, failedSink, { sessionId: 'session-3' }))
+      .rejects.toThrow('cancel failed')
   })
 
   it('surfaces producer rejection while the event iterator is still pending', async () => {

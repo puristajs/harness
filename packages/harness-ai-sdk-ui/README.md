@@ -80,31 +80,23 @@ same stable Harness session id required by the full Response helper.
 
 ```ts
 import {
-  AI_SDK_UI_MESSAGE_STREAM_V1_HEADERS,
-  createHarnessUIMessageSseEvents,
+  pipeHarnessUIMessageStream,
 } from '@purista/harness-ai-sdk-ui/v1'
 
-const records = createHarnessUIMessageSseEvents(events, {
-  sessionId: parsed.sessionId,
-  ...(parsed.assistantMessageId === undefined
-    ? {}
-    : { messageId: parsed.assistantMessageId }),
-})
-
-for await (const record of records) {
-  await stream.writeSSE({
-    event: record.event,
-    data: record.data === '[DONE]' ? record.data : JSON.stringify(record.data),
-  })
-}
+await pipeHarnessUIMessageStream(events, streamWriter, parsed)
 ```
 
-Apply `AI_SDK_UI_MESSAGE_STREAM_V1_HEADERS` to the endpoint response. Each
-helper result is a data record, never preframed SSE text or bytes. The host
-serializes normal chunk data once, writes `[DONE]` literally, and owns the
-`data:` prefix and record separators.
+`streamWriter` only needs `cancelled`, `write`, `close`, and `onCancel`; a
+framework stream writer can implement that interface without depending on
+Harness. The pipe helper projects and forwards data-only records, writes
+`[DONE]`, closes a successful stream, and propagates consumer cancellation.
 
-If the browser or HTTP consumer disconnects, both helpers call
+`AI_SDK_UI_MESSAGE_STREAM_V1_PROTOCOL` lets a framework host recognize the
+protocol and select the standard headers automatically. For a lower-level HTTP
+integration, apply `AI_SDK_UI_MESSAGE_STREAM_V1_HEADERS` to the response. The
+host owns the `data:` prefix and SSE record separators.
+
+If the browser or HTTP consumer disconnects, the response, pipe, and data-only helpers call
 `HarnessTargetStream.cancel(reason?)`, which requests cancellation of target
 execution. Returning from the async iterator only stops local observation.
 

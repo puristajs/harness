@@ -108,6 +108,10 @@ const instance = await supportHarness.getInstance({
 There is no host-process fallback. A stdio binding without `sandbox.spawn`
 fails before the first model request.
 
+The nested `mcp.<id>.sandbox` value is the spawn-capable session used by that
+stdio transport. It is separate from the graph-level runtime binding, whose
+shape is always `sandbox: { adapter, policy? }`.
+
 ## Runtime behavior
 
 Before a tool result reaches the model, Harness:

@@ -252,17 +252,15 @@ export async function runSupportRequest(
       example.lifecycle.push(`approval:${request.toolId}`)
       return decide(request)
     })
-    return await session.agents.support.run(input, {
-      ...(signal ? { signal } : {}),
-      resume: {
-        type: 'tool-approval',
-        runId: first.runId,
-        interruptId: first.interrupt.id,
-        revision: first.interrupt.revision,
-        eventId: `guardrails-example:${first.interrupt.id}`,
-        decisions,
-      },
-    })
+    const resume = {
+      type: 'tool-approval' as const,
+      runId: first.runId,
+      interruptId: first.interrupt.id,
+      revision: first.interrupt.revision,
+      eventId: `guardrails-example:${first.interrupt.id}`,
+      decisions,
+    }
+    return await session.agents.support.resume(resume).run(signal ? { signal } : undefined)
   } finally {
     await session.release()
   }

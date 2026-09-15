@@ -219,7 +219,7 @@ describe('Docker sandbox public configuration', () => {
     expect(() => definition.getInstance({
       models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: { adapter: missing },
     })).toThrowError(expect.objectContaining({
-      meta: { reason: 'missing_required_capability', path: 'sandbox.runtimes' },
+      meta: { reason: 'missing_required_capability', path: 'sandbox.adapter.runtimes' },
     }))
     expect(missingOpen).not.toHaveBeenCalled()
   })
@@ -238,7 +238,7 @@ describe('Docker sandbox public configuration', () => {
     expect(() => definition.getInstance({
       models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: { adapter },
     } as never)).toThrowError(expect.objectContaining({
-      meta: { reason: 'missing_required_capability', path: 'sandbox.capabilities' },
+      meta: { reason: 'missing_required_capability', path: 'sandbox.adapter.capabilities' },
     }))
     expect(open).not.toHaveBeenCalled()
     expect(adapter.capabilities).not.toContain('sandbox.readonly_mount')

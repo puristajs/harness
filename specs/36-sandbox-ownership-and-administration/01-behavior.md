@@ -141,8 +141,9 @@ session or reading a completed receipt does not demand a surviving owner.
 All durable invocations use run lifetime, including adapters without workspace
 binding. Those without binding retain their honest state-loss behavior; no
 checkpoint guarantee is inferred. An explicit borrowed owner on a durable
-invocation is rejected with `HarnessConfigError` before run admission, model
-calls, workspace creation, or sandbox access. Cross-run sharing is unsupported.
+invocation is rejected with `HarnessConfigError` before `concurrency.runs`
+acquisition, model calls, workspace creation, or sandbox access. Cross-run
+sharing is unsupported.
 
 For compatible `DurableWorkspace` plus `sandbox.workspace_binding`, keep one
 existing `WorkspaceHandle` and one committed `workspaceRef/checkpointRef` per

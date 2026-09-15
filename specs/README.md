@@ -73,7 +73,8 @@ must be explicitly marked superseded when a later contract replaces them.
 
 - Spec 42 owns public definition factories, direct references, catalogs,
   executable roots, graph closure, `$infer`, runtime binding, invokers,
-  streaming, admission, host tools, and PURISTA integration requirements.
+  streaming, run and model-call concurrency, host tools, and PURISTA
+  integration requirements.
 - Spec 39 owns Standard Schema and Standard JSON Schema direction, validation,
   projection, and caching.
 - Spec 37 owns decision evidence, approval, continuation, and prepared-tool

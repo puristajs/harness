@@ -109,7 +109,7 @@ when a client disconnects. The terminal `run.finished` event carries the same
 aggregate outcome, plus terminal failed and cancelled variants.
 
 Invocation options include cancellation, timeout, history window,
-idempotency key, metadata, tracing, context projection, approval resume, and
+idempotency key, metadata, tracing, context projection, and
 durable invocation identity.
 
 ## Execution events
@@ -136,13 +136,14 @@ resume the same logical run:
 
 ```ts
 if (outcome.status === 'interrupted' && outcome.interrupt.type === 'tool-approval') {
-  const resumed = await session.agents.answer.run(input, {
-    resume: {
-      type: 'tool-approval',
-      runId: outcome.runId,
-      decisions,
-    },
-  })
+  const resumed = await session.agents.answer.resume({
+    type: 'tool-approval',
+    runId: outcome.runId,
+    interruptId: outcome.interrupt.id,
+    revision: outcome.interrupt.revision,
+    eventId: approvalEventId,
+    decisions,
+  }).run()
 }
 ```
 

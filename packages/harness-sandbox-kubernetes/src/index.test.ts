@@ -209,7 +209,7 @@ describe('kubernetesSandboxRuntime', () => {
     expect(() => definition.getInstance({
       models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: { adapter: missing.sandbox },
     })).toThrowError(expect.objectContaining({
-      meta: { reason: 'missing_required_capability', path: 'sandbox.runtimes' },
+      meta: { reason: 'missing_required_capability', path: 'sandbox.adapter.runtimes' },
     }))
     expect(missingOpen).not.toHaveBeenCalled()
   })
@@ -230,7 +230,7 @@ describe('kubernetesSandboxRuntime', () => {
     expect(() => definition.getInstance({
       models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: { adapter: execution.sandbox },
     } as never)).toThrowError(expect.objectContaining({
-      meta: { reason: 'missing_required_capability', path: 'sandbox.capabilities' },
+      meta: { reason: 'missing_required_capability', path: 'sandbox.adapter.capabilities' },
     }))
     expect(open).not.toHaveBeenCalled()
     expect(execution.sandbox.capabilities).not.toContain('sandbox.readonly_mount')

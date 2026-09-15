@@ -39,8 +39,8 @@ concerns. A target definition cannot select or replace an adapter.
 Mounted root agents and workflows receive public EventBridge addresses. Their
 recursive dependency closure receives private immutable routes. Every subagent
 and workflow child call still crosses EventBridge and therefore cannot bypass
-the receiving target's schema validation, identity checks, admission, sandbox
-authorization, or lifecycle rules.
+the receiving target's schema validation, identity checks, concurrency controls,
+sandbox authorization, or lifecycle rules.
 
 Trusted message data supplies `tenantId` and `principalId`; model input cannot
 set either value. PURISTA derives stable private session and run identifiers

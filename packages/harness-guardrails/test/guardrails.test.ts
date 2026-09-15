@@ -785,7 +785,7 @@ it('snapshots own action fields once and rejects inherited required fields witho
   expect(modelReads).toBe(1)
 })
 
-it('fails attached guardrail preflight before provider work when a declared dependency is unavailable', () => {
+it('fails agent authoring before provider work when an attached guardrail dependency is unavailable', () => {
   const provider = new FakeModelProvider()
   const rails = defineGuardrailsApi({
     config: { rails: { input: { flows: ['model check'] }, tool_input: { flows: ['tool check'] } } },
@@ -803,16 +803,15 @@ it('fails attached guardrail preflight before provider work when a declared depe
     },
   })
 
-  const answer = defineAgent('answer', {
-    model: 'assistant', output: z.string(), instructions: 'Answer.', guardrails: rails,
-  })
   const error = (() => {
     try {
-      defineHarness({ name: 'missingGuardrailTool' }).addAgent(answer)
+      defineAgent('answer', {
+        model: 'assistant', output: z.string(), instructions: 'Answer.', guardrails: rails,
+      })
     } catch (value) {
       return value
     }
-    throw new Error('Expected attached requirements to fail build validation.')
+    throw new Error('Expected attached requirements to fail authoring validation.')
   })()
   expect(error).toMatchObject({ code: 'HARNESS_CONFIG_ERROR', meta: { reason: 'invalid_agent', id: 'publish' } })
   expect(provider.requests).toEqual([])

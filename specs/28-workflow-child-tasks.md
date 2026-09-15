@@ -91,7 +91,7 @@ content-free running `ChildTaskStatus`, while `result()` and `cancel()` each
 reject a locally constructed `ChildTaskStateError` with exact metadata
 `{reason:'recovery_required',task_id:record.id,workflow_id:metadata.workflowId,
 agent_id:record.target}`. Those rejections have no transported cause or stored
-message. Constructing or calling the recovery handle performs no task admission,
+message. Constructing or calling the recovery handle starts no task,
 dispatch, cancellation, event emission, or record mutation.
 
 The initial input is the first serialized turn. Each accepted `send(input)` is
@@ -122,8 +122,8 @@ queued `send()`, and a racing uncommitted `close()` with
 metadata `{scope:'child_task'}`. Terminal transitions are serialized by one
 task-local lifecycle mutex: the first committed success, failure, timeout, or
 cancellation wins; later timer/cancel callbacks are no-ops. This rule is
-identical for one-shot and continuable tasks. Cancellation before start
-admission creates no task or budget entry. After task acceptance, terminal
+identical for one-shot and continuable tasks. Cancellation before capacity
+acquisition creates no task or budget entry. After task acceptance, terminal
 record/event persistence and cleanup use the task lifecycle signal rather than
 the already-aborted caller signal, and finish before the terminal handle
 operation settles.
@@ -275,8 +275,9 @@ reset on durable/interruption re-entry.
 Direct agent calls, one-shot initial turns, continuable initial turns, and every
 accepted `send` each reserve one total call. Replay/coalescing does not. Options
 and tuple validation happen first, then total reservation, then parallel
-admission. Direct calls fail immediately at a full parallel ceiling or behind
-an existing FIFO task waiter and roll back their tentative total reservation.
+concurrency acquisition. Direct calls fail immediately at a full parallel
+ceiling or behind an existing FIFO task waiter and roll back their tentative
+total reservation.
 Task turns keep their total reservation and wait cancellation-aware FIFO for an
 active slot; cancellation before execution removes the waiter but does not
 refund the accepted total call. Total/parallel failures use
@@ -289,8 +290,8 @@ short-lived, awaited parallel work. `fanOut` never reserves a total call or
 acquires a workflow agent-call slot itself. It only clamps worker concurrency
 to the effective parallel ceiling, preserves input order, honors cancellation,
 and emits content-free `fanout.started` / `fanout.finished` events. Each direct
-agent call or child-task turn made by a worker performs its own ordinary
-admission. A worker that performs no agent call consumes no agent budget. This
+agent call or child-task turn made by a worker acquires its own concurrency
+capacity. A worker that performs no agent call consumes no agent budget. This
 distinction requires a regression test. `fanOut` is not a separate workflow
 DSL: `Promise.all` remains valid for application-defined concurrency.
 

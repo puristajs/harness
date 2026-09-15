@@ -72,20 +72,18 @@ if (first.status === 'interrupted' && first.interrupt.type === 'tool-approval') 
   const request = first.interrupt.requests[0]
   if (!request) throw new Error('Expected an approval request')
 
-  const outcome = await session.agents.banker.run(input, {
-    resume: {
-      type: 'tool-approval',
-      runId: first.runId,
-      interruptId: first.interrupt.id,
-      revision: first.interrupt.revision,
-      eventId: reviewDecision.id,
-      decisions: [{
-        approvalId: request.approvalId,
-        approved: reviewDecision.approved,
-        reason: reviewDecision.reason,
-      }],
-    },
-  })
+  const outcome = await session.agents.banker.resume({
+    type: 'tool-approval',
+    runId: first.runId,
+    interruptId: first.interrupt.id,
+    revision: first.interrupt.revision,
+    eventId: reviewDecision.id,
+    decisions: [{
+      approvalId: request.approvalId,
+      approved: reviewDecision.approved,
+      reason: reviewDecision.reason,
+    }],
+  }).run()
 }
 ```
 

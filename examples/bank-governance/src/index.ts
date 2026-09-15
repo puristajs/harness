@@ -184,20 +184,19 @@ export async function runTransferScenario(
     }
     if (interrupted?.interrupt.type === 'tool-approval') {
       const decision = opts?.approval ?? { approved: true, reason: 'Approved for the example.' }
-      for await (const resumed of session.agents.banker.stream(input, {
-          resume: {
-            type: 'tool-approval',
-            runId: interrupted.runId,
-            interruptId: interrupted.interrupt.id,
-            revision: interrupted.interrupt.revision,
-            eventId: `bank-example:${interrupted.interrupt.id}`,
-            decisions: interrupted.interrupt.requests.map(request => ({
-              approvalId: request.approvalId,
-              approved: decision.approved,
-              ...(decision.reason ? { reason: decision.reason } : {}),
-            })),
-          },
-      })) {
+      const resume = {
+        type: 'tool-approval' as const,
+        runId: interrupted.runId,
+        interruptId: interrupted.interrupt.id,
+        revision: interrupted.interrupt.revision,
+        eventId: `bank-example:${interrupted.interrupt.id}`,
+        decisions: interrupted.interrupt.requests.map(request => ({
+          approvalId: request.approvalId,
+          approved: decision.approved,
+          ...(decision.reason ? { reason: decision.reason } : {}),
+        })),
+      }
+      for await (const resumed of session.agents.banker.resume(resume).stream()) {
         events.push(resumed)
         if (resumed.type === 'run.finished' && resumed.outcome.status === 'completed' && typeof resumed.outcome.output === 'string') output = resumed.outcome.output
       }

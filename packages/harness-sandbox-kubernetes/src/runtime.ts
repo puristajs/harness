@@ -59,7 +59,7 @@ export interface KubernetesSandboxRuntimeOptions {
 
 /** Resources returned by `kubernetesSandboxRuntime()` when workspaces are optional or disabled. */
 export interface KubernetesSandboxRuntime {
-  /** Sandbox adapter passed to `definition.getInstance({ sandbox })`. */
+  /** Sandbox adapter passed to `definition.getInstance({ sandbox: { adapter: sandbox } })`. */
   readonly sandbox: Sandbox & Readonly<{ runtimes: readonly SkillRuntimeId[] }>
   /** Durable workspace when `workspace` was enabled. */
   readonly workspace?: DurableWorkspace

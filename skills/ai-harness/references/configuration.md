@@ -25,7 +25,7 @@ const advancedInstance = await advancedDefinition.getInstance({
   },
   storage,
   memory,
-  sandbox,
+  sandbox: { adapter: sandbox },
   workspace,
   mcp: { knowledge: { transport: 'http', url: 'https://mcp.internal.example' } },
   logger: new JsonLogger({ level: 'info' }),

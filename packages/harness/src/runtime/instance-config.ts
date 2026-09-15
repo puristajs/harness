@@ -3,12 +3,12 @@ import type { TelemetryOptions } from '../telemetry/index.js'
 import type { Logger } from '../logger/index.js'
 import { validateContextProjection } from '../context-projection.js'
 import { validateModelRetrySetting } from '../models/retry-policy.js'
-import type { AgentAdmission } from '../ports/agent-admission.js'
+import type { RunConcurrency } from '../ports/run-concurrency.js'
 import type { ArtifactStore } from '../ports/artifact-store.js'
 import type { AdapterCapability } from '../ports/capabilities.js'
 import type { MemoryEngine } from '../ports/memory/types.js'
 import { validateMemoryEngine } from '../ports/memory/validation.js'
-import type { ModelAdmission } from '../ports/model-admission.js'
+import type { ModelCallConcurrency } from '../ports/model-call-concurrency.js'
 import type { ModelAlias, ModelCapability, ModelProvider } from '../ports/model-provider.js'
 import type { DurableWorkspace } from '../ports/workspace.js'
 import { validateDurableWorkspace } from '../ports/workspace.js'
@@ -109,8 +109,10 @@ export type HarnessRuntimeBindingFields<
 			& RequiredField<Requirements['workspace'], 'workspace', DurableWorkspace>
 			& RequiredField<Requirements['artifacts'], 'artifacts', ArtifactStore>
 			& Readonly<{
-				agentAdmission?: AgentAdmission
-				admission?: ModelAdmission
+				concurrency?: Readonly<{
+					runs?: RunConcurrency
+					modelCalls?: ModelCallConcurrency
+				}>
 			}>
 		>
 
@@ -150,19 +152,21 @@ export interface ValidatedHarnessInstanceBindings {
 	}>
 	readonly workspace?: DurableWorkspace
 	readonly artifacts?: ArtifactStore
-	readonly agentAdmission?: AgentAdmission
-	readonly admission?: ModelAdmission
+	readonly concurrency?: Readonly<{
+		readonly runs?: RunConcurrency
+		readonly modelCalls?: ModelCallConcurrency
+	}>
 	readonly logger?: Logger
 	readonly telemetry?: Readonly<TelemetryOptions>
 }
 
 type PlainRecord = Record<string, unknown>
 const TOP_LEVEL_KEYS = Object.freeze([
-	'admission', 'agentAdmission', 'artifacts', 'logger', 'mcp', 'memory', 'models',
+	'artifacts', 'concurrency', 'logger', 'mcp', 'memory', 'models',
 	'sandbox', 'storage', 'telemetry', 'workspace',
 ])
 const MODEL_KEYS = Object.freeze([
-	'contextProjection', 'credentialScope', 'defaults', 'model', 'provider', 'providerOptions', 'retry',
+	'contextProjection', 'credentialScope', 'defaults', 'model', 'provider', 'retry',
 ])
 const MODEL_METHODS: Readonly<Partial<Record<ModelCapability, readonly (keyof ModelProvider)[]>>> = Object.freeze({
 	text: ['text'], text_stream: ['textStream'], object: ['object'], object_stream: ['objectStream'],
@@ -249,8 +253,7 @@ function validateRuntimeConfig(
 	}
 	if (own(config, 'workspace')) result['workspace'] = validateWorkspace(config['workspace'])
 	if (own(config, 'artifacts')) result['artifacts'] = validateArtifactStore(config['artifacts'])
-	if (own(config, 'agentAdmission')) result['agentAdmission'] = validateAdmission(config['agentAdmission'], 'agentAdmission')
-	if (own(config, 'admission')) result['admission'] = validateAdmission(config['admission'], 'admission')
+	if (own(config, 'concurrency')) result['concurrency'] = validateConcurrency(config['concurrency'])
 	if (own(config, 'logger')) result['logger'] = validateLogger(config['logger'])
 	if (own(config, 'telemetry')) result['telemetry'] = validateTelemetry(config['telemetry'])
 	return Object.freeze(result) as unknown as ValidatedHarnessInstanceBindings
@@ -317,12 +320,11 @@ function validateModelBinding(value: unknown, capabilities: readonly ModelCapabi
 	}
 	validateProviderMetadata(provider, value['model'], capabilities, path)
 	if (value['credentialScope'] !== undefined && !nonempty(value['credentialScope'])) fail('invalid_runtime_binding', `${path}.credentialScope`)
-	if (value['providerOptions'] !== undefined && !isPlainRecord(value['providerOptions'])) fail('invalid_runtime_binding', `${path}.providerOptions`)
 	if (value['retry'] !== undefined) validateRetry(value['retry'], `${path}.retry`)
 	if (value['contextProjection'] !== undefined) validateProjection(value['contextProjection'], `${path}.contextProjection`)
 	if (value['defaults'] !== undefined) validateDefaults(value['defaults'], `${path}.defaults`)
 	const normalized: Record<string, unknown> = { provider, model: value['model'], capabilities: Object.freeze([...capabilities]) }
-	for (const key of ['credentialScope', 'defaults', 'retry', 'contextProjection', 'providerOptions'] as const) {
+	for (const key of ['credentialScope', 'defaults', 'retry', 'contextProjection'] as const) {
 		if (value[key] !== undefined) normalized[key] = snapshot(value[key], `${path}.${key}`)
 	}
 	return Object.freeze(normalized) as unknown as Readonly<ModelAlias>
@@ -347,13 +349,12 @@ function validateProviderMetadata(provider: ModelProvider, model: unknown, capab
 
 function validateDefaults(value: unknown, path: string): void {
 	if (!isPlainRecord(value)) fail('invalid_runtime_binding', path)
-	unknownKey(value, ['maxTokens', 'parallelToolCalls', 'providerOptions', 'retry', 'stopSequences', 'temperature', 'topP'], path)
+	unknownKey(value, ['maxTokens', 'parallelToolCalls', 'providerOptions', 'stopSequences', 'temperature', 'topP'], path)
 	for (const key of ['temperature', 'topP'] as const) if (value[key] !== undefined && (typeof value[key] !== 'number' || !Number.isFinite(value[key]))) fail('invalid_runtime_binding', `${path}.${key}`)
 	if (value['maxTokens'] !== undefined && (!Number.isInteger(value['maxTokens']) || (value['maxTokens'] as number) <= 0)) fail('invalid_runtime_binding', `${path}.maxTokens`)
 	if (value['parallelToolCalls'] !== undefined && typeof value['parallelToolCalls'] !== 'boolean') fail('invalid_runtime_binding', `${path}.parallelToolCalls`)
 	if (value['stopSequences'] !== undefined && (!Array.isArray(value['stopSequences']) || value['stopSequences'].some(item => typeof item !== 'string'))) fail('invalid_runtime_binding', `${path}.stopSequences`)
 	if (value['providerOptions'] !== undefined && !isPlainRecord(value['providerOptions'])) fail('invalid_runtime_binding', `${path}.providerOptions`)
-	if (value['retry'] !== undefined) validateRetry(value['retry'], `${path}.retry`)
 }
 
 function validateRetry(value: unknown, path: string): void {
@@ -459,7 +460,16 @@ function validateArtifactStore(value: unknown): ArtifactStore {
 	return value as unknown as ArtifactStore
 }
 
-function validateAdmission(value: unknown, path: string): unknown {
+function validateConcurrency(value: unknown): Readonly<{ runs?: RunConcurrency; modelCalls?: ModelCallConcurrency }> {
+	if (!isPlainRecord(value)) fail('invalid_runtime_binding', 'concurrency')
+	unknownKey(value, ['runs', 'modelCalls'], 'concurrency')
+	const result: { runs?: RunConcurrency; modelCalls?: ModelCallConcurrency } = {}
+	if (own(value, 'runs')) result.runs = validateConcurrencyPort(value['runs'], 'concurrency.runs') as RunConcurrency
+	if (own(value, 'modelCalls')) result.modelCalls = validateConcurrencyPort(value['modelCalls'], 'concurrency.modelCalls') as ModelCallConcurrency
+	return Object.freeze(result)
+}
+
+function validateConcurrencyPort(value: unknown, path: string): unknown {
 	if (!isObject(value) || typeof value['acquire'] !== 'function') fail('invalid_runtime_binding', `${path}.acquire`)
 	return value
 }

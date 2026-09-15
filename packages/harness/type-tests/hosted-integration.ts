@@ -54,16 +54,22 @@ const lookup = defineHostTool(owner, 'lookupAccount', {
 })
 type _HostToolDefinitionInference = Expect<Equal<typeof lookup.$infer.input, { accountId: string }>>
 type _HostToolDefinitionOutput = Expect<Equal<typeof lookup.$infer.output, { balance: number }>>
-const agent = defineAgent('accountAssistant', { model: 'chat', instructions: 'Help.', tools: [lookup] })
+const agent = defineAgent('accountAssistant', {
+	model: 'chat', instructions: 'Help.', tools: [lookup],
+	governance: ({ native, rule }) => ({
+		policies: [native({ id: 'accountApproval', rules: [rule({ id: 'reviewLookup', tools: ['lookupAccount'], effect: 'require_approval' })] })],
+	}),
+})
 const workflow = defineWorkflow('hostedWorkflow', { input: z.string(), output: z.number(),
 	async handler({ input }) { return input.length } })
+const durableWorkflow = defineWorkflow('hostedDurableWorkflow', { durable: true, async handler({ input }) { return input } })
 type _WorkflowDefinitionInference = Expect<Equal<typeof workflow.$infer, typeof workflow.contract.$infer>>
 const dependencyAgent = defineAgent('dependencyAgent', { model: 'chat', instructions: 'Dependency only.' })
 const dependencyWorkflow = defineWorkflow('dependencyWorkflow', { agents: [dependencyAgent],
 	async handler() { return 'done' } })
-const harness = defineHarness({ name: 'hosted', revision: 'v1' }).addAgent(agent).addWorkflow(workflow).addWorkflow(dependencyWorkflow)
+const harness = defineHarness({ name: 'hosted', revision: 'v1' }).addAgent(agent).addWorkflow(workflow, durableWorkflow, dependencyWorkflow)
 visitHostedHarnessTargets(harness, entry => {
-	type ExpectedTarget = typeof agent.contract | typeof workflow.contract | typeof dependencyWorkflow.contract | typeof dependencyAgent.contract
+	type ExpectedTarget = typeof agent.contract | typeof workflow.contract | typeof durableWorkflow.contract | typeof dependencyWorkflow.contract | typeof dependencyAgent.contract
 	type _VisitorTarget = Expect<Equal<typeof entry.target, ExpectedTarget>>
 	type _VisitorVisibility = Expect<Equal<typeof entry.visibility, 'root' | 'dependency'>>
 	const sameEntry: HostedHarnessTargetEntry<ExpectedTarget> = entry
@@ -123,11 +129,24 @@ const hostBindings: HarnessHostBindings<Readonly<{ authorization: string }>, Hos
 }
 const hostedInstance = instantiateHostedHarness(harness, config, hostBindings)
 hostedInstance.then(instance => {
-	const agentRun = instance.runHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 'hello', invokeOptions: { sessionId: 'session' },
+	const agentRun = instance.runHosted({ delivery: 'fresh', invocationId: 'agent-run', target: agent.contract, wireInput: 'hello', input: 'hello', invokeOptions: { sessionId: 'session' },
 		hostInvocation: { authorization: 'token' }, authorize: () => {} })
-	const workflowRun = instance.runHosted({ delivery: 'fresh', target: workflow.contract, wireInput: 'hello', input: 'hello', invokeOptions: { sessionId: 'session' },
+	const workflowRun = instance.runHosted({ delivery: 'fresh', invocationId: 'workflow-run', target: workflow.contract, wireInput: 'hello', input: 'hello', invokeOptions: { sessionId: 'session' },
 		hostInvocation: { authorization: 'token' }, authorize: () => {} })
-	const agentStream = instance.streamHosted({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 'hello', invokeOptions: { sessionId: 'stream-session' },
+	const agentStream = instance.streamHosted({ delivery: 'fresh', invocationId: 'agent-stream-run', target: agent.contract, wireInput: 'hello', input: 'hello', invokeOptions: { sessionId: 'stream-session' },
+		hostInvocation: { authorization: 'token' }, authorize: () => {} })
+	instance.runHosted({ delivery: 'fresh', invocationId: 'durable-run', target: durableWorkflow.contract,
+		wireInput: 'hello', input: 'hello', invokeOptions: { sessionId: 'durable-session', durable: {} },
+		hostInvocation: { authorization: 'token' }, authorize: () => {} })
+	instance.runHosted({ delivery: 'fresh', invocationId: 'bad-durable-run', target: durableWorkflow.contract,
+		wireInput: 'hello', input: 'hello',
+		// @ts-expect-error the trusted invocationId owns hosted durable run identity
+		invokeOptions: { sessionId: 'durable-session', durable: { runId: 'duplicate-owner' } },
+		hostInvocation: { authorization: 'token' }, authorize: () => {} })
+	instance.runHosted({ delivery: 'fresh', invocationId: 'bad-idempotency-run', target: agent.contract,
+		wireInput: 'hello', input: 'hello',
+		// @ts-expect-error hosted delivery identity is owned by invocationId
+		invokeOptions: { sessionId: 'session', idempotencyKey: 'duplicate-owner' },
 		hostInvocation: { authorization: 'token' }, authorize: () => {} })
 	const dispatchedStream = instance.streamDispatched({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 'hello', invocation: {
 		sessionId: 'child-session', invocationId: 'child-run', rootRunId: 'root-run', parentRunId: 'parent-run',
@@ -166,16 +185,23 @@ hostedInstance.then(instance => {
 			signal: new AbortController().signal },
 		hostInvocation: { authorization: 'token' } })
 	// @ts-expect-error a resume delivery has no already transformed logical input
-	instance.streamDispatched({ delivery: 'resume', target: agent.contract, wireInput: 'hello', input: 'hello', invocation: {
+	instance.streamDispatched({ delivery: 'resume', target: agent.contract, input: 'hello', invocation: {
 		sessionId: 'child-session', invocationId: 'child-run', rootRunId: 'root-run', parentRunId: 'parent-run',
 		parentAgentId: 'parent-agent', depth: 1, remainingDepth: 1, signal: new AbortController().signal,
 	}, resume: { type: 'tool-approval', runId: 'child-run', interruptId: 'interrupt', revision: 'revision',
 		eventId: 'event', decisions: [] }, hostInvocation: { authorization: 'token' } })
-	instance.streamDispatched({ delivery: 'resume', target: agent.contract, wireInput: 'hello', invocation: {
+	instance.streamDispatched({ delivery: 'resume', target: agent.contract, invocation: {
 		sessionId: 'child-session', invocationId: 'child-run', rootRunId: 'root-run', parentRunId: 'parent-run',
 		parentAgentId: 'parent-agent', depth: 1, remainingDepth: 1, signal: new AbortController().signal,
 	}, resume: { type: 'tool-approval', runId: 'child-run', interruptId: 'interrupt', revision: 'revision',
 		eventId: 'event', decisions: [] }, hostInvocation: { authorization: 'token' } })
+	instance.streamDispatched({ delivery: 'resume', target: durableWorkflow.contract, invocation: {
+		sessionId: 'child-session', invocationId: 'child-run', rootRunId: 'root-run', parentRunId: 'parent-run',
+		parentAgentId: agent.id, depth: 1, remainingDepth: 1, signal: new AbortController().signal,
+	}, resume: { type: 'external-wait', runId: 'child-run' }, hostInvocation: { authorization: 'token' } })
+	instance.runHosted({ delivery: 'resume', target: durableWorkflow.contract,
+		invokeOptions: { sessionId: 'session', resume: { type: 'external-wait', runId: 'durable-run' } },
+		hostInvocation: { authorization: 'token' }, authorize: () => {} })
 	instance.streamDispatched({ delivery: 'fresh', target: agent.contract, wireInput: 'hello', input: 'hello', invocation: {
 		sessionId: 'child-session', invocationId: 'child-run', rootRunId: 'root-run', parentRunId: 'parent-run',
 		parentAgentId: 'parent-agent', depth: 1, remainingDepth: 1, signal: new AbortController().signal,

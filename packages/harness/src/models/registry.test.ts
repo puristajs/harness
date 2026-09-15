@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { HarnessConfigError, ModelCapabilityError } from '../errors/index.js'
 import type { ArtifactPublishRequest } from '../ports/artifact-store.js'
 import type { ImageRequest, ModelProvider, TextRequest, TextResponse, VideoRequest } from '../ports/model-provider.js'
-import type { ModelAdmissionRequest } from '../ports/model-admission.js'
+import type { ModelCallConcurrencyRequest } from '../ports/model-call-concurrency.js'
 import { createModelRegistry, resolveModelHandleCallOptions } from './registry.js'
 import { RecordingTelemetry } from '../testing/index.js'
 
@@ -90,7 +90,6 @@ describe('createModelRegistry', () => {
         model: 'model-x',
         capabilities: ['text'],
         retry: { maxAttempts: 2, retryOn: { network: true } },
-        providerOptions: { source: 'alias', aliasOnly: true },
         defaults: {
           temperature: 0.2,
           maxTokens: 100,
@@ -118,7 +117,6 @@ describe('createModelRegistry', () => {
       retry: false,
       providerOptions: {
         source: 'request',
-        aliasOnly: true,
         defaultOnly: true,
         requestOnly: true,
       },
@@ -148,8 +146,8 @@ describe('createModelRegistry', () => {
     expect(provider.requests[0]?.defaults?.parallelToolCalls).toBe(false)
   })
 
-  it('acquires provider admission by provider, model and credential scope', async () => {
-    const acquired: ModelAdmissionRequest[] = []
+  it('acquires model-call concurrency by provider, model and credential scope', async () => {
+    const acquired: ModelCallConcurrencyRequest[] = []
     let releases = 0
     const provider = new FakeProvider()
     const registry = createModelRegistry(
@@ -162,7 +160,7 @@ describe('createModelRegistry', () => {
         },
       },
       {
-        admission: {
+        modelCallConcurrency: {
           acquire: async request => {
             acquired.push(request)
             return { release: () => releases++ }
@@ -185,7 +183,7 @@ describe('createModelRegistry', () => {
     expect(releases).toBe(1)
   })
 
-  it('holds streaming admission until the consumer finishes the stream', async () => {
+  it('holds model-call concurrency until the consumer finishes the stream', async () => {
     let held = false
     const provider: ModelProvider = {
       id: 'stream-provider',
@@ -199,7 +197,7 @@ describe('createModelRegistry', () => {
     const registry = createModelRegistry(
       { a: { provider, model: 'stream-model', capabilities: ['text_stream'] } },
       {
-        admission: {
+        modelCallConcurrency: {
           acquire: async () => {
             held = true
             return { release: () => { held = false } }

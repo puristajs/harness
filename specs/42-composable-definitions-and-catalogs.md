@@ -57,7 +57,7 @@ The model alias is explicit and application-defined; Harness reserves no alias.
 Defaults for this form are string input and output, streaming text updates, the
 standard bounded loop, no optional capabilities,
 and content-free production telemetry. Adding schemas, tools, Skills,
-subagents, Guardrails, persistence, admission, or custom adapters refines the same
+subagents, Guardrails, persistence, concurrency controls, or custom adapters refines the same
 definition without changing its mental model.
 
 ## 2. Definition identity and immutability
@@ -90,12 +90,11 @@ composition methods. A Harness has an explicit executable-root set and a
 separate recursive dependency closure. Adding an agent or workflow makes only
 that target a root, then recursively collects the branded tool, Skill, MCP
 server, and agent definitions it references. Using a catalog makes only the
-agents and workflows explicitly listed by that catalog roots; its listed leaf
-definitions remain reusable authoring exports and become runtime dependencies
-only when a root references them. Passing a leaf-only catalog to `.use(...)` is
-a compile-time error and an erased-type runtime configuration error because it
-would activate nothing; consumers instead reference its typed leaf maps from an
-agent or workflow. Foreign structural lookalikes and different hidden identities with the
+agents and workflows explicitly listed by that catalog roots. `defineCatalog`
+accepts an executable-target bundle and rejects empty or leaf-only input at
+both the type and runtime boundary. Its listed leaf definitions remain
+authoring exports and become runtime dependencies only when a root references
+them. Foreign structural lookalikes and different hidden identities with the
 same `(kind, id)` fail graph compilation.
 
 Each agent and workflow exposes a self-contained `HarnessTargetContract` with
@@ -1200,8 +1199,11 @@ runtime command interprets a script. An exec-enabled local sandbox must not
 declare `sandbox.readonly_mount` unless it enforces immutability against child
 processes rather than relying only on host file modes.
 
-`defineSkill` validates the id grammar synchronously. Instance initialization
-accepts only a `file:` directory URL, loads an immutable byte snapshot, loads
+`defineSkill` validates the id grammar synchronously. Its directory must be a
+local `file:` URL with no query or fragment and a basename exactly equal to the
+Skill id. A supplied `runtimes` tuple must be nonempty, contain only the closed
+runtime ids, and contain no duplicate. Instance initialization loads an
+immutable byte snapshot, loads
 `SKILL.md`, and validates its YAML frontmatter before `getInstance()` resolves.
 The accepted frontmatter follows the current
 [Agent Skills specification](https://agentskills.io/specification) field set:
@@ -1357,6 +1359,12 @@ The definition-time fields are closed and have these requirement effects:
 | `sandbox` | existing `SandboxPolicy` | partition and sharing policy only |
 | `workspace` | optional literal `true` | workspace binding |
 | `durable` | optional literal `true` | durable Harness storage |
+
+Agent dependency collections are exact, nonempty when present, and reject
+foreign structural values or duplicate identities. Model-facing names across
+tools, built-ins, MCP tools, and subagents must be unique. Guardrail actions
+may reference only tools declared by that same agent; an absent required tool
+fails definition authoring rather than surfacing during execution.
 
 `model` is a lower-camel string literal `ModelAliasId` that identifies a
 runtime requirement. `ModelAlias` remains the concrete provider/model runtime
@@ -1877,7 +1885,7 @@ delegation tool result.
 Every subagent call goes through a `HarnessTargetDispatcher` port. The standalone
 default resolves registered definitions locally. A PURISTA mount resolves the
 same logical target to a service/version/target address and always invokes it
-through EventBridge. Agent and provider admission apply at the target before
+through EventBridge. Agent and model-call concurrency apply at the target before
 model execution. Trusted identity, trace, session/run ancestry, cancellation,
 deadlines, and idempotency propagate. `HarnessIdentity` is the one
 provider-neutral identity shape already owned by Harness.
@@ -1959,8 +1967,7 @@ interface HarnessTargetRouteReceiptV1 {
 
 type PersistedHarnessTargetDispatchRequest = Readonly<{
   route: HarnessTargetRouteReceiptV1
-  wireInput: JsonValue
-  resume: ToolApprovalResume
+  resume: ToolApprovalResume | ExternalWaitResume
   invocation: HarnessNestedTargetDispatchInvocation
 }>
 
@@ -2202,7 +2209,7 @@ Workflow model invokers retain the capability-projected `text`, `textStream`,
 `videoStream` methods from `ModelHandle`, but remove the public `signal` and raw
 model-invoke-context parameters and append `WorkflowModelCallOptions`. Harness
 supplies the workflow signal, identity, trace, run/session/workflow ids,
-admission, defaults, events, and telemetry. Every model call requires a stable
+model-call concurrency, defaults, events, and telemetry. Every model call requires a stable
 `callId`; this keeps one pattern for ephemeral and durable workflows and avoids
 a later source rewrite when durability is added. Provider request tools do not
 create an executable loop here: use an agent when a model must select tools.
@@ -2216,7 +2223,7 @@ terminal chunk has no completed call result and is retried from the beginning;
 already published events retain deterministic ids so persistence remains
 idempotent. The operation name participates in replay identity, and changing
 method, alias, request, or normalized options for an existing call id fails
-before provider admission.
+before model-call concurrency.
 
 Embedding, rerank, and media events use `ModelExecutionCorrelation` with the
 workflow caller, `modelAlias`, required `callId`, and the existing stable output
@@ -2511,7 +2518,7 @@ direct calls, one-shot initial turns, continuable initial turns, and every
 accepted continuable `send`; `fanOut` itself adds no count. Equal replay or
 coalescing consumes no additional count.
 
-Admission order is exact: validate options and resolve replay first; reserve
+Concurrency acquisition order is exact: validate options and resolve replay first; reserve
 one total call second; acquire parallel capacity third. Direct calls fail
 immediately when the parallel ceiling is full or a queued task turn already
 exists. Task initial/send turns enter one cancellation-aware FIFO and wait for
@@ -2520,7 +2527,7 @@ queued removes the waiter, but its accepted total reservation remains consumed.
 A direct parallel failure rolls back its tentative total reservation. `fanOut`
 never reserves total budget or acquires a workflow agent-call slot; it only
 clamps worker concurrency to the effective parallel ceiling and preserves input
-order. Every agent call or task turn inside a worker performs its own admission.
+order. Every agent call or task turn inside a worker acquires its own concurrency capacity.
 Limit failures use `WorkflowAgentCallBudgetError` with code
 `WORKFLOW_AGENT_CALL_BUDGET_EXCEEDED`, category `validation`, retriable
 `false`, fixed message `Workflow agent-call budget exceeded.`, and exact
@@ -2650,8 +2657,8 @@ therefore catch either error and continue, and later handler re-entry rejects
 the equal call from the stored outcome without dispatching again. The stored
 error is validated as the exact local canonical serialization before its fixed
 class is reconstructed; provider, tool, and transported remote class, category,
-and retriable data are never trusted. Cancellation before call admission creates no call-table or
-checkpoint entry. Cancellation after admission, whether transported as the
+and retriable data are never trusted. Cancellation before model-call concurrency acquisition creates no call-table or
+checkpoint entry. Cancellation after acquisition, whether transported as the
 target terminal or observed locally while consuming it, uses the same
 `cancelled` outcome; durable commit uses the non-aborted lifecycle signal and
 finishes before the handler receives `OperationCancelledError`.
@@ -2735,7 +2742,7 @@ It validates correlation and event shapes, requires exactly one terminal for
 the directly dispatched target, accepts correlated descendant runs with their
 own terminals, rejects an event after the terminal of its own run, relays every
 valid event in order including each terminal exactly once, and then requires
-`stream.result` to resolve to the canonically equal direct-target terminal.
+`stream.terminal` to resolve to the canonically equal direct-target terminal.
 It cleans up iterator and stream on failure or cancellation and returns that
 already target-validated terminal plus lineage without applying a
 caller-specific error mapping. A missing, duplicate, unequal, or rejected
@@ -2753,7 +2760,7 @@ rejected before dispatch. A `failed` envelope that claims a remote timeout is
 still the managed-call wrapper; its code never selects a local error class.
 Direct workflow tool and model calls apply the same failed/cancelled storage
 shape with scope `tool` or `model`; input/options validation failures that occur
-before admission create no logical call record and retain their original
+before model-call concurrency acquisition create no logical call record and retain their original
 validation error.
 
 `defineWorkflow` has a required `handler`; omitted `input` and `output` each
@@ -2851,8 +2858,9 @@ that must invalidate suspended work. Harness never hashes JavaScript function
 source as a substitute.
 
 An agent's `loop` field overrides the five matching loop defaults. Invocation
-`timeoutMs` overrides the root timeout, including zero disabling it, while an
-inherited parent deadline still bounds every nested run. Invocation
+`timeoutMs` overrides the root timeout. It is either `false` to disable the
+local timeout or a positive safe integer; zero is invalid. An inherited parent
+deadline still bounds every nested run. Invocation
 `historyWindow` overrides the Harness history window. Context projection
 precedence is invocation, then selected model alias, then Harness. Model-alias
 generation defaults, retry, provider options, and credential scope remain
@@ -2867,13 +2875,10 @@ set of fallback values.
 explicitly exported immutable definitions for reuse:
 
 ```ts
-const bankingCapabilities = defineCatalog('bankingCapabilities', {
+const bankingTargets = defineCatalog('bankingTargets', {
   tools: [getTransaction],
   skills: [transactionAnalysis],
   mcpServers: [knowledgeMcp],
-})
-
-const bankingTargets = defineCatalog('bankingTargets', {
   agents: [transactionAnalyst, answerQuestion],
   workflows: [resolveSupportCase],
 })
@@ -2883,21 +2888,16 @@ The factory accepts concise arrays and returns one frozen typed value with
 read-only `tools`, `skills`, `mcpServers`, `agents`, `workflows`,
 `contracts`, `requirements`, and `$infer` views. Each map contains exactly
 the definitions explicitly listed in that catalog, keyed by literal id. It does
-not flatten recursive dependencies into those public export maps. An empty or
-leaf-only catalog is valid as a reusable capability package. Its original
-definition references are used directly, for example
-`bankingCapabilities.tools.getTransaction`; an unknown key is a TypeScript
-error.
+not flatten recursive dependencies into those public export maps. At least one
+agent or workflow is required. Empty and leaf-only inputs fail as
+`HarnessConfigError{reason:'catalog_has_no_targets'}`; an unknown public map key
+is a TypeScript error.
 
 The catalog's agents and workflows are its executable roots. Its contracts and
 target inference contain exactly those roots. Its requirements are compiled
 from those roots and their recursive closure; explicitly listed but unreferenced
-leaf definitions contribute no runtime requirement. A leaf-only catalog
-therefore has empty root contracts and no runtime requirements. Passing one to
-Harness `.use(...)` is a compile-time error and an erased-type runtime
-`HarnessConfigError{reason:'catalog_has_no_targets'}`. This fail-fast rule
-catches a likely authoring mistake; leaf catalogs are consumed through direct
-references from an agent or workflow.
+leaf definitions contribute no runtime requirement unless a target references
+them.
 
 `catalog.tools` contains non-MCP tool definitions only. MCP tools remain
 nested under their owning `catalog.mcpServers` entry because different servers
@@ -2990,13 +2990,14 @@ The five catalog categories are closed. Guardrail actions, complete Guardrails
 bindings, governance evaluators, permissions, subagent aliases, and prompts are
 agent-owned configuration and travel with the referenced agent definition.
 Models, queues, storage, memory, sandbox, workspace, MCP transport bindings,
-telemetry, and admission are runtime bindings supplied to `getInstance`, not
+telemetry, and concurrency controls are runtime bindings supplied to `getInstance`, not
 catalog entries. There are no mutable, global, string-addressed, or separate
 tool/Skill/agent registry factories.
 
-`defineHarness(...).use(catalog)` activates the catalog's explicit agent and
-workflow roots. `.addAgent(agent)` and `.addWorkflow(workflow)` activate one
-explicit root directly. These are the only Harness composition methods; public
+`defineHarness(...).use(...catalogs)` activates the catalogs' explicit agent
+and workflow roots. `.addAgent(...agents)` and `.addWorkflow(...workflows)`
+activate one or more explicit roots directly. Each call requires a nonempty
+argument tuple. These are the only Harness composition methods; public
 `.addTool`, `.addSkill`, and `.addMcpServer` do not exist. The same exact
 definition identity may be reused and deduplicates. Distinct definitions with
 the same family/id or two workflow tools with the same id fail deterministically.
@@ -3213,7 +3214,7 @@ Requirement derivation follows this order:
 - definition `workspace: true` requires a workspace binding;
 - workflow `models` declares embeddings, reranking, image, speech, and video;
 - image, speech, and video generation requires an artifact store; and
-- `AgentAdmission` and provider `ModelAdmission` are optional deployment
+- `RunConcurrency` and provider `ModelCallConcurrency` are optional deployment
   controls and are never inferred as required.
 
 Canonical runtime-requirement serialization includes the sorted host-tool ids
@@ -3323,8 +3324,10 @@ type HarnessRuntimeBindingFields<
   & RequiredField<Requirements['workspace'], 'workspace', DurableWorkspace>
   & RequiredField<Requirements['artifacts'], 'artifacts', ArtifactStore>
   & Readonly<{
-    agentAdmission?: AgentAdmission
-    admission?: ModelAdmission
+    concurrency?: Readonly<{
+      runs?: RunConcurrency
+      modelCalls?: ModelCallConcurrency
+    }>
   }>
 
 type HarnessInstanceConfig<
@@ -3365,7 +3368,7 @@ deployment enhancement. Conditional infrastructure resolves as follows:
 - `workspace` is required exactly when `workspace` is literal `true`; and
 - `artifacts` is required exactly when `artifacts` is literal `true`.
 
-`agentAdmission`, provider `admission`, `logger`, and `telemetry` remain
+`concurrency.runs`, `concurrency.modelCalls`, `logger`, and `telemetry` remain
 optional deployment controls for every standalone graph. A nonempty
 `hostTools` requirement makes the standalone config type `never`. The runtime
 also rejects a forced or erased-type call for such a graph with
@@ -3408,8 +3411,8 @@ const runtime = await bankingHarness.getInstance({
     },
   },
   workspace,
-  agentAdmission,
-  admission,
+  concurrency: { runs: runConcurrency, modelCalls: modelCallConcurrency },
+
   artifacts,
   logger,
   telemetry,
@@ -3451,7 +3454,7 @@ An explicit borrowed `sandboxOwner` is available only when
 `sandbox.required` is true. It is authorized at session attachment and again
 before every top-level invocation, child launch, and resumed execution. Tenant
 and principal scope checks run before the callback as required by spec 36. A
-missing callback, denial, or throw fails before admission or effects. The
+missing callback, denial, or throw fails before concurrency acquisition or effects. The
 callback never enters an agent, workflow, tool, or general runtime context.
 
 For each model binding, `provider.id`, `provider.genAiSystem`, and `model` must
@@ -3490,7 +3493,7 @@ stable order and stops at the first failure:
    `sandbox`, `workspace`, `artifacts`
    order;
 8. validate each present group in that same order;
-9. validate present admissions, logger, and telemetry structurally; and
+9. validate present concurrency controls, logger, and telemetry structurally; and
 10. create and freeze the validated snapshot.
 
 All binding failures are `HarnessConfigError` values with a stable
@@ -3540,7 +3543,7 @@ which consumes the validated snapshot, creates clients/processes and execution
 registries, initializes per-instance in-memory storage or memory only when the
 corresponding public group is forbidden because the graph does not require it,
 and implements startup rollback plus idempotent shutdown. Executable assembly
-never closes borrowed admissions, logger, telemetry, or host dependencies. It
+never closes borrowed concurrency controls, logger, telemetry, or host dependencies. It
 closes only the Harness-created defaults and MCP bundles listed in the exact
 ownership table below; every caller-supplied provider or adapter is borrowed.
 
@@ -3942,14 +3945,13 @@ interface DurableInvokeOptions {
 
 interface InvokeOptions {
   readonly signal?: AbortSignal
-  readonly timeoutMs?: number
+  readonly timeoutMs?: number | false
   readonly historyWindow?: number
   readonly idempotencyKey?: string
   readonly contextProjection?: ContextProjectionPolicy
   readonly traceparent?: string
   readonly tracestate?: string
   readonly metadata?: Readonly<Record<string, JsonValue>>
-  readonly resume?: ToolApprovalResume
   readonly durable?: DurableInvokeOptions
 }
 
@@ -3959,18 +3961,40 @@ type HarnessTargetApprovalResume<
   ? ToolApprovalResume
   : never
 
-type HarnessTargetInvokeOptions<
-  Target extends AnyHarnessTargetContract,
-> = Omit<InvokeOptions, 'resume'> & (
-  [HarnessTargetApprovalResume<Target>] extends [never]
-    ? Readonly<{ resume?: never }>
-    : Readonly<{ resume?: HarnessTargetApprovalResume<Target> }>
-)
+type ExternalWaitResume = Readonly<{
+  type: 'external-wait'
+  runId: string
+}>
+
+type HarnessTargetResume<Target extends AnyHarnessTargetContract> =
+  | HarnessTargetApprovalResume<Target>
+  | ('external-wait' extends Target['interrupts'][number]
+      ? ExternalWaitResume
+      : never)
+
+type HarnessTargetInvokeOptions<Target extends AnyHarnessTargetContract> =
+  Omit<InvokeOptions, 'durable'> & (
+    [Target['durable']] extends [false]
+      ? Readonly<{ durable?: never }>
+      : Readonly<{ durable?: DurableInvokeOptions }>
+  )
+
+type HarnessTargetResumeOptions<Target extends AnyHarnessTargetContract> =
+  Omit<HarnessTargetInvokeOptions<Target>, 'idempotencyKey' | 'durable'>
 
 interface HarnessTargetStream<Target extends AnyHarnessTargetContract>
   extends AsyncIterable<HarnessTargetExecutionEvent<Target>> {
-  readonly result: Promise<HarnessTargetExecutionTerminalOutcome<Target>>
+  readonly runId: string
+  readonly sessionId: string
+  readonly result: Promise<HarnessTargetRunOutcome<Target>>
+  readonly terminal: Promise<HarnessTargetExecutionTerminalOutcome<Target>>
   cancel(reason?: string): Promise<void>
+}
+
+interface HarnessTargetResumer<Target extends AnyHarnessTargetContract> {
+  run(options?: HarnessTargetResumeOptions<Target>):
+    Promise<HarnessTargetRunOutcome<Target>>
+  stream(options?: HarnessTargetResumeOptions<Target>): HarnessTargetStream<Target>
 }
 
 interface HarnessTargetInvoker<Target extends AnyHarnessTargetContract> {
@@ -3982,6 +4006,7 @@ interface HarnessTargetInvoker<Target extends AnyHarnessTargetContract> {
     input: HarnessTargetInput<Target>,
     options?: HarnessTargetInvokeOptions<Target>,
   ): HarnessTargetStream<Target>
+  resume(resume: HarnessTargetResume<Target>): HarnessTargetResumer<Target>
 }
 
 declare function toHarnessTargetStream<
@@ -4039,17 +4064,22 @@ interface HarnessInstance<
     id: string,
     options?: SessionOptionsFor<Requirements>,
   ): Promise<HarnessSession<Contracts>>
+  readonly externalWaits: Readonly<{
+    get(waitId: string): Promise<ExternalWaitSnapshot | undefined>
+    signal(signal: ExternalWaitSignal): Promise<ExternalWaitSignalResult>
+    cancel(waitId: string, eventId: string, observedAt?: string): Promise<void>
+  }>
   close(): Promise<void>
 }
 ```
 
 `HarnessTargetStream.result` observes the same execution independently of event
-iteration and settles exactly once with the direct root target's
-`ExecutionTerminalOutcome`. Completed and interrupted executions carry the
-same exact `RunOutcome` members returned by aggregate `run`; ordinary target
-failure and cancellation resolve the corresponding terminal members already
-carried by `run.finished`. Only a protocol or infrastructure failure that
-prevents a trustworthy terminal outcome rejects `result`. It never consumes,
+iteration and matches aggregate `run`: it resolves completed and interrupted
+outcomes, and rejects failure or cancellation with the canonical Harness
+error. `HarnessTargetStream.terminal` resolves the direct root target's exact
+`ExecutionTerminalOutcome`, including failed and cancelled outcomes already
+carried by `run.finished`. A protocol or infrastructure failure that prevents
+a trustworthy terminal outcome rejects both. Neither promise consumes,
 buffers, or removes an event from the iterable. Stopping iteration does not
 imply cancellation; callers use `cancel()` when they no longer want the
 execution.
@@ -4092,7 +4122,7 @@ record it returns a frozen recovery handle whose `status()` returns the validate
 frozen content-free running snapshot. `result()` and `cancel()` each reject a
 locally constructed `ChildTaskStateError` with exact metadata
 `{reason:'recovery_required',task_id,workflow_id,agent_id}` and no transported
-cause or stored message. The recovery handle grants no task admission,
+cause or stored message. The recovery handle grants no child-task start,
 dispatch, cancellation, event, or mutation authority.
 
 `ChildTaskHandle<JsonValue>` and `ChildTaskStatus` in this interface are the
@@ -4100,7 +4130,7 @@ canonical child-task types defined in section 7 and implemented in
 `definitions/types.ts`; the session surface does not declare or use another
 handle, status, or descriptor representation.
 
-`InvokeOptions` has exactly the keys above. In particular it has no
+`InvokeOptions` has exactly the keys above. In particular it has no `resume`,
 `hostContext`, target selector, model override, tool list, registry, provider,
 or runtime adapter. `run` resolves only a `completed` or `interrupted`
 `RunOutcome`; failed and cancelled execution rejects with its canonical local
@@ -4123,7 +4153,7 @@ the one frozen resolved-defaults object; it never derives requirements or
 definition closure again.
 
 `close()` is the sole standalone shutdown method. The first call atomically
-stops admission of new sessions and invocations, cancels live root trees and
+stops accepting new sessions and invocations, cancels live root trees and
 child tasks, waits for their settlement and session attachment release, then
 closes owned resources in reverse creation order. Concurrent calls return the
 same promise and every cleanup is attempted once. Cleanup failures are
@@ -4137,7 +4167,7 @@ Ownership is fixed for v4:
 | Runtime value | Ownership |
 | --- | --- |
 | caller-supplied model provider, storage, MemoryEngine, graph sandbox, workspace, artifact store | borrowed; never closed by Harness |
-| caller-supplied agent/model admission, logger, telemetry, hosted dispatcher/context dependencies and MCP stdio sandbox adapter | borrowed; never closed by Harness |
+| caller-supplied run/model-call concurrency, logger, telemetry, hosted dispatcher/context dependencies and MCP stdio sandbox adapter | borrowed; never closed by Harness |
 | in-memory storage, spec 33 `inMemoryMemoryEngine()` or sandbox default created by Harness | owned and closed once when it exposes `close` |
 | one initialized MCP server bundle, including its HTTP client or stdio process and synthetic session-scoped sandbox session | owned and closed once by the bundle |
 
@@ -4308,9 +4338,13 @@ type HostedInvokeBaseOptions<
 > = Readonly<
   Omit<
     HarnessTargetInvokeOptions<Target>,
-    'traceparent' | 'tracestate' | 'resume'
+    'traceparent' | 'tracestate' | 'idempotencyKey' | 'durable'
   > & {
     sessionId: string
+    idempotencyKey?: never
+    durable?: [Target['durable']] extends [false]
+      ? never
+      : Readonly<Omit<DurableInvokeOptions, 'runId'>>
     traceparent?: never
     tracestate?: never
   }
@@ -4325,9 +4359,10 @@ type HostedFreshInvokeOptions<
 
 type HostedResumeInvokeOptions<
   Target extends AnyHarnessTargetContract,
-> = Readonly<Omit<HostedInvokeBaseOptions<Target>, 'idempotencyKey'> & {
+> = Readonly<Omit<HostedInvokeBaseOptions<Target>, 'idempotencyKey' | 'durable'> & {
   idempotencyKey?: never
-  resume: HarnessTargetApprovalResume<Target>
+  durable?: never
+  resume: HarnessTargetResume<Target>
   resumeIdentity?: 'current-caller' | 'stored-run-owner'
 }>
 
@@ -4356,6 +4391,7 @@ type HostedTargetRequest<
   | Readonly<{
       delivery: 'fresh'
       target: Target
+      invocationId: string
       wireInput: HarnessTargetInput<Target>
       input: HarnessValidatedTargetInput<Target>
       invokeOptions: HostedFreshInvokeOptions<Target>
@@ -4365,7 +4401,7 @@ type HostedTargetRequest<
   | Readonly<{
       delivery: 'resume'
       target: Target
-      wireInput: HarnessTargetInput<Target>
+      invocationId?: never
       input?: never
       invokeOptions: HostedResumeInvokeOptions<Target>
       hostInvocation: HostInvocation
@@ -4398,10 +4434,9 @@ type HostedDispatchedTargetRequest<
   | Readonly<{
       delivery: 'resume'
       target: Target
-      wireInput: HarnessTargetInput<Target>
       input?: never
       invocation: HostedDispatchInvocation
-      resume: ToolApprovalResume
+      resume: HarnessTargetResume<Target>
       hostInvocation: HostInvocation
     }>
 
@@ -4514,10 +4549,10 @@ interface HarnessRuntimeKernel<
   ): Promise<HarnessTargetStream<Target>>
   streamDispatchedTrusted<Target extends CompiledTargetOf<Graph>>(
     target: Target,
-    input: HarnessValidatedTargetInput<Target> | HarnessTargetInput<Target>,
-    wireInput: HarnessTargetInput<Target>,
+    input: HarnessValidatedTargetInput<Target> | undefined,
+    wireInput: HarnessTargetInput<Target> | undefined,
     invocation: HostedDispatchInvocation,
-    resume: ToolApprovalResume | undefined,
+    resume: HarnessTargetResume<Target> | undefined,
     environment: TrustedHostedInvocationEnvironment,
   ): Promise<HarnessTargetDispatchStream<
     Target['$infer']['output'], Target['$infer']['interrupt']
@@ -4652,12 +4687,19 @@ transform the fresh logical value. Those shape checks accept only ordinary
 own-enumerable JSON data: they reject accessors, non-enumerable own properties,
 symbol keys, sparse arrays, custom prototypes, cycles, non-finite numbers, and
 other values whose exact own data would be changed by snapshotting. Harness
-persists the root `wireInput` for
-conflict and resume comparison and stores the validated logical value once as
-required trusted `RunRecord.validatedInput`. On resume it compares the supplied
-wire value and restores that persisted validated value without accepting another
-logical input or running a transform. A fresh `streamDispatched` delivery has
+persists the root `wireInput` and stores the validated logical value once as
+required trusted `RunRecord.validatedInput`. On resume it restores both values
+without accepting another input or running a transform. A fresh
+`streamDispatched` delivery has
 the same split: Harness executes `input` but persists and compares `wireInput`.
+The required fresh `invocationId` is a trusted host-owned identifier and becomes
+the Harness root `runId`. The host and its client therefore know
+`HarnessTargetStream.runId` before the first event. Hosted options do not accept
+`idempotencyKey`; the host owns delivery deduplication and derives a stable,
+target-scoped `invocationId` from its transport identity or application
+idempotency key. A hosted durable option contains recovery settings only;
+Harness binds its run id from the same `invocationId`.
+
 After fresh authorization succeeds and abort/deadline are rechecked, Harness
 creates the root agent/workflow `RunRecord` with both `input: wireInput` and
 `validatedInput: input`. Those exact canonical JSON values are written once,
@@ -4686,9 +4728,9 @@ freezes that identity, and requires it to equal the identity already bound to
 the stored session.
 
 Explicit `resumeIdentity: 'stored-run-owner'` is accepted only with an exact
-approval `resume`, the required stable `sessionId`, and a target whose exact
-interrupt union contains `tool-approval`. The erased-type runtime check rejects
-the mode for any other target as
+approval or external-wait `resume`, the required stable `sessionId`, and a
+target whose exact interrupt union contains the matching interrupt. The
+erased-type runtime check rejects the mode for any other target as
 `ValidationError('Hosted request is invalid.',
 {where:'invoke_options',issues:{reason:'invalid_hosted_request',
 field:'resumeIdentity'}})` before a projector or storage read.
@@ -4697,8 +4739,8 @@ After structural validation and the pre-abort check, Harness projects and
 normalizes the current caller identity and trace exactly once. For every resume,
 it then reads and strictly validates the already stored run, session, target,
 immutable root inputs, optional interruption checkpoint, and immutable session identity addressed by
-`resume.runId` and `sessionId`. It compares the supplied `wireInput` with the
-stored root wire input and restores one deeply frozen exact prior validated
+`resume.runId` and `sessionId`. It restores the stored root wire input and one
+deeply frozen exact prior validated
 logical input from required `RunRecord.validatedInput`; it never accepts or derives
 another logical input.
 An absent, malformed, cross-session, or cross-target run/session relationship
@@ -5182,10 +5224,10 @@ that host only through `@purista/harness/integrator` with explicit fake host
 bindings. Definitions containing only portable capabilities run unchanged in
 standalone and hosted modes.
 
-`AgentAdmission` surrounds one complete root or child agent loop:
+`RunConcurrency` surrounds one complete root or child agent loop:
 
 ```ts
-interface AgentAdmissionRequest {
+interface RunConcurrencyRequest {
   readonly agentId: string
   readonly rootRunId: string
   readonly parentRunId?: string
@@ -5194,31 +5236,31 @@ interface AgentAdmissionRequest {
   readonly signal: AbortSignal
 }
 
-interface AgentAdmission {
-  acquire(request: AgentAdmissionRequest): Promise<{
+interface RunConcurrency {
+  acquire(request: RunConcurrencyRequest): Promise<{
     release(): void | Promise<void>
   }>
 }
 
-interface InMemoryAgentAdmissionOptions {
+interface InMemoryRunConcurrencyOptions {
   readonly maxConcurrent: number
   readonly maxQueued?: number
 }
 
-function inMemoryAgentAdmission(
-  options: InMemoryAgentAdmissionOptions,
-): AgentAdmission
+function inMemoryRunConcurrency(
+  options: InMemoryRunConcurrencyOptions,
+): RunConcurrency
 ```
 
-`AgentAdmission` admits one root execution tree. Calls carrying the same
+`RunConcurrency` admits one root execution tree. Calls carrying the same
 `rootRunId` join the reentrant, reference-counted lease and do not consume
 another global slot, which prevents a parent waiting on its child from
 deadlocking at capacity one. A distributed adapter coordinates this lease
 across processes. It is released only when the root tree completes, interrupts,
-fails, or cancels. It contains no prompt or model content. `ModelAdmission`
+fails, or cancels. It contains no prompt or model content. `ModelCallConcurrency`
 continues to wrap each provider call independently.
 
-Core exports `inMemoryAgentAdmission(...)` as the zero-dependency starting
+Core exports `inMemoryRunConcurrency(...)` as the zero-dependency starting
 adapter. `maxConcurrent` is a positive safe integer. `maxQueued` is a
 non-negative safe integer and defaults to `maxConcurrent * 4`. New root-run ids
 acquire available capacity immediately or wait in one FIFO. A waiter is removed
@@ -5228,12 +5270,12 @@ capacity error. Calls with an already admitted `rootRunId` join its
 reference-counted lease even when the queue is full; the final matching release
 returns the slot exactly once. Duplicate release is harmless. This helper is
 process-local and intentionally provides no persistence or cross-process
-coordination. Durable queueing remains host-owned, and distributed admission
+coordination. Durable queueing remains host-owned, and distributed concurrency
 remains an adapter implementation of the same port.
 
-`acquire` may reject capacity only with `AgentAdmissionRejectedError`. Its code
-is `AGENT_ADMISSION_REJECTED`, category is `admission`, fixed message is `Agent
-admission capacity is exhausted.`, `retriable` is always `true`, and safe
+`acquire` may reject capacity only with `RunConcurrencyRejectedError`. Its code
+is `RUN_CONCURRENCY_REJECTED`, category is `concurrency`, fixed message is `Run
+concurrency capacity is exhausted.`, `retriable` is always `true`, and safe
 metadata is exactly `{reason:'capacity_exhausted',retryAfterMs?}`.
 `retryAfterMs`, when present, is a positive safe integer. Invalid construction
 or adapter configuration fails with `HarnessConfigError`; callers cannot add
@@ -5241,11 +5283,11 @@ another reason or content-bearing metadata. Any other adapter throw normalizes
 to the sanitized `InternalError`. Existing cancellation and inherited deadline
 errors retain their canonical cancellation or timeout identity.
 
-H4-006 adds `admission` to the public `ErrorCategory` union and owns this
+H4-006 adds `concurrency` to the public `ErrorCategory` union and owns this
 adapter-author-facing constructor:
 
 ```ts
-class AgentAdmissionRejectedError extends HarnessError {
+class RunConcurrencyRejectedError extends HarnessError {
   constructor(options?: Readonly<{ retryAfterMs?: number }>)
 }
 ```
@@ -5381,8 +5423,10 @@ never opens an AI SDK step or emits `text-*` or `data-output` chunks for them.
 
 `@purista/harness-ai-sdk-ui/v1` exports the versioned boundary:
 
-- `parseHarnessUIMessageRequest(body)` validates the standard AI SDK request
-  and returns its messages, last user message, assistant message id, and any
+- `parseHarnessUIMessageRequest(body, {sessionId})` validates the standard AI
+  SDK request against an application-authorized Harness session id and returns
+  that id separately from the untrusted optional browser `transportId`, plus
+  its messages, last user message, assistant message id, and any
   correlated `ToolApprovalResume` parsed from approval-response parts;
 - `createHarnessUIMessageStream(events, options)` maps execution events to AI
   SDK chunks;
@@ -6571,18 +6615,18 @@ with the matching host owner.
 
 Mounted subagents use EventBridge even when parent and child are in the same
 process. The receiver validates schemas and business guards. Direct `run` and
-`stream` use `AgentAdmission` to limit concurrent complete agent loops;
-provider admission separately controls provider/model/credential rate windows.
+`stream` use `RunConcurrency` to limit concurrent complete agent loops;
+model-call concurrency separately controls provider/model/credential rate windows.
 A host may expose an explicit durable `enqueue` operation that returns a typed
 job receipt, but an enqueue-only queue is never hidden inside interactive
 `run`, `stream`, workflow, or model-selected subagent calls.
 
-Standalone execution also supports a distinct `AgentAdmission` port around
+Standalone execution also supports a distinct `RunConcurrency` port around
 each root execution tree. Descendants join its reentrant lease. It can implement an in-process semaphore or a
 distributed concurrency lease and receives content-free routing and lineage
-metadata only. Waiting for admission is cancellable and every acquired lease is
-released on completion, interruption, failure, or cancellation. `AgentAdmission`
-does not replace a durable PURISTA queue, and model admission does not limit the
+metadata only. Waiting for concurrency capacity is cancellable and every acquired lease is
+released on completion, interruption, failure, or cancellation. `RunConcurrency`
+does not replace a durable PURISTA queue, and model-call concurrency does not limit the
 number of complete agent loops.
 
 `exportServiceDefinitions` includes mounted agent/workflow contracts,
@@ -6723,19 +6767,24 @@ Required verification includes factory inference and negative type tests;
 catalog composition, reuse, conflict, foreign-reference, and cycle tests;
 default and structured agent execution; native/host/MCP tool conformance; Skill
 runtime and permission behavior; subagent dispatch, identity, budgets,
-cancellation, admission, policy isolation, and streaming; workflow context and
+cancellation, concurrency, policy isolation, and streaming; workflow context and
 durability; instance binding and ownership; PURISTA mount/EventBridge/guard/
 queue/export/HTTP/interrupt behavior; CLI snapshots and generated-project
 tests; and all maintained examples, docs, API declarations, website, Skills,
 package-boundary checks, and clean-removal scans.
+
+`@purista/harness/testing` includes `createToolTestContext(tool, options?)` for
+capability-aware native Tool tests and `textReply` / `objectReply` for concise
+operation-specific `FakeModelProvider` scripts. It has no generic `enqueue`
+compatibility alias.
 
 Harness-definition type tests must prove the single
 `HarnessDefinition<Catalog, Name, Graph>` order end to end. A direct
 `defineHarness({name}).addAgent(agent)` retains the exact name literal, exact
 root contract, recursive dependency closure, and requirements. Using a rooted
 catalog retains that catalog's exact agent/workflow root maps and recursively
-compiled dependency graph while a leaf-only catalog remains authorable but not
-mountable. Direct-root and catalog-root invokers, `$infer`, hosted
+compiled dependency graph while an empty or leaf-only catalog is rejected.
+Direct-root and catalog-root invokers, `$infer`, hosted
 instantiation, and hosted target visitation must agree without casts, widened
 root records, or an agent-roots/workflow-roots overload.
 
@@ -7081,7 +7130,7 @@ at the v4 runtime boundary: session owner registration allocates no compute;
 partition selection uses graph-declared groups, the definition or child-task
 override, and `sandbox.policy.default` with spec 36 precedence; a missing
 `authorizeBorrowedOwner`, tenant or principal scope mismatch,
-callback denial, and callback throw all fail before admission or effects;
+callback denial, and callback throw all fail before concurrency acquisition or effects;
 authorization is repeated for every top-level invocation, child launch, and
 resumed execution; terminal replay performs no sandbox compute open; and
 independently changing the required group set, effective runtime default
@@ -7110,7 +7159,7 @@ removed patterns.
 2. Portable definitions run unchanged standalone and under PURISTA. A graph
    containing host-aware tools retains the same definitions but requires its
    host integrator bindings and fails ordinary standalone instantiation.
-3. Adding a typed tool, Skill, subagent, Guardrail, workflow, admission policy,
+3. Adding a typed tool, Skill, subagent, Guardrail, workflow, concurrency policy,
    or durable adapter is additive and retains exact inferred types. Durable
    queueing is a host-owned explicit enqueue path.
 4. Availability never grants access, and no context exposes a registry lookup

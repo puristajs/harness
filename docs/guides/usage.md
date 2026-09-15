@@ -94,7 +94,7 @@ if (outcome.status === 'interrupted' &&
 ```
 
 After the application authenticates and authorizes the decision, resume the
-same target call with `options.resume` and the durable run identity. Do not
+same target with its `.resume(continuation)` entry point. Do not
 turn an approval request into an exception or generic server error.
 
 For browser chat, use the AI SDK UI adapter:
@@ -105,25 +105,20 @@ import {
   parseHarnessUIMessageRequest,
 } from '@purista/harness-ai-sdk-ui/v1'
 
-const parsed = await parseHarnessUIMessageRequest(await httpRequest.json())
+const parsed = await parseHarnessUIMessageRequest(await httpRequest.json(), {
+  sessionId: authenticatedSessionId,
+})
+const session = await instance.getSession(parsed.sessionId)
 const input = parsed.lastUserMessage.parts
   .filter(part => part.type === 'text')
   .map(part => part.text)
   .join('')
-const targetStream = session.agents.assistant.stream(
-  input,
-  parsed.resume === undefined ? undefined : { resume: parsed.resume },
-)
-const events = {
-  result: targetStream.result.finally(() => session.release()),
-  cancel: (reason?: string) => targetStream.cancel(reason),
-  [Symbol.asyncIterator]: () => targetStream[Symbol.asyncIterator](),
-}
-return createHarnessUIMessageStreamResponse(events, {
-  sessionId: parsed.sessionId,
-  ...(parsed.assistantMessageId === undefined
-    ? {}
-    : { messageId: parsed.assistantMessageId }),
+const targetStream = parsed.resume === undefined
+  ? session.agents.assistant.stream(input)
+  : session.agents.assistant.resume(parsed.resume).stream()
+return createHarnessUIMessageStreamResponse(targetStream, {
+  request: parsed,
+  onSettled: () => session.release(),
 })
 ```
 

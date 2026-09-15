@@ -12,7 +12,7 @@ flowchart LR
   Runtime --> Storage["Harness storage"]
   Runtime --> Memory["Memory engine"]
   Runtime --> Sandbox["Sandbox and workspace"]
-  Runtime --> Admission["Admission controls"]
+  Runtime --> Concurrency["Run and model-call concurrency"]
   Runtime --> Telemetry["Logger and telemetry"]
 ```
 
@@ -116,16 +116,16 @@ Run `sandboxContract`, `sandboxTextSearchContract`, and, where applicable,
 for tenant isolation, resource enforcement, cancellation, cleanup, and stale
 fencing.
 
-## Admission controls
+## Concurrency controls
 
-Model and agent admission ports bound runtime concurrency and rate-limit
+Model-call and run concurrency ports bound runtime concurrency and rate-limit
 pressure without changing portable definitions. Implement them as lease-based,
 cancellation-aware controls and release leases in every terminal path.
 
 ```ts
 const instance = await definition.getInstance({
-  models: { chat: { provider, model: 'gpt-5-mini', admission: modelAdmission } },
-  agentAdmission,
+  models: { chat: { provider, model: 'gpt-5-mini' } },
+  concurrency: { runs: runConcurrency, modelCalls: modelCallConcurrency },
 })
 ```
 

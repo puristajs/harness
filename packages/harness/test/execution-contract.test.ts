@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { HarnessConfigError, InternalError, OperationCancelledError } from '../src/errors/index.js'
+import { HarnessConfigError, InternalError, OperationCancelledError, ValidationError } from '../src/errors/index.js'
 import { defineHarness as defineV4Harness } from '../src/definitions/harness.js'
 import { defineAgent as defineV4Agent } from '../src/definitions/agent.js'
 import { defineWorkflow } from '../src/definitions/workflow.js'
@@ -108,6 +108,21 @@ describe('portable execution contract', () => {
 		expect(() => defineV4Harness({ name: 'badDefaults', defaults: { maxSteps: 0 } })).toThrow(HarnessConfigError)
 	})
 
+	it('validates session ids, timeout disabling, and trace context at the public boundary', async () => {
+		const workflow = defineWorkflow('validatedInvocation', { async handler({ input }) { return input } })
+		const instance = await defineV4Harness({ name: 'validatedInvocationHarness' }).addWorkflow(workflow).getInstance({})
+		for (const id of ['', 'contains space', 'x'.repeat(257)]) {
+			await expect(instance.getSession(id)).rejects.toBeInstanceOf(ValidationError)
+		}
+		const session = await instance.getSession('valid-session:1')
+		await expect(session.workflows.validatedInvocation.run('ok', { timeoutMs: 0 as never })).rejects.toBeInstanceOf(ValidationError)
+		await expect(session.workflows.validatedInvocation.run('ok', { timeoutMs: false })).resolves.toMatchObject({ status: 'completed' })
+		await expect(session.workflows.validatedInvocation.run('ok', { traceparent: 'invalid' })).rejects.toBeInstanceOf(ValidationError)
+		expect(() => session.workflows.validatedInvocation.run('ok', { resume: { type: 'external-wait', runId: 'forged' } } as never))
+			.toThrow(ValidationError)
+		await instance.close()
+	})
+
 	it('rejects symbol and unknown execution-default keys at exact closed paths', () => {
 		const hidden = Symbol('hidden')
 		for (const [defaults, path] of [
@@ -141,9 +156,10 @@ describe('portable execution contract', () => {
 		expect(completedEvents.filter(event => event.type === 'run.finished')).toHaveLength(1)
 
 		const failedStream = session.workflows.failedOutcome.stream('value')
-		await expect(failedStream.result).resolves.toMatchObject({
+		await expect(failedStream.terminal).resolves.toMatchObject({
 			status: 'failed', error: { code: 'INTERNAL_ERROR' },
 		})
+		await expect(failedStream.result).rejects.toBeInstanceOf(InternalError)
 		for await (const _event of failedStream) { /* drain producer lifecycle */ }
 		const aggregateSession = await instance.getSession('terminal-outcome-aggregate-session')
 		await expect(aggregateSession.workflows.failedOutcome.run('value')).rejects.toMatchObject({
@@ -174,7 +190,8 @@ describe('portable execution contract', () => {
 		const cancellationSession = await instance.getSession('cancel-outcome-cancellation-session')
 		const cancelled = cancellationSession.workflows.cancelOutcome.stream('cancel')
 		await cancelled.cancel('consumer disconnected')
-		await expect(cancelled.result).resolves.toMatchObject({ status: 'cancelled', error: { code: 'OPERATION_CANCELLED' } })
+		await expect(cancelled.terminal).resolves.toMatchObject({ status: 'cancelled', error: { code: 'OPERATION_CANCELLED' } })
+		await expect(cancelled.result).rejects.toBeInstanceOf(OperationCancelledError)
 		for await (const _event of cancelled) { /* drain producer lifecycle */ }
 		const aggregateSession = await instance.getSession('cancel-outcome-aggregate-session')
 		await expect(aggregateSession.workflows.cancelOutcome.run('cancel', { signal: AbortSignal.abort('stop') }))

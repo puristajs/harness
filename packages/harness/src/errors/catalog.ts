@@ -67,8 +67,8 @@ export class ValidationError extends HarnessError {
   }
 }
 
-/** Provider capacity was not admitted and the caller may retry after a delay. */
-export class ModelAdmissionRejectedError extends HarnessError {
+/** Provider call concurrency was exhausted and the caller may retry after a delay. */
+export class ModelCallConcurrencyRejectedError extends HarnessError {
   public readonly retryAfterMs: number
 
   public constructor(
@@ -77,7 +77,7 @@ export class ModelAdmissionRejectedError extends HarnessError {
     cause?: unknown,
   ) {
     super({
-      code: 'MODEL_ADMISSION_REJECTED',
+      code: 'MODEL_CALL_CONCURRENCY_REJECTED',
       category: 'model',
       retriable: true,
       message: 'Model provider capacity is not currently available.',
@@ -88,26 +88,26 @@ export class ModelAdmissionRejectedError extends HarnessError {
   }
 }
 
-/** Complete agent-loop capacity was not admitted and the caller may retry. */
-export class AgentAdmissionRejectedError extends HarnessError {
-  /** Optional bounded-admission retry hint in milliseconds. */
+/** Root execution-tree concurrency was exhausted and the caller may retry. */
+export class RunConcurrencyRejectedError extends HarnessError {
+  /** Optional bounded-concurrency retry hint in milliseconds. */
   public readonly retryAfterMs?: number
 
   public constructor(options: Readonly<{ retryAfterMs?: number }> = {}) {
     if (!isPlainRecord(options) || Reflect.ownKeys(options).some(key => typeof key !== 'string' || key !== 'retryAfterMs')) {
-      throw new HarnessConfigError('Agent admission rejection options are invalid.', {
-        reason: 'invalid_agent_admission_rejection', path: 'agentAdmission.retryAfterMs',
+      throw new HarnessConfigError('Run concurrency rejection options are invalid.', {
+        reason: 'invalid_run_concurrency_rejection', path: 'concurrency.runs.retryAfterMs',
       })
     }
     const retryAfterMs = options.retryAfterMs
     if (retryAfterMs !== undefined && (!Number.isSafeInteger(retryAfterMs) || retryAfterMs <= 0)) {
-      throw new HarnessConfigError('Agent admission retryAfterMs must be a positive safe integer.', {
-        reason: 'invalid_agent_admission_rejection', path: 'agentAdmission.retryAfterMs',
+      throw new HarnessConfigError('Run concurrency retryAfterMs must be a positive safe integer.', {
+        reason: 'invalid_run_concurrency_rejection', path: 'concurrency.runs.retryAfterMs',
       })
     }
     super({
-      code: 'AGENT_ADMISSION_REJECTED', category: 'admission', retriable: true,
-      message: 'Agent admission capacity is exhausted.',
+      code: 'RUN_CONCURRENCY_REJECTED', category: 'concurrency', retriable: true,
+      message: 'Run concurrency capacity is exhausted.',
       meta: { reason: 'capacity_exhausted', ...(retryAfterMs === undefined ? {} : { retryAfterMs }) },
     })
     if (retryAfterMs !== undefined) this.retryAfterMs = retryAfterMs

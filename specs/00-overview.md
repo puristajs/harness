@@ -32,7 +32,7 @@ tools, MCP servers, and Skills
 ```
 
 Definitions contain schemas and behavior. Runtime configuration contains live
-providers, credentials, storage, memory, sandbox, workspace, admission, MCP
+providers, credentials, storage, memory, sandbox, workspace, concurrency, MCP
 transport bindings, logging, and telemetry. A capability is available to an
 agent or workflow only when its definition references that capability.
 
@@ -82,7 +82,7 @@ The application explicitly names the `chat` alias and binds that same name in
 the string input and output schemas, streaming text updates, a bounded model
 loop, process-local storage and memory, and
 content-free production telemetry. Adding schemas, tools, Skills, subagents,
-Guardrails, workflows, persistence, admission, or custom adapters extends the
+Guardrails, workflows, persistence, concurrency controls, or custom adapters extends the
 same pattern.
 
 One session represents one conversation thread. Applications that offer
@@ -162,7 +162,7 @@ a Harness-specific client library.
 | Tool | Model-callable operation with a validated input/output contract. |
 | Skill | Agent Skill directory disclosed progressively to selected agents. |
 | Interruption | Typed non-error terminal outcome that requires caller action before resume. |
-| Admission | Optional bounded concurrency/rate control, separate from durable queue delivery. |
+| Concurrency | Optional bounded run and model-call concurrency control, separate from durable queue delivery. |
 
 ## Authoritative references
 

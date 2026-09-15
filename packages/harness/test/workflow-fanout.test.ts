@@ -9,7 +9,7 @@ function testRoute(target: { readonly kind: 'agent' | 'workflow'; readonly id: s
 }
 
 
-describe('v4 workflow fan-out admission', () => {
+describe('v4 workflow fan-out concurrency', () => {
 	it('bounds workers, preserves input order, and does not consume the workflow agent-call budget', async () => {
 		const workflow = defineWorkflowV4('workersOnly', { input: z.string(), output: z.string(), agentCalls: { maxCalls: 1, maxParallel: 2 }, async handler({ input }) { return input } })
 		let active = 0; let peak = 0; let opens = 0

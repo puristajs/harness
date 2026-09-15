@@ -12,6 +12,7 @@ import type {
 	HarnessTargetExecutionEvent,
 	HarnessTargetExecutionTerminalOutcome,
 	HarnessTargetStream,
+	ExternalWaitResume,
 } from '../definitions/execution-events.js'
 import { getDefinitionIdentity } from '../definitions/identity.js'
 import type { AnyAgentDefinition, AnyWorkflowDefinition, BuiltInToolDefinition, HarnessExecutionCaller, ToolDefinition } from '../definitions/types.js'
@@ -47,6 +48,9 @@ import {
 	validateExternalWaitSnapshot,
 	type ExternalWaitRequest,
 	type ExternalWaitResolved,
+	type ExternalWaitSignal,
+	type ExternalWaitSignalResult,
+	type ExternalWaitSnapshot,
 } from '../storage/external-wait.js'
 import { createMetrics, createTelemetryShim, type SpanAttrs, type TelemetryShim } from '../telemetry/index.js'
 import { normalizeHarnessTraceContext, type HarnessTraceContext } from '../telemetry/trace-context.js'
@@ -68,7 +72,7 @@ import { createSubagentBinding, consumeHarnessTargetStream } from './subagent-ex
 import { attachHarnessChildTargetHostFrame, createDurableWorkflowContext, createHarnessChildTargetInterruption,
 	harnessChildTargetInterrupt, harnessChildTargetInterruptions, isHarnessChildTargetInterruptionControl,
 	type ChildApprovalResumeDescriptorV1, type WorkflowAgentCallBudgetStateV1, type WorkflowChildCheckpointAccess } from './steps.js'
-import { withAgentAdmission } from './agent-admission.js'
+import { withRunConcurrency } from './run-concurrency.js'
 import { abortError, withAbortSignal } from './abort.js'
 import { projectHarnessExecutionCaller } from './execution-caller.js'
 
@@ -158,27 +162,43 @@ export interface DurableInvokeOptions {
 /** Exact standalone invocation options. Host-only context is intentionally absent. */
 export interface InvokeOptions {
 	readonly signal?: AbortSignal
-	readonly timeoutMs?: number
+	readonly timeoutMs?: number | false
 	readonly historyWindow?: number
 	readonly idempotencyKey?: string
 	readonly contextProjection?: ContextProjectionPolicy
 	readonly traceparent?: string
 	readonly tracestate?: string
 	readonly metadata?: Readonly<Record<string, JsonValue>>
-	readonly resume?: ToolApprovalResume
 	readonly durable?: DurableInvokeOptions
+}
+
+/** @internal Continuation state accepted only after the public `resume(...)` boundary. */
+interface InternalInvokeOptions extends InvokeOptions {
+	readonly resume?: ToolApprovalResume
 }
 
 /** Approval resume is accepted only by a target whose graph can reach approval. */
 export type HarnessTargetApprovalResume<Target extends AnyTargetContract> =
 	'tool-approval' extends Target['interrupts'][number] ? ToolApprovalResume : never
 
+/** Resume input narrowed by one exact target contract. */
+export type HarnessTargetResume<Target extends AnyTargetContract> =
+	| HarnessTargetApprovalResume<Target>
+	| ('external-wait' extends Target['interrupts'][number] ? ExternalWaitResume : never)
+
 /** Invocation options narrowed by one exact target contract. */
-export type HarnessTargetInvokeOptions<Target extends AnyTargetContract> = Omit<InvokeOptions, 'resume'> & (
-	[HarnessTargetApprovalResume<Target>] extends [never]
-		? Readonly<{ resume?: never }>
-		: Readonly<{ resume?: HarnessTargetApprovalResume<Target> }>
-)
+export type HarnessTargetInvokeOptions<Target extends AnyTargetContract> = Omit<InvokeOptions, 'durable'> & ([Target['durable']] extends [false]
+	? Readonly<{ durable?: never }>
+	: Readonly<{ durable?: DurableInvokeOptions }>)
+
+/** Options accepted when continuing a persisted target without repeating its input. */
+export type HarnessTargetResumeOptions<Target extends AnyTargetContract> = Omit<HarnessTargetInvokeOptions<Target>, 'idempotencyKey' | 'durable'>
+
+/** Aggregate and streaming continuation of one persisted target run. */
+export interface HarnessTargetResumer<Target extends AnyTargetContract> {
+	run(options?: HarnessTargetResumeOptions<Target>): Promise<HarnessTargetRunOutcome<Target>>
+	stream(options?: HarnessTargetResumeOptions<Target>): HarnessTargetStream<Target>
+}
 
 
 /**
@@ -195,6 +215,8 @@ export interface HarnessTargetInvoker<Target extends AnyTargetContract> {
 	run(input: TargetInput<Target>, options?: HarnessTargetInvokeOptions<Target>): Promise<HarnessTargetRunOutcome<Target>>
 	/** Starts the target and returns its cancellable event stream. */
 	stream(input: TargetInput<Target>, options?: HarnessTargetInvokeOptions<Target>): HarnessTargetStream<Target>
+	/** Continues a persisted approval or external-wait interruption without repeating target input. */
+	resume(resume: HarnessTargetResume<Target>): HarnessTargetResumer<Target>
 }
 
 /**
@@ -247,6 +269,12 @@ export type HarnessSessionOptions<Requirements extends RuntimeRequirements> = Re
 export interface HarnessInstance<Contracts extends HarnessContracts, Requirements extends RuntimeRequirements = RuntimeRequirements> {
 	/** Gets or creates a session with the supplied stable id. */
 	getSession(id: string, options?: HarnessSessionOptions<Requirements>): Promise<HarnessSession<Contracts>>
+	/** Signals and inspects application-owned durable waits without exposing the storage adapter. */
+	readonly externalWaits: Readonly<{
+		get(waitId: string): Promise<ExternalWaitSnapshot | undefined>
+		signal(signal: ExternalWaitSignal): Promise<ExternalWaitSignalResult>
+		cancel(waitId: string, eventId: string, observedAt?: string): Promise<ExternalWaitSignalResult>
+	}>
 	/** Releases all instance-owned resources. */
 	close(): Promise<void>
 }
@@ -278,11 +306,19 @@ export interface TrustedHostedInvocationEnvironment {
 
 /** @internal Normalized options crossing only the trusted hosted facade. */
 export type TrustedHostedInvokeOptions<Target extends AnyTargetContract = AnyTargetContract> = Readonly<
-	InvokeOptions & { readonly sessionId: string; readonly resumeIdentity?: 'current-caller' | 'stored-run-owner'; readonly __target?: Target }
+	Omit<InternalInvokeOptions, 'resume'> & {
+		readonly sessionId: string
+		/** Trusted host-owned identity used as the root run id for a fresh delivery. */
+		readonly invocationId?: string
+		readonly resume?: HarnessTargetResume<Target>
+		readonly resumeIdentity?: 'current-caller' | 'stored-run-owner'
+		readonly __target?: Target
+	}
 >
 
 /** @internal Opaque result of hosted preauthorization preparation. */
 export interface PreparedHostedRoot<Target extends AnyTargetContract> {
+	readonly wireInput: TargetInput<Target>
 	readonly input: TargetValidatedInput<Target>
 }
 
@@ -296,16 +332,16 @@ export function createTrustedHostedInvocationEnvironment(
 /** @internal Shared kernel returned only to standalone and hosted adapters. */
 export interface HarnessRuntimeKernel<Contracts extends HarnessContracts, Requirements extends RuntimeRequirements> {
 	readonly instance: HarnessInstance<Contracts, Requirements>
-	prepareHostedRootTrusted<Target extends AnyTargetContract>(target: Target, wireInput: TargetInput<Target>, input: TargetValidatedInput<Target> | undefined, options: TrustedHostedInvokeOptions<Target>, environment: TrustedHostedInvocationEnvironment): Promise<PreparedHostedRoot<Target>>
+	prepareHostedRootTrusted<Target extends AnyTargetContract>(target: Target, wireInput: TargetInput<Target> | undefined, input: TargetValidatedInput<Target> | undefined, options: TrustedHostedInvokeOptions<Target>, environment: TrustedHostedInvocationEnvironment): Promise<PreparedHostedRoot<Target>>
 	discardHostedRootTrusted(environment: TrustedHostedInvocationEnvironment): void
 	runTrusted<Target extends AnyTargetContract>(target: Target, wireInput: TargetInput<Target>, input: TargetValidatedInput<Target>, options: TrustedHostedInvokeOptions<Target>, environment: TrustedHostedInvocationEnvironment): Promise<HarnessTargetRunOutcome<Target>>
 	streamTrusted<Target extends AnyTargetContract>(target: Target, wireInput: TargetInput<Target>, input: TargetValidatedInput<Target>, options: TrustedHostedInvokeOptions<Target>, environment: TrustedHostedInvocationEnvironment): Promise<HarnessTargetStream<Target>>
 	streamDispatchedTrusted<Target extends AnyTargetContract>(
 		target: Target,
-		input: JsonValue,
-		wireInput: TargetInput<Target>,
+		input: JsonValue | undefined,
+		wireInput: TargetInput<Target> | undefined,
 		invocation: import('../ports/target-dispatcher.js').HarnessNestedTargetDispatchInvocation,
-		resume: ToolApprovalResume | undefined,
+		resume: HarnessTargetResume<Target> | undefined,
 		environment: TrustedHostedInvocationEnvironment,
 	): Promise<HarnessTargetDispatchStream<TargetOutput<Target>, TargetInterrupt<Target>>>
 }
@@ -319,7 +355,11 @@ interface SessionRuntime {
 	ownerRegistration?: Promise<void>
 	readonly controller: AbortController
 	readonly taskRegistry: Map<string, import('../definitions/types.js').ChildTaskHandle<JsonValue>>
-	readonly activeRoots: Map<string, Readonly<{ controller: ReturnType<typeof linkedController>; settled: Promise<void> }>>
+	readonly activeRoots: Map<string, Readonly<{
+		controller: ReturnType<typeof linkedController>
+		settled: Promise<void>
+		target: Readonly<{ kind: 'agent' | 'workflow'; id: string }>
+	}>>
 	busy: boolean
 	releasing: boolean
 	released: boolean
@@ -414,7 +454,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 	const sessionInitializers = new Map<string, Promise<SessionRuntime>>()
 	const rootInputs = new Map<string, JsonValue>()
 	const rootValidatedInputs = new Map<string, JsonValue>()
-	const rootOptions = new Map<string, InvokeOptions>()
+	const rootOptions = new Map<string, InternalInvokeOptions>()
 	const rootModes = new Map<string, 'run' | 'stream'>()
 	const rootSettled = new Map<string, () => void>()
 	const rootChildEventRelays = new Map<string, (event: ExecutionEvent<JsonValue>) => Promise<void>>()
@@ -437,7 +477,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 	const effectiveSandboxScopes = new Map<string, EffectiveSandboxLaunchSource>()
 	const retainedPublicationPoisons = new Map<string, RetainedPublicationPoison>()
 	const workflowOwnerByRunId = new Map<string, string>()
-	const directAgentRuns = new Map<string, Readonly<{ input: string; promise: Promise<RunOutcome<JsonValue>> }>>()
+	const directTargetRuns = new Map<string, Readonly<{ input: string; promise: Promise<RunOutcome<JsonValue>> }>>()
 	const activeApprovalResumes = new Map<string, Readonly<{
 		sessionId: string; targetKind: 'agent' | 'workflow'; targetId: string; input: string
 		interruptId: string; revision: string; eventId: string; decisions: string
@@ -474,7 +514,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 	try {
 		modelRegistry = createModelRegistry(options.bindings.models, {
 			telemetry, harnessName: options.name,
-			...(options.bindings.admission === undefined ? {} : { admission: options.bindings.admission }),
+			...(options.bindings.concurrency?.modelCalls === undefined ? {} : { modelCallConcurrency: options.bindings.concurrency.modelCalls }),
 			...(options.bindings.artifacts === undefined ? {} : { artifacts: options.bindings.artifacts }),
 		}) as Readonly<Record<string, ModelHandle>>
 		for (const value of [storage, memory, sandbox, options.bindings.workspace, options.bindings.artifacts]) {
@@ -557,15 +597,19 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 
 		const localAgentBindings = Object.freeze(Object.values(options.graph.agents).map((agent): LocalTargetBinding => Object.freeze({
 			definition: agent,
-			execute: (request: LocalTargetExecutionRequest<AnyAgentDefinition>) => openTarget(agent,
-				request.delivery === 'fresh' ? request.input : request.wireInput, request.invocation,
-				request.delivery === 'resume' ? request.resume : undefined, request.wireInput),
+			execute: async (request: LocalTargetExecutionRequest<AnyAgentDefinition>) => {
+				if (request.delivery === 'fresh') return openTarget(agent, request.input, request.invocation, undefined, request.wireInput)
+				const stored = requireResumeRun(await storage.getRun(request.resume.runId), request.resume, request.invocation.sessionId, agent)
+				return openTarget(agent, freezeJsonValue(stored.validatedInput as JsonValue), request.invocation, request.resume, freezeJsonValue(stored.input as JsonValue))
+			},
 		})))
 		const localWorkflowBindings = Object.freeze(Object.values(options.graph.workflows).map((workflow): LocalTargetBinding => Object.freeze({
 			definition: workflow,
-			execute: (request: LocalTargetExecutionRequest<AnyWorkflowDefinition>) => openTarget(workflow,
-				request.delivery === 'fresh' ? request.input : request.wireInput, request.invocation,
-				request.delivery === 'resume' ? request.resume : undefined, request.wireInput),
+			execute: async (request: LocalTargetExecutionRequest<AnyWorkflowDefinition>) => {
+				if (request.delivery === 'fresh') return openTarget(workflow, request.input, request.invocation, undefined, request.wireInput)
+				const stored = requireResumeRun(await storage.getRun(request.resume.runId), request.resume, request.invocation.sessionId, workflow)
+				return openTarget(workflow, freezeJsonValue(stored.validatedInput as JsonValue), request.invocation, request.resume, freezeJsonValue(stored.input as JsonValue))
+			},
 		})))
 		dispatcher = createLocalTargetDispatcher({ defaultMaxDepth: options.defaults.maxDepth,
 			routeBindingRevision: canonicalJson(['harness.local-route-revision.v1', options.revision ?? '', graphDigest]),
@@ -584,14 +628,16 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 		definition: AnyAgentDefinition | AnyWorkflowDefinition,
 		input: JsonValue,
 		invocation: import('../ports/target-dispatcher.js').HarnessTargetDispatchInvocation,
-		resume?: ToolApprovalResume,
+		resume?: ToolApprovalResume | ExternalWaitResume,
 		wireInput: JsonValue = input,
 	): Promise<HarnessTargetDispatchStream<JsonValue, HarnessInterrupt>> {
 		const runId = invocation.invocationId
 		rootInputs.set(runId, wireInput)
 		if (resume === undefined && !rootValidatedInputs.has(runId)) rootValidatedInputs.set(runId, freezeJsonValue(input))
-		if (resume !== undefined) {
+		if (resume?.type === 'tool-approval') {
 			rootOptions.set(runId, Object.freeze({ resume }))
+		} else if (resume?.type === 'external-wait') {
+			rootOptions.set(runId, Object.freeze({ durable: { runId: resume.runId } }))
 		}
 		if (!rootModes.has(runId)) rootModes.set(runId, 'run')
 		const controller = linkedController(invocation.signal, invocation.deadline)
@@ -667,7 +713,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				startedAt: existing?.startedAt ?? new Date().toISOString(), input: persistedInput,
 				validatedInput: requireTrustedValidatedRootInput(rootValidatedInputs, runId),
 				...(invokeOptions.metadata === undefined ? {} : { metadata: invokeOptions.metadata }) })
-			: requireResumeRun(existing, resume, invocation.sessionId, definition, persistedInput)
+			: requireResumeRun(existing, resume, invocation.sessionId, definition)
 		const activeWorkflowOwner = definition.kind === 'workflow' ? definition.id : owningWorkflowId
 		if (activeWorkflowOwner !== undefined) workflowOwnerByRunId.set(runId, activeWorkflowOwner)
 		const resumingExternalWait = resume === undefined && run.status === 'waiting'
@@ -1138,13 +1184,13 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			try {
 				const stream = parentNode.frame.kind === 'host-tool'
 					? await executionDispatcher.openPersisted({ route: parentNode.frame.activeNestedCall.route,
-						wireInput: parentNode.frame.activeNestedCall.input, resume: childResume, invocation: childInvocation })
+						resume: childResume, invocation: childInvocation })
 					: hostedEnvironment === undefined
 						? await openTarget(child!, childRun!.input, childInvocation)
 						: node.resumeDescriptor?.route === undefined || node.resumeDescriptor.wireInput === undefined
 							? (() => { throw new ApprovalResumeError('invalid_checkpoint') })()
 							: await executionDispatcher.openPersisted({ route: node.resumeDescriptor.route,
-							wireInput: node.resumeDescriptor.wireInput, resume: childResume, invocation: childInvocation })
+							resume: childResume, invocation: childInvocation })
 				const consumed = await consumeHarnessTargetStream({ stream, signal, parentRunId: parentNode.frame.runId,
 					childInvocationId: node.frame.invocationId, relay: relayChildEvent })
 				if (consumed.outcome.status === 'completed') return consumed.outcome.output
@@ -1467,8 +1513,13 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 						}),
 					}),
 				})
-				const result = await withAgentAdmission(options.bindings.agentAdmission, {
-					agentId: definition.id, rootRunId: invocation.rootRunId, parentRunId: invocation.parentRunId,
+				const result = await withRunConcurrency(options.bindings.concurrency?.runs, {
+					harnessName: options.name, sessionId: invocation.sessionId, runId,
+					rootRunId: invocation.rootRunId,
+					target: session.activeRoots.get(invocation.rootRunId)?.target ?? Object.freeze({ kind: definition.kind, id: definition.id }),
+					caller: agentCaller,
+					...(invocation.identity === undefined ? {} : { identity: invocation.identity }),
+					...(invocation.parentRunId === invocation.rootRunId ? {} : { parentRunId: invocation.parentRunId }),
 					depth: invocation.depth, ...(invocation.deadline === undefined ? {} : { deadline: invocation.deadline }), signal,
 				}, execute, { logger })
 				await resumeReplacement
@@ -1802,7 +1853,11 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 
 	async function ensureSession(id: string, rawOptions: SessionOptions, deferOwnerRegistration = false): Promise<SessionRuntime> {
 		if (closed) throw new StateError('Harness instance is closed.', { op: 'getSession', reason: 'instance_closed' })
-		const parsed = sessionOptionsSchema.parse(rawOptions)
+		const parsedOptions = sessionOptionsSchema.safeParse(rawOptions)
+		if (!parsedOptions.success) throw new ValidationError('Session options are invalid.', {
+			where: 'invoke_options', issues: { reason: 'invalid_session_options', issues: parsedOptions.error.issues },
+		}, parsedOptions.error)
+		const parsed = parsedOptions.data
 		const normalizedIdentity = normalizeHarnessIdentity(parsed.identity)
 		const known = sessions.get(id)
 		if (known && !known.released) {
@@ -2141,7 +2196,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 	}
 
 	async function getSession(id: string, sessionOptions: SessionOptions = {}): Promise<HarnessSession<Contracts>> {
-		if (typeof id !== 'string' || id.length === 0) throw new ValidationError('Session id is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_session_id' } })
+		if (!validSessionId(id)) throw new ValidationError('Session id is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_session_id' } })
 		if (!requiresSandbox && sessionOptions.sandboxOwner !== undefined) throw new HarnessConfigError('A sandbox owner cannot be supplied when the graph does not require sandboxing.', {
 			reason: 'invalid_runtime_binding', path: 'session.sandboxOwner',
 		})
@@ -2207,8 +2262,9 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 		hostedEnvironment?: TrustedHostedInvocationEnvironment,
 		hostedWireInput?: JsonValue,
 		hostedDeadline?: number,
+		hostedRunId?: string,
 	): HarnessTargetInvoker<AnyTargetContract> {
-		const joinedApprovalResume = (input: JsonValue, invokeOptions: InvokeOptions) => {
+		const joinedApprovalResume = (input: JsonValue, invokeOptions: InternalInvokeOptions) => {
 			const resume = invokeOptions.resume
 			if (resume === undefined) return undefined
 			const active = activeApprovalResumes.get(resume.runId)
@@ -2252,21 +2308,22 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				})
 			}
 			if (state.busy) throw new SessionBusyError('Session already has an active run.', { session_id: state.record.id, reason: 'concurrent_run' })
+			const trace = hostedEnvironment?.traceContext ?? invocationTrace(normalizedInvokeOptions, logger)
 			state.busy = true
-			const runId = normalizedInvokeOptions.resume?.runId ?? normalizedInvokeOptions.durable?.runId
-				?? (definition.kind === 'agent' && normalizedInvokeOptions.idempotencyKey !== undefined
-					? directAgentDeliveryId(state.record.id, definition.id, normalizedInvokeOptions.idempotencyKey)
+			const runId = hostedRunId ?? normalizedInvokeOptions.resume?.runId ?? normalizedInvokeOptions.durable?.runId
+				?? (normalizedInvokeOptions.idempotencyKey !== undefined
+					? directTargetDeliveryId(state.record.id, definition.id, normalizedInvokeOptions.idempotencyKey)
 					: `run_${ulid()}`)
 			rootInputs.set(runId, JSON.parse(canonicalJson(hostedWireInput ?? input)) as JsonValue)
 			rootValidatedInputs.set(runId, freezeJsonValue(input))
 			rootOptions.set(runId, normalizedInvokeOptions)
 			rootModes.set(runId, mode)
 			if (hostedEnvironment !== undefined) rootHostedEnvironments.set(runId, hostedEnvironment)
+			const effectiveRunTimeout = normalizedInvokeOptions.timeoutMs ?? (options.defaults.runTimeoutMs === 0 ? false : options.defaults.runTimeoutMs)
 			const controller = linkedController([
 				...(normalizedInvokeOptions.signal === undefined ? [] : [normalizedInvokeOptions.signal]),
 				state.controller.signal, instanceController.signal,
-			], hostedDeadline ?? (normalizedInvokeOptions.timeoutMs === 0 ? undefined : Date.now() + (normalizedInvokeOptions.timeoutMs ?? options.defaults.runTimeoutMs)))
-			const trace = hostedEnvironment?.traceContext ?? invocationTrace(normalizedInvokeOptions, logger)
+			], hostedDeadline ?? (effectiveRunTimeout === false ? undefined : Date.now() + effectiveRunTimeout))
 			let settleRoot!: () => void
 			const settled = new Promise<void>(resolve => { settleRoot = resolve })
 			rootSettled.set(runId, () => {
@@ -2275,7 +2332,8 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				controller.dispose()
 				settleRoot()
 			})
-			state.activeRoots.set(runId, Object.freeze({ controller, settled }))
+			state.activeRoots.set(runId, Object.freeze({ controller, settled,
+				target: Object.freeze({ kind: definition.kind, id: definition.id }) }))
 			const invocationIdentity = normalizeHarnessIdentity(state.record.identity)
 			const invocation = Object.freeze({ sessionId: state.record.id, invocationId: runId, rootRunId: runId, parentRunId: runId,
 					depth: 0, remainingDepth: options.defaults.maxDepth,
@@ -2286,7 +2344,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			const opened = normalizedInvokeOptions.resume === undefined && hostedEnvironment === undefined
 				? dispatcher.openRoot({ target: definition.contract, input, invocation })
 				: openTarget(definition, input, invocation, normalizedInvokeOptions.resume, hostedWireInput ?? input)
-			return lazyDispatchStream(opened.catch(error => {
+			const stream = lazyDispatchStream(opened.catch(error => {
 				rootInputs.delete(runId)
 				rootValidatedInputs.delete(runId)
 				rootOptions.delete(runId)
@@ -2297,60 +2355,59 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				rootSettled.delete(runId)
 				throw error
 			}), controller)
+			return Object.freeze({ runId, stream })
 		}
-		const stream = (input: JsonValue, invokeOptions: InvokeOptions = {}) => {
+		const streamInternal = (input: JsonValue, invokeOptions: InvokeOptions = {}) => {
 			try {
 				const normalized = normalizeInvokeOptions(invokeOptions)
 				if (normalized.resume !== undefined) normalizeResumeDecisions(normalized.resume)
 				const joined = joinedApprovalResume(input, normalized)
-				if (joined !== undefined) return toHarnessTargetStream(definition.contract, joined.stream)
-				if (definition.kind === 'agent' && normalized.idempotencyKey !== undefined) {
+				if (joined !== undefined) return toHarnessTargetStream(definition.contract, joined.stream, state.record.id, normalized.resume!.runId)
+				if (normalized.idempotencyKey !== undefined) {
 					if (!isJsonValue(input)) throw new ValidationError('Harness target input must be JSON.', {
 						where: 'agent_input', issues: { reason: 'non_json_input' },
 					})
-					const deliveryId = directAgentDeliveryId(state.record.id, definition.id, normalized.idempotencyKey)
+					const deliveryId = directTargetDeliveryId(state.record.id, definition.id, normalized.idempotencyKey)
 					const inputCanonical = canonicalJson(input)
-					const active = directAgentRuns.get(deliveryId)
+					const active = directTargetRuns.get(deliveryId)
 					if (active !== undefined) {
-						if (active.input !== inputCanonical) throw directAgentIdempotencyConflict()
-						return toHarnessTargetStream(definition.contract, replayRunAfter(active.promise, deliveryId))
+						if (active.input !== inputCanonical) throw directTargetIdempotencyConflict()
+						return toHarnessTargetStream(definition.contract, replayRunAfter(active.promise, deliveryId), state.record.id, deliveryId)
 					}
 					let resolve!: (outcome: RunOutcome<JsonValue>) => void
 					let reject!: (error: unknown) => void
 					const promise = new Promise<RunOutcome<JsonValue>>((onResolve, onReject) => { resolve = onResolve; reject = onReject })
 					directStreamSettlers.set(deliveryId, Object.freeze({ resolve, reject }))
-					directAgentRuns.set(deliveryId, Object.freeze({ input: inputCanonical, promise }))
+					directTargetRuns.set(deliveryId, Object.freeze({ input: inputCanonical, promise }))
 					let opened: HarnessTargetDispatchStream<JsonValue, HarnessInterrupt>
-					try { opened = start('stream', input, normalized) } catch (error) {
+					try { opened = start('stream', input, normalized).stream } catch (error) {
 						directStreamSettlers.delete(deliveryId)
-						directAgentRuns.delete(deliveryId)
+						directTargetRuns.delete(deliveryId)
 						throw error
 					}
 					void promise.finally(() => {
-						if (directAgentRuns.get(deliveryId)?.promise === promise) directAgentRuns.delete(deliveryId)
+						if (directTargetRuns.get(deliveryId)?.promise === promise) directTargetRuns.delete(deliveryId)
 						directStreamSettlers.delete(deliveryId)
 					}).catch(() => {})
-					return toHarnessTargetStream(definition.contract, opened)
+					return toHarnessTargetStream(definition.contract, opened, state.record.id, deliveryId)
 				}
 				const started = start('stream', input, normalized)
-				const opened = normalized.resume === undefined ? started : replayableDispatchStream(started)
+				const opened = normalized.resume === undefined ? started.stream : replayableDispatchStream(started.stream)
 				if (normalized.resume !== undefined) {
 					const promise = opened.result.then(outcome => terminalOutcome(outcome, definition))
 					void promise.catch(() => {})
 					registerApprovalResume(input, normalized.resume, promise, opened)
 				}
-				return toHarnessTargetStream(definition.contract, opened)
+				return toHarnessTargetStream(definition.contract, opened, state.record.id, started.runId)
 			}
 			catch (error) {
 				if (error instanceof OperationCancelledError) {
-					return toHarnessTargetStream(definition.contract, rejectedDispatchStream<JsonValue>(error))
+					throw error
 				}
 				throw error
 			}
 		}
-		return Object.freeze({
-			stream,
-			async run(input: JsonValue, invokeOptions?: InvokeOptions) {
+		const runInternal = async (input: JsonValue, invokeOptions?: InvokeOptions) => {
 				const normalized = normalizeInvokeOptions(invokeOptions ?? {})
 				if (normalized.resume !== undefined) normalizeResumeDecisions(normalized.resume)
 				if (!isJsonValue(input)) throw new ValidationError('Harness target input must be JSON.', {
@@ -2358,26 +2415,55 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				})
 				const joined = joinedApprovalResume(input, normalized)
 				if (joined !== undefined) return joined.promise
-				if (definition.kind === 'agent' && normalized.idempotencyKey !== undefined) {
-					const deliveryId = directAgentDeliveryId(state.record.id, definition.id, normalized.idempotencyKey)
+				if (normalized.idempotencyKey !== undefined) {
+					const deliveryId = directTargetDeliveryId(state.record.id, definition.id, normalized.idempotencyKey)
 					const inputCanonical = canonicalJson(input)
-					const active = directAgentRuns.get(deliveryId)
+					const active = directTargetRuns.get(deliveryId)
 					if (active !== undefined) {
-						if (active.input !== inputCanonical) throw directAgentIdempotencyConflict()
+						if (active.input !== inputCanonical) throw directTargetIdempotencyConflict()
 						return active.promise
 					}
-					const promise = consumeRun(start('run', input, normalized), definition)
-					directAgentRuns.set(deliveryId, Object.freeze({ input: inputCanonical, promise }))
+					const promise = consumeRun(start('run', input, normalized).stream, definition)
+					directTargetRuns.set(deliveryId, Object.freeze({ input: inputCanonical, promise }))
 					try { return await promise } finally {
-						if (directAgentRuns.get(deliveryId)?.promise === promise) directAgentRuns.delete(deliveryId)
+						if (directTargetRuns.get(deliveryId)?.promise === promise) directTargetRuns.delete(deliveryId)
 					}
 				}
 				const started = start('run', input, normalized)
-				const opened = normalized.resume === undefined ? started : replayableDispatchStream(started)
+				const opened = normalized.resume === undefined ? started.stream : replayableDispatchStream(started.stream)
 				const promise = consumeRun(opened, definition)
 				if (normalized.resume !== undefined) registerApprovalResume(input, normalized.resume, promise, opened)
 				return promise
+		}
+		const resume = (resumeInput: ToolApprovalResume | ExternalWaitResume) => {
+			const normalizedResume = normalizeTargetResume(resumeInput, definition.contract)
+			const loadInput = async (): Promise<JsonValue> => {
+				const stored = await storage.getRun(normalizedResume.runId)
+				if (stored === undefined || stored.sessionId !== state.record.id || stored.kind !== definition.kind || stored.target !== definition.id) {
+					throw new ApprovalResumeError('run_mismatch')
+				}
+				return stored.input
 			}
+			const invokeOptions = (resumeOptions: InvokeOptions = {}): InvokeOptions => normalizedResume.type === 'tool-approval'
+				? Object.freeze({ ...resumeOptions, resume: normalizedResume })
+				: Object.freeze({ ...resumeOptions, durable: { runId: normalizedResume.runId } })
+			return Object.freeze({
+				async run(resumeOptions?: InvokeOptions) { return runInternal(await loadInput(), invokeOptions(resumeOptions)) },
+				stream(resumeOptions?: InvokeOptions) {
+					const pending = loadInput().then(input => streamInternal(input, invokeOptions(resumeOptions)))
+					return lazyHarnessTargetStream(definition.contract, pending, state.record.id, normalizedResume.runId)
+				},
+			})
+		}
+		const rejectInlineResume = (value: unknown) => {
+			if (value !== null && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'resume')) {
+				throw new ValidationError('Invocation options are invalid.', { where: 'invoke_options', issues: { reason: 'invalid_invoke_options' } })
+			}
+		}
+		return Object.freeze({
+			stream(input: JsonValue, invokeOptions?: InvokeOptions) { rejectInlineResume(invokeOptions); return streamInternal(input, invokeOptions) },
+			run(input: JsonValue, invokeOptions?: InvokeOptions) { rejectInlineResume(invokeOptions); return runInternal(input, invokeOptions) },
+			resume,
 		})
 
 		function replayRunAfter(
@@ -2423,7 +2509,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 
 	function terminalOutcome(
 		outcome: ExecutionTerminalOutcome<JsonValue, HarnessInterrupt>,
-		definition: AnyAgentDefinition | AnyWorkflowDefinition,
+		definition: Readonly<{ kind: 'agent' | 'workflow' }>,
 		localFailure?: unknown,
 	): RunOutcome<JsonValue> {
 		if (outcome.status === 'completed' || outcome.status === 'interrupted') return outcome
@@ -2525,7 +2611,21 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 		}
 	}
 
-	const instance = Object.freeze({ getSession, close }) as HarnessInstance<Contracts, Requirements>
+	const externalWaits = Object.freeze({
+		async get(waitId: string) {
+			try { return await storage.getWait(waitId) }
+			catch (error) { if (error instanceof HarnessError) throw error; throw new InternalError('External wait lookup failed.', undefined, error) }
+		},
+		async signal(signal: ExternalWaitSignal) {
+			try { return await storage.signalWait(signal) }
+			catch (error) { if (error instanceof HarnessError) throw error; throw new InternalError('External wait signal failed.', undefined, error) }
+		},
+		async cancel(waitId: string, eventId: string, observedAt?: string) {
+			try { return await storage.cancelWait(waitId, eventId, observedAt) }
+			catch (error) { if (error instanceof HarnessError) throw error; throw new InternalError('External wait cancellation failed.', undefined, error) }
+		},
+	})
+	const instance = Object.freeze({ getSession, externalWaits, close }) as HarnessInstance<Contracts, Requirements>
 	const definitionForTarget = (target: AnyTargetContract): AnyAgentDefinition | AnyWorkflowDefinition => {
 		const identity = getDefinitionIdentity(target)
 		const definition = identity === undefined ? undefined
@@ -2545,13 +2645,14 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 	): Promise<PreparedHostedRoot<Target>> => {
 		if (environment[trustedHostedInvocationBrand] !== true) throw new InternalError('Hosted invocation environment is invalid.')
 		definitionForTarget(target)
-		const deadline = invokeOptions.timeoutMs === 0 ? undefined : Date.now() + (invokeOptions.timeoutMs ?? options.defaults.runTimeoutMs)
+		const effectiveRunTimeout = invokeOptions.timeoutMs ?? (options.defaults.runTimeoutMs === 0 ? false : options.defaults.runTimeoutMs)
+		const deadline = effectiveRunTimeout === false ? undefined : Date.now() + effectiveRunTimeout
 		if (invokeOptions.resume === undefined) {
-			if (input === undefined) throw new InternalError('Hosted fresh invocation input is unavailable.')
+			if (input === undefined || wireInput === undefined) throw new InternalError('Hosted fresh invocation input is unavailable.')
 			const frozenInput = freezeJsonValue(input as JsonValue) as TargetValidatedInput<Target>
 			preparedHostedRoots.set(environment, Object.freeze({ target, wireInput, input: frozenInput,
 				options: invokeOptions as TrustedHostedInvokeOptions, environment, ...(deadline === undefined ? {} : { deadline }) }))
-			return Object.freeze({ input: frozenInput })
+			return Object.freeze({ wireInput, input: frozenInput })
 		}
 		let run: RunRecord | undefined
 		let session: SessionRecord | undefined
@@ -2560,7 +2661,8 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			session = run === undefined ? undefined : await storage.getSession(invokeOptions.sessionId)
 		} catch { throw new InternalError('Hosted stored-run owner lookup failed.') }
 		const definition = definitionForTarget(target)
-		const selectedRun = requireResumeRun(run, invokeOptions.resume, invokeOptions.sessionId, definition, wireInput)
+		const selectedRun = requireResumeRun(run, invokeOptions.resume, invokeOptions.sessionId, definition)
+		const storedWireInput = freezeJsonValue(selectedRun.input) as TargetInput<Target>
 		if (selectedRun.kind === 'child_task' || session === undefined || session.id !== selectedRun.sessionId) throw new ApprovalResumeError('run_mismatch')
 		const currentIdentity = environment.identity
 		const storedIdentity = normalizeHarnessIdentity(session.identity)
@@ -2576,22 +2678,25 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 		const frozenInput = freezeJsonValue(selectedRun.validatedInput) as TargetValidatedInput<Target>
 		const terminal = selectedRun.status === 'succeeded' || selectedRun.status === 'failed' || selectedRun.status === 'cancelled'
 		let resumeCheckpoint: RunCheckpoint | undefined
-		if (terminal) validateTerminalResume(selectedRun, invokeOptions.resume, options, graphDigest, session, definition)
-		else {
+		if (invokeOptions.resume.type === 'tool-approval' && terminal) {
+			validateTerminalResume(selectedRun, invokeOptions.resume, options, graphDigest, session, definition)
+		} else if (invokeOptions.resume.type === 'tool-approval') {
 			try { resumeCheckpoint = await storage.loadCheckpoint(selectedRun.id, 'harness:interrupt:v1') }
 			catch { throw new InternalError('Hosted stored-run owner lookup failed.') }
-			validateApprovalResume(resumeCheckpoint, invokeOptions.resume, selectedRun, wireInput, options, graphDigest, session, definition)
+			validateApprovalResume(resumeCheckpoint, invokeOptions.resume, selectedRun, storedWireInput, options, graphDigest, session, definition)
+		} else if (terminal || selectedRun.status !== 'waiting') {
+			throw new ValidationError('Harness target resume is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_resume' } })
 		}
 		const executionEnvironment = invokeOptions.resumeIdentity === 'stored-run-owner'
 			? createTrustedHostedInvocationEnvironment({ identity: storedIdentity,
 				...(environment.traceContext === undefined ? {} : { traceContext: environment.traceContext }),
 				targetDispatcher: environment.targetDispatcher, hostToolBindings: environment.hostToolBindings })
 			: environment
-		preparedHostedRoots.set(environment, Object.freeze({ target, wireInput, input: frozenInput,
+		preparedHostedRoots.set(environment, Object.freeze({ target, wireInput: storedWireInput, input: frozenInput,
 			options: invokeOptions as TrustedHostedInvokeOptions, environment: executionEnvironment,
 			...(deadline === undefined ? {} : { deadline }), resumeRun: selectedRun, resumeSession: session,
 			...(resumeCheckpoint === undefined ? {} : { resumeCheckpoint }), terminal }))
-		return Object.freeze({ input: frozenInput })
+		return Object.freeze({ wireInput: storedWireInput, input: frozenInput })
 	}
 	const consumePreparedHostedRoot = async <Target extends AnyTargetContract>(
 		target: Target, wireInput: TargetInput<Target>, input: TargetValidatedInput<Target>,
@@ -2605,7 +2710,8 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			|| prepared.options !== invokeOptions) throw new InternalError('Hosted invocation preparation is invalid.')
 		if (invokeOptions.signal?.aborted) throw abortError(invokeOptions.signal, 'run', 'Hosted run was cancelled.')
 		if (prepared.deadline !== undefined && Date.now() >= prepared.deadline) {
-			throw new OperationTimeoutError('Run timed out.', { scope: 'run', timeout_ms: invokeOptions.timeoutMs ?? options.defaults.runTimeoutMs })
+			throw new OperationTimeoutError('Run timed out.', { scope: 'run', timeout_ms:
+				typeof invokeOptions.timeoutMs === 'number' ? invokeOptions.timeoutMs : options.defaults.runTimeoutMs })
 		}
 		if (prepared.terminal === true) {
 			let authoritative: RunRecord | undefined
@@ -2613,7 +2719,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			catch { throw new InternalError('Hosted stored-run owner lookup failed.') }
 			if (authoritative === undefined || canonicalJson(authoritative as unknown as JsonValue)
 				!== canonicalJson(prepared.resumeRun as unknown as JsonValue)) throw new ApprovalResumeError('stale_continuation')
-		} else if (prepared.resumeRun !== undefined && invokeOptions.resume !== undefined) {
+		} else if (prepared.resumeRun !== undefined && invokeOptions.resume?.type === 'tool-approval') {
 			const run = prepared.resumeRun
 			if (run.status !== 'running' && run.status !== 'waiting' && run.status !== 'interrupted') throw new ApprovalResumeError('stale_continuation')
 			const workerId = invokeOptions.durable?.workerId ?? instanceWorkerId
@@ -2664,10 +2770,11 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			const dispatch = Object.freeze({ result: Promise.resolve(outcome), async cancel() {}, async *[Symbol.asyncIterator]() {} })
 			return Object.freeze({
 				run: async () => terminalOutcome(outcome, definition) as HarnessTargetRunOutcome<Target>,
-				stream: () => toHarnessTargetStream(target, dispatch as HarnessTargetDispatchStream<TargetOutput<Target>, TargetInterrupt<Target>>),
+				stream: () => toHarnessTargetStream(target, dispatch as HarnessTargetDispatchStream<TargetOutput<Target>, TargetInterrupt<Target>>, invokeOptions.sessionId, terminal.id),
+				resume: () => { throw new ApprovalResumeError('invalid_checkpoint') },
 			})
 		}
-		const { sessionId, resumeIdentity: _resumeIdentity, __target: _target, ...optionsWithoutSession } = invokeOptions
+		const { sessionId, invocationId, resumeIdentity: _resumeIdentity, __target: _target, resume, ...optionsWithoutSession } = invokeOptions
 		let state: SessionRuntime
 		try { state = await ensureSession(sessionId, prepared.environment.identity === undefined ? {} : { identity: prepared.environment.identity }) }
 		catch (error) {
@@ -2681,32 +2788,40 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			}
 			throw error
 		}
-		const invoker = createInvoker(state, definition, prepared.environment, wireInput, prepared.deadline)
+		const invoker = createInvoker(state, definition, prepared.environment, wireInput, prepared.deadline, invocationId)
+		const resumed = resume === undefined ? undefined : invoker.resume(resume as HarnessTargetResume<AnyTargetContract>)
 		return Object.freeze({
-			run: () => invoker.run(input, optionsWithoutSession) as Promise<HarnessTargetRunOutcome<Target>>,
-			stream: () => invoker.stream(input, optionsWithoutSession) as HarnessTargetStream<Target>,
+			run: () => (resumed === undefined
+				? invoker.run(input, optionsWithoutSession as HarnessTargetInvokeOptions<AnyTargetContract>)
+				: resumed.run(optionsWithoutSession as HarnessTargetResumeOptions<AnyTargetContract>)) as Promise<HarnessTargetRunOutcome<Target>>,
+			stream: () => (resumed === undefined
+				? invoker.stream(input, optionsWithoutSession as HarnessTargetInvokeOptions<AnyTargetContract>)
+				: resumed.stream(optionsWithoutSession as HarnessTargetResumeOptions<AnyTargetContract>)) as HarnessTargetStream<Target>,
+			resume: (continuation: HarnessTargetResume<Target>) => invoker.resume(continuation as HarnessTargetResume<AnyTargetContract>) as HarnessTargetResumer<Target>,
 		})
 	}
 	const streamDispatchedTrusted = async <Target extends AnyTargetContract>(
 		target: Target,
-		input: JsonValue,
-		wireInput: TargetInput<Target>,
+		input: JsonValue | undefined,
+		wireInput: TargetInput<Target> | undefined,
 		invocation: import('../ports/target-dispatcher.js').HarnessNestedTargetDispatchInvocation,
-		resume: ToolApprovalResume | undefined,
+		resume: HarnessTargetResume<Target> | undefined,
 		environment: TrustedHostedInvocationEnvironment,
 	): Promise<HarnessTargetDispatchStream<TargetOutput<Target>, TargetInterrupt<Target>>> => {
 		if (environment[trustedHostedInvocationBrand] !== true) throw new InternalError('Hosted invocation environment is invalid.')
-		if (resume !== undefined) normalizeResumeDecisions(resume)
+		if (resume?.type === 'tool-approval') normalizeResumeDecisions(resume)
 		const definition = definitionForTarget(target)
 		if (resume !== undefined) {
-			const stored = requireResumeRun(await storage.getRun(resume.runId), resume, invocation.sessionId, definition, wireInput)
+			const stored = requireResumeRun(await storage.getRun(resume.runId), resume, invocation.sessionId, definition)
 			const session = await storage.getSession(invocation.sessionId)
 			if (stored.kind === 'child_task' || session === undefined) throw new ApprovalResumeError('run_mismatch')
 			if (canonicalJson((normalizeHarnessIdentity(session.identity) ?? null) as JsonValue)
 				!== canonicalJson((environment.identity ?? null) as JsonValue)) throw new ApprovalResumeError('session_identity_mismatch')
 			input = freezeJsonValue(stored.validatedInput)
+			wireInput = freezeJsonValue(stored.input) as TargetInput<Target>
 			rootValidatedInputs.set(invocation.invocationId, input)
 		}
+		if (input === undefined || wireInput === undefined) throw new InternalError('Hosted dispatch input is unavailable.')
 		await ensureSession(invocation.sessionId, environment.identity === undefined ? {} : { identity: environment.identity })
 		rootHostedEnvironments.set(invocation.invocationId, environment)
 		try {
@@ -2924,9 +3039,23 @@ function replayableDispatchStream<Output extends JsonValue, Interrupt>(
 function toHarnessTargetStream<Target extends AnyTargetContract>(
 	target: Target,
 	stream: HarnessTargetDispatchStream<TargetOutput<Target>, TargetInterrupt<Target>>,
+	sessionId: string,
+	runId: string,
 ): HarnessTargetStream<Target> {
+	const terminal = stream.result as Promise<HarnessTargetExecutionTerminalOutcome<Target>>
+	const result = terminal.then(outcome => {
+		if (outcome.status === 'completed' || outcome.status === 'interrupted') return outcome
+		if (outcome.status === 'cancelled') throw new OperationCancelledError('Harness target execution was cancelled.', { scope: target.kind }, outcome.error)
+		const localFailure = (stream as HarnessTargetDispatchStream<TargetOutput<Target>, TargetInterrupt<Target>> & { readonly failure?: unknown }).failure
+		if (localFailure instanceof HarnessError) throw localFailure
+		throw new InternalError('Harness target execution failed.', undefined, outcome.error)
+	}) as Promise<HarnessTargetRunOutcome<Target>>
+	void result.catch(() => {})
 	return Object.freeze({
-		result: stream.result as Promise<HarnessTargetExecutionTerminalOutcome<Target>>,
+		runId,
+		sessionId,
+		result,
+		terminal,
 		cancel: (reason?: string) => stream.cancel(reason),
 		async *[Symbol.asyncIterator](): AsyncIterator<HarnessTargetExecutionEvent<Target>> {
 			let rootRunId: string | undefined
@@ -2950,6 +3079,51 @@ function toHarnessTargetStream<Target extends AnyTargetContract>(
 			}
 		},
 	})
+}
+
+function lazyHarnessTargetStream<Target extends AnyTargetContract>(
+	_target: Target,
+	pending: Promise<HarnessTargetStream<Target>>,
+	sessionId: string,
+	runId: string,
+): HarnessTargetStream<Target> {
+	let cancellation: Promise<void> | undefined
+	const result = pending.then(stream => stream.result)
+	const terminal = pending.then(stream => stream.terminal)
+	void result.catch(() => {})
+	void terminal.catch(() => {})
+	return Object.freeze({
+		runId,
+		sessionId,
+		result,
+		terminal,
+		cancel(reason?: string) {
+			cancellation ??= pending.then(stream => stream.cancel(reason))
+			return cancellation
+		},
+		async *[Symbol.asyncIterator](): AsyncIterator<HarnessTargetExecutionEvent<Target>> {
+			const stream = await pending
+			if (stream.runId !== runId || stream.sessionId !== sessionId) {
+				throw new InternalError('Resumed Harness target stream correlation is invalid.')
+			}
+			yield* stream
+		},
+	})
+}
+
+export function normalizeTargetResume<Target extends AnyTargetContract>(
+	value: HarnessTargetResume<Target>,
+	target: Target,
+): HarnessTargetResume<Target> {
+	if (value?.type === 'tool-approval') {
+		if (!target.interrupts.includes('tool-approval')) throw new ApprovalResumeError('run_mismatch')
+		return normalizeToolApprovalResume(value) as HarnessTargetResume<Target>
+	}
+	if (value?.type !== 'external-wait' || !target.interrupts.includes('external-wait')
+		|| typeof value.runId !== 'string' || value.runId.length === 0 || Reflect.ownKeys(value).some(key => key !== 'type' && key !== 'runId')) {
+		throw new ValidationError('Harness target resume is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_resume' } })
+	}
+	return Object.freeze({ type: 'external-wait', runId: value.runId }) as HarnessTargetResume<Target>
 }
 
 function rootEventAllowed(target: AnyTargetContract, event: ExecutionEvent): boolean {
@@ -3009,12 +3183,12 @@ function rejectedDispatchStream<Output extends JsonValue, Interrupt = HarnessInt
 	})
 }
 
-function directAgentDeliveryId(sessionId: string, agentId: string, idempotencyKey: string): string {
-	return `run_${digest(['harness.direct-agent-delivery.v1', sessionId, agentId, idempotencyKey])}`
+function directTargetDeliveryId(sessionId: string, targetId: string, idempotencyKey: string): string {
+	return `run_${digest(['harness.direct-target-delivery.v1', sessionId, targetId, idempotencyKey])}`
 }
 
-function directAgentIdempotencyConflict(): StateError {
-	return new StateError('Direct-agent idempotency key conflicts with an earlier invocation.', {
+function directTargetIdempotencyConflict(): StateError {
+	return new StateError('Direct-target idempotency key conflicts with an earlier invocation.', {
 		op: 'createRun', reason: 'run_conflict',
 	})
 }
@@ -3207,15 +3381,19 @@ function assertSessionRequestMatches(
 
 function invocationTrace(options: InvokeOptions, logger: Logger): HarnessTraceContext | undefined {
 	if (options.traceparent === undefined) {
-		if (options.tracestate !== undefined) logger.warn('Ignoring invalid trace context.', { 'harness.warning.code': 'INVALID_TRACE_CONTEXT' })
+		if (options.tracestate !== undefined) throw new ValidationError('Invocation trace context is invalid.', {
+			where: 'invoke_options', issues: { reason: 'invalid_trace_context' },
+		})
 		return undefined
 	}
 	try {
 		return normalizeHarnessTraceContext({ traceparent: options.traceparent,
 			...(options.tracestate === undefined ? {} : { tracestate: options.tracestate }) })
-	} catch {
-		logger.warn('Ignoring invalid trace context.', { 'harness.warning.code': 'INVALID_TRACE_CONTEXT' })
-		return undefined
+	} catch (error) {
+		logger.warn('Rejected invalid trace context.', { 'harness.warning.code': 'INVALID_TRACE_CONTEXT' })
+		throw new ValidationError('Invocation trace context is invalid.', {
+			where: 'invoke_options', issues: { reason: 'invalid_trace_context' },
+		}, error)
 	}
 }
 
@@ -3536,14 +3714,12 @@ function isTokenUsage(value: unknown): value is import('../ports/model-provider.
 
 function requireResumeRun(
 	run: RunRecord | undefined,
-	resume: ToolApprovalResume,
+	resume: ToolApprovalResume | ExternalWaitResume,
 	sessionId: string,
 	target: AnyAgentDefinition | AnyWorkflowDefinition,
-	input: JsonValue,
 ): RunRecord {
 	if (resume.runId !== run?.id) throw new ApprovalResumeError('run_mismatch')
 	if (run.sessionId !== sessionId || run.kind !== target.kind || run.target !== target.id) throw new ApprovalResumeError('run_mismatch')
-	if (canonicalJson(run.input) !== canonicalJson(input)) throw new ApprovalResumeError('input_mismatch')
 	return run
 }
 
@@ -4066,6 +4242,7 @@ function hasOnlyStringKeys(value: Record<string, unknown>, allowed: readonly str
 }
 
 function validIdentifier(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(value) }
+function validSessionId(value: unknown): value is string { return validIdentifier(value) }
 function validInvocationIdempotencyKey(value: unknown): value is string {
 	return typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,120}$/.test(value)
 }
@@ -4139,13 +4316,13 @@ function externalWaitInterrupt(error: ExternalWaitPendingError): Extract<Harness
 }
 
 /** @internal Validates and snapshots invocation options before execution. */
-export function normalizeInvokeOptions(value: InvokeOptions): InvokeOptions {
+export function normalizeInvokeOptions(value: InvokeOptions & Readonly<{ resume?: ToolApprovalResume }>): InternalInvokeOptions {
 	if (!hasPlainPrototype(value)) throw invalidInvokeOptions()
 	const allowed = ['signal', 'timeoutMs', 'historyWindow', 'idempotencyKey', 'contextProjection', 'traceparent', 'tracestate', 'metadata', 'resume', 'durable'] as const
 	if (!Reflect.ownKeys(value).every(key => typeof key === 'string' && (allowed as readonly string[]).includes(key))) throw invalidInvokeOptions()
 	if (value.signal !== undefined && (typeof value.signal !== 'object' || value.signal === null || typeof value.signal.aborted !== 'boolean'
 		|| typeof value.signal.addEventListener !== 'function' || typeof value.signal.removeEventListener !== 'function')) throw invalidInvokeOptions()
-	if (value.timeoutMs !== undefined && (!Number.isSafeInteger(value.timeoutMs) || value.timeoutMs < 0)) throw invalidInvokeOptions()
+	if (value.timeoutMs !== undefined && value.timeoutMs !== false && (!Number.isSafeInteger(value.timeoutMs) || value.timeoutMs <= 0)) throw invalidInvokeOptions()
 	if (value.historyWindow !== undefined && (!Number.isSafeInteger(value.historyWindow) || value.historyWindow < 0)) throw invalidInvokeOptions()
 	if (value.idempotencyKey !== undefined && !validInvocationIdempotencyKey(value.idempotencyKey)) throw invalidInvokeOptions()
 	if (value.traceparent !== undefined && typeof value.traceparent !== 'string') throw invalidInvokeOptions()

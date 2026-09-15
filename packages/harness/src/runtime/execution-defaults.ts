@@ -11,7 +11,7 @@ export interface HarnessExecutionDefaults {
 	readonly maxWorkflowAgentCalls?: number
 	readonly maxParallelWorkflowAgentCalls?: number
 	readonly maxDepth?: number
-	readonly runTimeoutMs?: number
+	readonly runTimeoutMs?: number | false
 	readonly modelTimeoutMs?: number
 	readonly toolTimeoutMs?: number
 	readonly skillTimeoutMs?: number
@@ -75,8 +75,8 @@ export function resolveHarnessExecutionDefaults(value?: HarnessExecutionDefaults
 	for (const field of fields.slice(0, 13)) {
 		const candidate = input[field]
 		if (candidate === undefined) continue
-		const permitsZero = field === 'runTimeoutMs'
-		if (typeof candidate !== 'number' || !Number.isSafeInteger(candidate) || (permitsZero ? candidate < 0 : candidate <= 0)) fail(`defaults.${field}`)
+		const disabledRunTimeout = field === 'runTimeoutMs' && candidate === false
+		if (!disabledRunTimeout && (typeof candidate !== 'number' || !Number.isSafeInteger(candidate) || candidate <= 0)) fail(`defaults.${field}`)
 	}
 	const historyWindow = input['historyWindow']
 	if (historyWindow !== undefined && (typeof historyWindow !== 'number' || !Number.isSafeInteger(historyWindow) || historyWindow < 0)) {
@@ -88,7 +88,8 @@ export function resolveHarnessExecutionDefaults(value?: HarnessExecutionDefaults
 	const historyRetention = retentionValue === undefined ? undefined : snapshotRetention(retentionValue)
 	return Object.freeze({
 		...constants,
-		...Object.fromEntries(fields.slice(0, 13).flatMap(field => input[field] === undefined ? [] : [[field, input[field]]])),
+		...Object.fromEntries(fields.slice(0, 13).flatMap(field => input[field] === undefined ? []
+			: [[field, field === 'runTimeoutMs' && input[field] === false ? 0 : input[field]]])),
 		...(historyWindow === undefined ? {} : { historyWindow }),
 		...(contextProjection === undefined ? {} : { contextProjection }),
 		...(historyRetention === undefined ? {} : { historyRetention }),

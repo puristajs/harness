@@ -9,7 +9,7 @@ export type HarnessInterrupt =
 /** Public result shared by aggregate and streaming target execution. */
 export type RunOutcome<Output, Interrupt = HarnessInterrupt> =
 	| Readonly<{ status: 'completed'; runId: string; output: Output }>
-	| Readonly<{ status: 'interrupted'; runId: string; interrupt: Interrupt }>
+	| ([Interrupt] extends [never] ? never : Readonly<{ status: 'interrupted'; runId: string; interrupt: Interrupt }>)
 
 /** Aggregate result derived solely from one target contract. */
 export type HarnessTargetRunOutcome<Target extends AnyHarnessTargetContract> = RunOutcome<

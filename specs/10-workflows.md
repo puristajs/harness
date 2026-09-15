@@ -136,7 +136,7 @@ Independent managed calls may run through `Promise.all` within the declared
 parallel limits. For data-driven fan-out, the workflow context exposes the
 bounded fan-out and child-task facilities specified by
 [spec 28](./28-workflow-child-tasks.md). Bounds cover total calls, parallel
-calls, depth, and child-task admission.
+calls, depth, and child-task concurrency.
 
 Output order follows input order where the fan-out API promises an ordered
 result, regardless of completion order. A failure cancels unfinished siblings

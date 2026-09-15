@@ -147,10 +147,11 @@ describe('local target dispatcher', () => {
 		})
 		const invocation = { sessionId: 'child-session', invocationId: 'child-run', rootRunId: 'root', parentRunId: 'parent', parentAgentId: 'parent-agent', depth: 1, remainingDepth: 1, signal }
 
-		await dispatcher.openPersisted({ route, wireInput: 'hello', resume, invocation })
+		await dispatcher.openPersisted({ route, resume, invocation })
 
 		expect(validations).toBe(0)
-		expect(execute).toHaveBeenCalledWith(expect.objectContaining({ delivery: 'resume', wireInput: 'hello', resume }))
+		expect(execute).toHaveBeenCalledWith(expect.objectContaining({ delivery: 'resume', resume }))
+		expect(execute.mock.calls[0]![0]).not.toHaveProperty('wireInput')
 		expect(execute.mock.calls[0]![0]).not.toHaveProperty('input')
 		expect(execute.mock.calls[0]![0].resume).toBe(resume)
 	})
@@ -169,11 +170,11 @@ describe('local target dispatcher', () => {
 		const invocation = { sessionId: 's', invocationId: 'child-run', rootRunId: 'root', parentRunId: 'parent', parentAgentId: 'parent-agent', depth: 1, remainingDepth: 0, signal: new AbortController().signal }
 		const resume = { type: 'tool-approval' as const, runId: 'child-run', interruptId: 'i', revision: 'r', eventId: 'e', decisions: [] }
 
-		await expect(current.openPersisted({ route: prior.assertTarget(child.contract), wireInput: 'secret', resume, invocation }))
+		await expect(current.openPersisted({ route: prior.assertTarget(child.contract), resume, invocation }))
 			.rejects.toMatchObject({ constructor: HarnessTargetRouteReceiptMismatchError, code: 'HARNESS_TARGET_ROUTE_RECEIPT_MISMATCH', meta: {
 				reason: 'route_receipt_mismatch', target_kind: 'agent', target_id: 'staleChild',
 			} })
-		await expect(current.openPersisted({ route: { ...current.assertTarget(child.contract), extra: true } as never, wireInput: 'secret', resume, invocation }))
+		await expect(current.openPersisted({ route: { ...current.assertTarget(child.contract), extra: true } as never, resume, invocation }))
 			.rejects.toMatchObject({ constructor: HarnessConfigError, meta: { reason: 'invalid_target_dispatch', path: 'targetDispatcher.route' } })
 		expect(validations).toBe(0)
 		expect(execute).not.toHaveBeenCalled()
@@ -188,7 +189,7 @@ describe('local target dispatcher', () => {
 		const execute = vi.fn(async () => stream([]))
 		const dispatcher = createLocalTargetDispatcher({ defaultMaxDepth: 1, routeBindingRevision: 'deploy-1', bindings: [{ definition: child, execute }] })
 		await expect(dispatcher.openPersisted({
-			route: dispatcher.assertTarget(child.contract), wireInput: 'secret',
+			route: dispatcher.assertTarget(child.contract),
 			resume: { type: 'tool-approval', runId: 'another-run', interruptId: 'i', revision: 'r', eventId: 'e', decisions: [] },
 			invocation: { sessionId: 's', invocationId: 'child-run', rootRunId: 'root', parentRunId: 'parent', parentWorkflowId: 'parent-workflow', depth: 1, remainingDepth: 0, signal: new AbortController().signal },
 		})).rejects.toMatchObject({ constructor: HarnessConfigError, meta: { reason: 'invalid_target_dispatch', path: 'targetDispatcher.resume.runId' } })

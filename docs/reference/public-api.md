@@ -60,7 +60,7 @@ definitions fail immediately.
 
 ## Runtime bindings
 
-Bind provider clients, model names, admission controls, storage, memory,
+Bind provider clients, model names, concurrency controls, storage, memory,
 sandbox, workspace, MCP transports, telemetry, and logging only when creating
 an instance:
 

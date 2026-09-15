@@ -1,6 +1,6 @@
-import type { AgentAdmission, AgentAdmissionLease, AgentAdmissionRequest } from '../ports/agent-admission.js'
+import type { RunConcurrency, RunConcurrencyLease, RunConcurrencyRequest } from '../ports/run-concurrency.js'
 import {
-	AgentAdmissionRejectedError,
+	RunConcurrencyRejectedError,
 	HarnessConfigError,
 	InternalError,
 	OperationCancelledError,
@@ -9,12 +9,12 @@ import {
 import { abortError, withAbortSignal } from './abort.js'
 import type { Logger } from '../logger/index.js'
 
-export interface AgentAdmissionRuntimeOptions {
+export interface RunConcurrencyRuntimeOptions {
 	readonly logger?: Pick<Logger, 'warn'>
 }
 
-/** Configuration for the opt-in, process-local bounded admission helper. */
-export interface InMemoryAgentAdmissionOptions {
+/** Configuration for the opt-in, process-local bounded concurrency helper. */
+export interface InMemoryRunConcurrencyOptions {
 	/** Maximum concurrently admitted root execution trees. */
 	readonly maxConcurrent: number
 	/** Maximum waiting root execution trees; defaults to four times `maxConcurrent`. */
@@ -24,34 +24,34 @@ export interface InMemoryAgentAdmissionOptions {
 }
 
 type Waiter = Readonly<{
-	request: AgentAdmissionRequest
-	resolve: (lease: AgentAdmissionLease) => void
+	request: RunConcurrencyRequest
+	resolve: (lease: RunConcurrencyLease) => void
 	reject: (reason: unknown) => void
 	remove(): void
 }>
 
 /**
- * Creates an opt-in FIFO admission gate for complete local agent execution trees.
+ * Creates an opt-in FIFO concurrency gate for complete local root execution trees.
  * It is process-local only and deliberately has no distributed queue semantics.
  */
-export function inMemoryAgentAdmission(options: InMemoryAgentAdmissionOptions): AgentAdmission {
+export function inMemoryRunConcurrency(options: InMemoryRunConcurrencyOptions): RunConcurrency {
 	if (options === null || typeof options !== 'object' || !Number.isSafeInteger(options.maxConcurrent) || options.maxConcurrent <= 0
 		|| (options.maxQueued !== undefined && (!Number.isSafeInteger(options.maxQueued) || options.maxQueued < 0))
 		|| (options.retryAfterMs !== undefined && (!Number.isSafeInteger(options.retryAfterMs) || options.retryAfterMs <= 0))) {
-		throw new HarnessConfigError('In-memory agent admission options are invalid.', {
-			reason: 'invalid_agent_admission_options', path: 'agentAdmission',
+		throw new HarnessConfigError('In-memory run concurrency options are invalid.', {
+			reason: 'invalid_run_concurrency_options', path: 'concurrency.runs',
 		})
 	}
 	const maxQueued = options.maxQueued ?? defaultMaxQueued(options.maxConcurrent)
 	if (!Number.isSafeInteger(maxQueued)) {
-		throw new HarnessConfigError('In-memory agent admission options are invalid.', {
-			reason: 'invalid_agent_admission_options', path: 'agentAdmission',
+		throw new HarnessConfigError('In-memory run concurrency options are invalid.', {
+			reason: 'invalid_run_concurrency_options', path: 'concurrency.runs',
 		})
 	}
 	const retryAfterMs = options.retryAfterMs ?? 1_000
 	const roots = new Map<string, number>()
 	const waiters: Waiter[] = []
-	const leaseFor = (rootRunId: string): AgentAdmissionLease => {
+	const leaseFor = (rootRunId: string): RunConcurrencyLease => {
 		let released = false
 		return Object.freeze({ release() {
 			if (released) return
@@ -69,22 +69,22 @@ export function inMemoryAgentAdmission(options: InMemoryAgentAdmissionOptions): 
 			waiter.remove()
 			if (waiter.request.signal.aborted) continue
 			if (waiter.request.deadline !== undefined && waiter.request.deadline <= Date.now()) {
-				waiter.reject(new OperationTimeoutError('Agent admission timed out.', { scope: 'run', timeout_ms: 0 })); continue
+				waiter.reject(new OperationTimeoutError('Run concurrency timed out.', { scope: 'run', timeout_ms: 0 })); continue
 			}
 			roots.set(waiter.request.rootRunId, 1)
 			waiter.resolve(leaseFor(waiter.request.rootRunId))
 		}
 	}
-	return Object.freeze({ async acquire(request: AgentAdmissionRequest): Promise<AgentAdmissionLease> {
-		if (request.signal.aborted) throw abortError(request.signal, 'agent', 'Agent admission was cancelled.')
-		if (request.deadline !== undefined && request.deadline <= Date.now()) throw new OperationTimeoutError('Agent admission timed out.', { scope: 'run', timeout_ms: 0 })
+	return Object.freeze({ async acquire(request: RunConcurrencyRequest): Promise<RunConcurrencyLease> {
+		if (request.signal.aborted) throw abortError(request.signal, 'agent', 'Run concurrency was cancelled.')
+		if (request.deadline !== undefined && request.deadline <= Date.now()) throw new OperationTimeoutError('Run concurrency timed out.', { scope: 'run', timeout_ms: 0 })
 		const existing = roots.get(request.rootRunId)
 		if (existing !== undefined) { roots.set(request.rootRunId, existing + 1); return leaseFor(request.rootRunId) }
 		if (roots.size < options.maxConcurrent) { roots.set(request.rootRunId, 1); return leaseFor(request.rootRunId) }
-		if (waiters.length >= maxQueued) throw new AgentAdmissionRejectedError({ retryAfterMs })
-		return new Promise<AgentAdmissionLease>((resolve, reject) => {
+		if (waiters.length >= maxQueued) throw new RunConcurrencyRejectedError({ retryAfterMs })
+		return new Promise<RunConcurrencyLease>((resolve, reject) => {
 			let timer: ReturnType<typeof setTimeout> | undefined
-			const abort = () => finish(abortError(request.signal, 'agent', 'Agent admission was cancelled.'))
+			const abort = () => finish(abortError(request.signal, 'agent', 'Run concurrency was cancelled.'))
 			const finish = (error: unknown) => {
 				const index = waiters.indexOf(waiter)
 				if (index >= 0) waiters.splice(index, 1)
@@ -93,7 +93,7 @@ export function inMemoryAgentAdmission(options: InMemoryAgentAdmissionOptions): 
 			const remove = () => { request.signal.removeEventListener('abort', abort); if (timer !== undefined) clearTimeout(timer) }
 			const waiter: Waiter = Object.freeze({ request, resolve, reject, remove })
 			request.signal.addEventListener('abort', abort, { once: true })
-			if (request.deadline !== undefined) timer = setTimeout(() => finish(new OperationTimeoutError('Agent admission timed out.', { scope: 'run', timeout_ms: 0 })), Math.max(0, request.deadline - Date.now()))
+			if (request.deadline !== undefined) timer = setTimeout(() => finish(new OperationTimeoutError('Run concurrency timed out.', { scope: 'run', timeout_ms: 0 })), Math.max(0, request.deadline - Date.now()))
 			waiters.push(waiter)
 		})
 	} })
@@ -103,19 +103,19 @@ function defaultMaxQueued(maxConcurrent: number): number {
 	return maxConcurrent * 4
 }
 
-/** Runs one complete agent loop inside an optional root-tree admission lease. */
-export async function withAgentAdmission<T>(
-	admission: AgentAdmission | undefined,
-	request: AgentAdmissionRequest,
+/** Runs one complete root execution tree inside an optional concurrency lease. */
+export async function withRunConcurrency<T>(
+	concurrency: RunConcurrency | undefined,
+	request: RunConcurrencyRequest,
 	operation: () => Promise<T>,
-	options: AgentAdmissionRuntimeOptions = {},
+	options: RunConcurrencyRuntimeOptions = {},
 ): Promise<T> {
-	if (admission === undefined) return operation()
+	if (concurrency === undefined) return operation()
 	assertInitialLifecycle(request)
-	const lifecycle = admissionSignal(request)
-	let lease: AgentAdmissionLease
+	const lifecycle = concurrencySignal(request)
+	let lease: RunConcurrencyLease
 	try {
-		lease = await acquire(admission, Object.freeze({ ...request, signal: lifecycle.signal }), lifecycle.signal, options)
+		lease = await acquire(concurrency, Object.freeze({ ...request, signal: lifecycle.signal }), lifecycle.signal, options)
 	} finally {
 		lifecycle.dispose()
 	}
@@ -132,23 +132,23 @@ export async function withAgentAdmission<T>(
 		await lease.release()
 	} catch (error) {
 		reportCleanup(options)
-		throw new InternalError('Agent admission release failed.', { reason: 'agent_admission_release_failed' })
+		throw new InternalError('Run concurrency release failed.', { reason: 'run_concurrency_release_failed' })
 	}
 	if (failed) throw failure
 	return result as T
 }
 
 async function acquire(
-	admission: AgentAdmission,
-	request: AgentAdmissionRequest,
+	concurrency: RunConcurrency,
+	request: RunConcurrencyRequest,
 	signal: AbortSignal,
-	options: AgentAdmissionRuntimeOptions,
-): Promise<AgentAdmissionLease> {
+	options: RunConcurrencyRuntimeOptions,
+): Promise<RunConcurrencyLease> {
 	let accepted = false
-	const pending = Promise.resolve().then(() => admission.acquire(request))
-	let lease: AgentAdmissionLease
+	const pending = Promise.resolve().then(() => concurrency.acquire(request))
+	let lease: RunConcurrencyLease
 	try {
-		lease = await withAbortSignal(signal, 'agent', 'Agent admission was cancelled.', () => pending)
+		lease = await withAbortSignal(signal, 'agent', 'Run concurrency was cancelled.', () => pending)
 		accepted = true
 	} catch (error) {
 		if (!accepted) {
@@ -157,31 +157,31 @@ async function acquire(
 			}, () => {})
 		}
 		if (
-			error instanceof AgentAdmissionRejectedError
+			error instanceof RunConcurrencyRejectedError
 			|| error instanceof OperationCancelledError
 			|| error instanceof OperationTimeoutError
 		) throw error
-		throw new InternalError('Agent admission failed.', { reason: 'agent_admission_failed' })
+		throw new InternalError('Run concurrency failed.', { reason: 'run_concurrency_failed' })
 	}
 	if (lease === null || typeof lease !== 'object' || typeof lease.release !== 'function') {
-		throw new InternalError('Agent admission returned an invalid lease.', { reason: 'invalid_agent_admission_lease' })
+		throw new InternalError('Run concurrency returned an invalid lease.', { reason: 'invalid_run_concurrency_lease' })
 	}
 	return lease
 }
 
-function assertInitialLifecycle(request: AgentAdmissionRequest): void {
-	if (request.signal.aborted) throw abortError(request.signal, 'agent', 'Agent admission was cancelled.')
+function assertInitialLifecycle(request: RunConcurrencyRequest): void {
+	if (request.signal.aborted) throw abortError(request.signal, 'agent', 'Run concurrency was cancelled.')
 	if (request.deadline !== undefined && request.deadline <= Date.now()) {
-		throw new OperationTimeoutError('Agent admission timed out.', { scope: 'run', timeout_ms: 0 })
+		throw new OperationTimeoutError('Run concurrency timed out.', { scope: 'run', timeout_ms: 0 })
 	}
 }
 
-function admissionSignal(request: AgentAdmissionRequest): Readonly<{ signal: AbortSignal; dispose(): void }> {
+function concurrencySignal(request: RunConcurrencyRequest): Readonly<{ signal: AbortSignal; dispose(): void }> {
 	if (request.deadline === undefined) return Object.freeze({ signal: request.signal, dispose() {} })
 	const controller = new AbortController()
 	const timeoutMs = Math.max(0, request.deadline - Date.now())
-	const timeout = setTimeout(() => controller.abort(new OperationTimeoutError('Agent admission timed out.', { scope: 'run', timeout_ms: timeoutMs })), timeoutMs)
-	const forward = () => controller.abort(abortError(request.signal, 'agent', 'Agent admission was cancelled.'))
+	const timeout = setTimeout(() => controller.abort(new OperationTimeoutError('Run concurrency timed out.', { scope: 'run', timeout_ms: timeoutMs })), timeoutMs)
+	const forward = () => controller.abort(abortError(request.signal, 'agent', 'Run concurrency was cancelled.'))
 	request.signal.addEventListener('abort', forward, { once: true })
 	if (request.signal.aborted) forward()
 	return Object.freeze({
@@ -190,6 +190,6 @@ function admissionSignal(request: AgentAdmissionRequest): Readonly<{ signal: Abo
 	})
 }
 
-function reportCleanup(options: AgentAdmissionRuntimeOptions): void {
-	try { options.logger?.warn('Agent admission release failed.', { reason: 'agent_admission_release_failed' }) } catch { /* diagnostics cannot change cleanup semantics */ }
+function reportCleanup(options: RunConcurrencyRuntimeOptions): void {
+	try { options.logger?.warn('Run concurrency release failed.', { reason: 'run_concurrency_release_failed' }) } catch { /* diagnostics cannot change cleanup semantics */ }
 }

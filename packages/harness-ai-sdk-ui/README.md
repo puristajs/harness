@@ -27,7 +27,9 @@ import {
 } from '@purista/harness-ai-sdk-ui/v1'
 
 async function handleChat(request: Request) {
-  const parsed = await parseHarnessUIMessageRequest(await request.json())
+  const parsed = await parseHarnessUIMessageRequest(await request.json(), {
+    sessionId: authenticatedSessionId,
+  })
   const session = await instance.getSession(parsed.sessionId)
 
   const input = parsed.lastUserMessage.parts
@@ -35,24 +37,13 @@ async function handleChat(request: Request) {
     .map(part => part.text)
     .join('')
 
-  const targetStream = session.agents.support.stream(
-    input,
-    parsed.resume === undefined ? undefined : { resume: parsed.resume },
-  )
+  const targetStream = parsed.resume === undefined
+    ? session.agents.support.stream(input)
+    : session.agents.support.resume(parsed.resume).stream()
 
-  // The response consumes both the iterator and its terminal result. Release
-  // the borrowed session only after that result settles, including on cancel.
-  const events = {
-    result: targetStream.result.finally(() => session.release()),
-    cancel: (reason?: string) => targetStream.cancel(reason),
-    [Symbol.asyncIterator]: () => targetStream[Symbol.asyncIterator](),
-  }
-
-  return createHarnessUIMessageStreamResponse(events, {
-    sessionId: parsed.sessionId,
-    ...(parsed.assistantMessageId === undefined
-      ? {}
-      : { messageId: parsed.assistantMessageId }),
+  return createHarnessUIMessageStreamResponse(targetStream, {
+    request: parsed,
+    onSettled: () => session.release(),
   })
 }
 ```
@@ -60,7 +51,8 @@ async function handleChat(request: Request) {
 `instance` above is the v4 standalone Harness instance returned by the
 compiled definition's `getInstance(...)`. A structured agent should replace
 the text mapping with application-owned validation and mapping for its domain
-input. Approval continuation must reproduce the original target input.
+input. Approval continuation restores the original validated target input from
+durable Harness state; the browser does not resend it.
 
 The response has HTTP status 200 for an approval interruption and uses the
 standard `x-vercel-ai-ui-message-stream: v1` header and SSE framing. Text,

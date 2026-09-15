@@ -32,7 +32,7 @@ calls. Child runs retain lineage in the public execution stream.
 For explicit background work, a workflow can use
 `ctx.childTasks.start('agent', input, { callId })`. Tasks always own private history and
 are retrievable by their session owner through
-`session.childTasks`, and run under configured admission and call ceilings. Use
+`session.childTasks`, and run under configured run and model-call concurrency ceilings. Use
 `{ mode: 'continuable' }` for a short in-process task conversation with
 serialized `send(...)` turns and an explicit `close()`; durable/restart-safe
 work belongs in an application queue/worker integration.

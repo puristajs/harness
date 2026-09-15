@@ -49,7 +49,7 @@ Every harness-emitted log line includes (when applicable, omitted otherwise):
 type ErrorCategory =
   | 'config' | 'validation' | 'permission' | 'sandbox'
   | 'model'  | 'tool' | 'skill' | 'session'
-  | 'state' | 'admission'
+  | 'state' | 'concurrency'
   | 'timeout' | 'cancelled' | 'internal'
 
 abstract class HarnessError extends Error {

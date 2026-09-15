@@ -1,6 +1,6 @@
 import type { HarnessIdentity } from '../identity/index.js'
 import type { ToolApprovalResume } from '../approvals/index.js'
-import type { ExecutionEvent, ExecutionTerminalOutcome } from '../definitions/execution-events.js'
+import type { ExecutionEvent, ExecutionTerminalOutcome, ExternalWaitResume } from '../definitions/execution-events.js'
 import type {
 	HarnessInterruptKind,
 	HarnessOutputUpdateKind,
@@ -78,8 +78,7 @@ export interface HarnessTargetRouteReceiptV1 {
 /** Persisted child-target resume request accepted only by the owning dispatcher route. */
 export type PersistedHarnessTargetDispatchRequest = Readonly<{
 	route: HarnessTargetRouteReceiptV1
-	wireInput: JsonValue
-	resume: ToolApprovalResume
+	resume: ToolApprovalResume | ExternalWaitResume
 	invocation: HarnessNestedTargetDispatchInvocation
 }>
 

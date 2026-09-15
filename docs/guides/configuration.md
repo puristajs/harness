@@ -69,6 +69,21 @@ const instance = await defineHarness({ name: 'support' })
 Unknown aliases and missing required aliases fail at compile time and again
 during runtime validation.
 
+Put provider generation defaults, including `providerOptions`, under
+`defaults`. Retry policy belongs once at the model binding level and may still
+be overridden by an individual model call:
+
+```ts
+models: {
+  chat: {
+    provider,
+    model: 'gpt-5-mini',
+    retry: { maxAttempts: 3 },
+    defaults: { temperature: 0.2, providerOptions: { serviceTier: 'auto' } },
+  },
+}
+```
+
 ## Add memory
 
 Declare memory on the agent that uses it:
@@ -174,10 +189,20 @@ also require a sandbox advertising `sandbox.workspace_binding` and a
 
 ## Control concurrency
 
-`agentAdmission` limits concurrent agent executions before a model loop
-starts. `admission` limits provider operations, which is useful for
+`concurrency.runs` limits concurrent root agent or workflow executions.
+`concurrency.modelCalls` limits provider operations, which is useful for
 provider-specific rate limits. Both are runtime bindings and remain outside
-agent definitions.
+portable definitions.
+
+```ts
+const instance = await definition.getInstance({
+  models,
+  concurrency: {
+    runs: runConcurrency,
+    modelCalls: modelCallConcurrency,
+  },
+})
+```
 
 ## Configure telemetry safely
 

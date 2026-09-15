@@ -128,7 +128,7 @@ describe('exact Harness instance requirements', () => {
 		const invalidOptions = errorOf(() => validateHarnessInstanceConfig(required, {
 			models: { chat: { provider: modelProvider, model: 'demo', providerOptions: { nested: new Map() } } },
 		}))
-		expect(invalidOptions.meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'models.chat.providerOptions.nested' })
+		expect(invalidOptions.meta).toMatchObject({ reason: 'unexpected_runtime_binding', path: 'models.chat.providerOptions' })
 		class CustomOption {}
 		expect(errorOf(() => validateHarnessInstanceConfig(required, {
 			models: { chat: { provider: modelProvider, model: 'demo', defaults: { providerOptions: { custom: new CustomOption() } } } },
@@ -136,18 +136,18 @@ describe('exact Harness instance requirements', () => {
 		const directCycle: Record<string, unknown> = {}
 		directCycle.self = directCycle
 		expect(errorOf(() => validateHarnessInstanceConfig(required, {
-			models: { chat: { provider: modelProvider, model: 'demo', providerOptions: directCycle } },
-		})).meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'models.chat.providerOptions.self' })
+			models: { chat: { provider: modelProvider, model: 'demo', defaults: { providerOptions: directCycle } } },
+		})).meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'models.chat.defaults.providerOptions.self' })
 		const nestedCycle: Record<string, unknown> = { child: {} }
 		;(nestedCycle.child as Record<string, unknown>).parent = nestedCycle
 		expect(errorOf(() => validateHarnessInstanceConfig(required, {
-			models: { chat: { provider: modelProvider, model: 'demo', providerOptions: nestedCycle } },
-		})).meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'models.chat.providerOptions.child.parent' })
+			models: { chat: { provider: modelProvider, model: 'demo', defaults: { providerOptions: nestedCycle } } },
+		})).meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'models.chat.defaults.providerOptions.child.parent' })
 		const shared = { value: 'same' }
 		const sharedSnapshot = validateHarnessInstanceConfig(required, {
-			models: { chat: { provider: modelProvider, model: 'demo', providerOptions: { left: shared, right: shared } } },
+			models: { chat: { provider: modelProvider, model: 'demo', defaults: { providerOptions: { left: shared, right: shared } } } },
 		})
-		const copiedOptions = sharedSnapshot.models.chat?.providerOptions as Record<string, unknown>
+		const copiedOptions = sharedSnapshot.models.chat?.defaults?.providerOptions as Record<string, unknown>
 		expect(copiedOptions.left).toEqual({ value: 'same' })
 		expect(copiedOptions.left).not.toBe(copiedOptions.right)
 		const invalidRetry = errorOf(() => validateHarnessInstanceConfig(required, {
@@ -363,14 +363,16 @@ describe('exact Harness instance requirements', () => {
 		expect(reasonOf(() => validateHarnessInstanceConfig(artifactsRequired, { artifacts: {} }))).toBe('invalid_runtime_binding')
 
 		const snapshot = validateHarnessInstanceConfig(emptyRequirements, {
-			agentAdmission: { async acquire() { return { release() {} } } },
-			admission: { async acquire() { return { release() {} } } },
+			concurrency: {
+				runs: { async acquire() { return { release() {} } } },
+				modelCalls: { async acquire() { return { release() {} } } },
+			},
 			logger: logger(), telemetry: { flavor: 'dual', contentCaptureMode: 'NO_CONTENT' },
 		})
-		expect(snapshot.agentAdmission).toBeDefined()
+		expect(snapshot.concurrency?.runs).toBeDefined()
 		expect(Object.isFrozen(snapshot.telemetry)).toBe(true)
 		expect(reasonOf(() => validateHarnessInstanceConfig(emptyRequirements, { telemetry: { flavor: 'invalid' } }))).toBe('invalid_runtime_binding')
-		expect(reasonOf(() => validateHarnessInstanceConfig(emptyRequirements, { agentAdmission: {} }))).toBe('invalid_runtime_binding')
+		expect(reasonOf(() => validateHarnessInstanceConfig(emptyRequirements, { concurrency: { runs: {} } }))).toBe('invalid_runtime_binding')
 		expect(reasonOf(() => validateHarnessInstanceConfig(emptyRequirements, { logger: {} }))).toBe('invalid_runtime_binding')
 	})
 })

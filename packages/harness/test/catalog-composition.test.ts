@@ -414,7 +414,7 @@ describe('catalog composition and graph compilation', () => {
 		for (const definition of definitions) {
 			const instance = await definition.getInstance({})
 			const session = await instance.getSession('runtime-parity-session')
-			expect(Object.keys(instance)).toEqual(['getSession', 'close'])
+		expect(Object.keys(instance)).toEqual(['getSession', 'externalWaits', 'close'])
 			expect(Object.keys(session)).toEqual(['id', 'agents', 'workflows', 'childTasks', 'memory', 'history', 'getRunSummary', 'clearHistory', 'replaceHistory', 'release', 'destroy'])
 			expect(Object.isFrozen(instance)).toBe(true)
 			expect(Object.isFrozen(session)).toBe(true)
@@ -696,7 +696,7 @@ describe('catalog composition and graph compilation', () => {
 			revision: interrupted.interrupt.revision, eventId: 'resume-event-1',
 			decisions: [{ approvalId: request.approvalId, approved: true }],
 		} as const
-		await expect(session.agents.reviewTransfer.run('send', { resume })).resolves.toEqual({ status: 'completed', runId: interrupted.runId, output: 'transferred' })
+		await expect(session.agents.reviewTransfer.resume(resume).run()).resolves.toEqual({ status: 'completed', runId: interrupted.runId, output: 'transferred' })
 		expect(lifecycle).toEqual(['checkpoint:after_model', 'event:model.completed', 'hook:afterModel', 'checkpoint:continue_turn'])
 		expect(executions).toBe(1)
 		expect(rootParses).toBe(1)
@@ -704,11 +704,11 @@ describe('catalog composition and graph compilation', () => {
 		expect(await storage.getRun(interrupted.runId)).toMatchObject({ status: 'succeeded', approvalReceipt: {
 			interruptId: interrupted.interrupt.id, resumeEventId: 'resume-event-1', decisions: [{ approvalId: request.approvalId, approved: true }],
 		} })
-		await expect(session.agents.reviewTransfer.run('send', { resume })).resolves.toEqual({ status: 'completed', runId: interrupted.runId, output: 'transferred' })
-		await expect(session.agents.reviewTransfer.run('send', { resume: { ...resume,
+		await expect(session.agents.reviewTransfer.resume(resume).run()).resolves.toEqual({ status: 'completed', runId: interrupted.runId, output: 'transferred' })
+		await expect(session.agents.reviewTransfer.resume({ ...resume,
 			decisions: [{ approvalId: request.approvalId, approved: false }],
-		} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'event_conflict' } })
-		await expect(session.agents.reviewTransfer.run('send', { resume: { ...resume, eventId: 'resume-event-2' } }))
+		}).run()).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'event_conflict' } })
+		await expect(session.agents.reviewTransfer.resume({ ...resume, eventId: 'resume-event-2' }).run())
 			.rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'stale_continuation' } })
 		expect(executions).toBe(1)
 
@@ -768,7 +768,7 @@ describe('catalog composition and graph compilation', () => {
 		const resume = { type: 'tool-approval', runId: run.id, interruptId: interrupted.interrupt.id,
 			revision: interrupted.interrupt.revision, eventId: 'cursor-resume-event', decisions } as const
 
-		await expect(session.agents.cursorRestart.run('start', { resume })).rejects.toMatchObject({
+		await expect(session.agents.cursorRestart.resume(resume).run()).rejects.toMatchObject({
 			code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'invalid_checkpoint' },
 		})
 		expect(provider.requests).toHaveLength(1)
@@ -795,16 +795,16 @@ describe('catalog composition and graph compilation', () => {
 		if (first.status !== 'interrupted' || first.interrupt.type !== 'tool-approval') throw new Error('expected first interruption')
 		const firstResume = { type: 'tool-approval', runId: first.runId, interruptId: first.interrupt.id, revision: first.interrupt.revision,
 			eventId: 'first-resume-event', decisions: [{ approvalId: first.interrupt.requests[0]!.approvalId, approved: true }] } as const
-		const second = await session.agents.receiptReplay.run('start', { resume: firstResume })
+		const second = await session.agents.receiptReplay.resume(firstResume).run()
 		if (second.status !== 'interrupted' || second.interrupt.type !== 'tool-approval') throw new Error('expected second interruption')
 		const beforeReplayEvents = await storage.listEvents(first.runId)
-		await expect(session.agents.receiptReplay.run('start', { resume: firstResume })).resolves.toEqual(second)
+		await expect(session.agents.receiptReplay.resume(firstResume).run()).resolves.toEqual(second)
 		expect(provider.requests).toHaveLength(2)
 		expect(effects).toBe(1)
 		expect(await storage.listEvents(first.runId)).toEqual(beforeReplayEvents)
 		const secondResume = { type: 'tool-approval', runId: second.runId, interruptId: second.interrupt.id, revision: second.interrupt.revision,
 			eventId: 'second-resume-event', decisions: [{ approvalId: second.interrupt.requests[0]!.approvalId, approved: true }] } as const
-		await expect(session.agents.receiptReplay.run('start', { resume: secondResume })).resolves.toMatchObject({ status: 'completed', output: 'done' })
+		await expect(session.agents.receiptReplay.resume(secondResume).run()).resolves.toMatchObject({ status: 'completed', output: 'done' })
 		expect(effects).toBe(2)
 		await session.destroy()
 		await instance.close()
@@ -828,9 +828,9 @@ describe('catalog composition and graph compilation', () => {
 		const interrupted = await session.agents.parentReviewer.run('start')
 		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('expected interruption')
 		const request = interrupted.interrupt.requests[0]!
-		const outcome = await session.agents.parentReviewer.run('start', { resume: { type: 'tool-approval', runId: interrupted.runId,
+		const outcome = await session.agents.parentReviewer.resume({ type: 'tool-approval', runId: interrupted.runId,
 			interruptId: interrupted.interrupt.id, revision: interrupted.interrupt.revision, eventId: 'nested-resume-event',
-			decisions: [{ approvalId: request.approvalId, approved: true }] } })
+			decisions: [{ approvalId: request.approvalId, approved: true }] }).run()
 
 		expect(outcome).toMatchObject({ status: 'completed', output: 'parent done' })
 		expect(effects).toBe(1)
@@ -871,11 +871,11 @@ describe('catalog composition and graph compilation', () => {
 		const interrupted = await session.workflows.approvalWorkflow.run('start', durable)
 		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('expected workflow interruption')
 		const request = interrupted.interrupt.requests[0]!
-		const resumed = await session.workflows.approvalWorkflow.run('start', { ...durable, resume: {
+		const resumed = await session.workflows.approvalWorkflow.resume({
 			type: 'tool-approval', runId: interrupted.runId, interruptId: interrupted.interrupt.id,
 			revision: interrupted.interrupt.revision, eventId: 'workflow-resume-event',
 			decisions: [{ approvalId: request.approvalId, approved: true }],
-		} })
+		}).run()
 
 		expect(resumed).toEqual({ status: 'completed', runId: interrupted.runId, output: 'child done:budget-restored' })
 		expect(handlerEntries).toBe(2)

@@ -14,7 +14,7 @@ immutable Harness definition and graph compiler
 session, run, agent-loop, workflow, and tool orchestration
                     ↓
 provider-neutral model, storage, memory, sandbox, workspace,
-admission, policy, artifact, logging, and telemetry ports
+concurrency, policy, artifact, logging, and telemetry ports
                     ↓
 in-package defaults or separately published adapters
 ```
@@ -102,7 +102,7 @@ packages/
       workflows/         # orchestration runtime
       tools/             # built-ins, portable tools, MCP execution
       skills/            # immutable loader and scoped reader
-      models/            # provider-neutral invocation and admission
+      models/            # provider-neutral invocation and model-call concurrency
       storage/           # HarnessStorage port and local implementation
       memory/            # MemoryEngine orchestration and local default
       sandbox/           # Sandbox port and local defaults
@@ -134,7 +134,7 @@ dependencies.
   approval, and Guardrails because no agent selected the call.
 - Model access is through capability-scoped invokers, never a raw provider
   registry.
-- Durable queue delivery is host-owned and explicit. Admission controls
+- Durable queue delivery is host-owned and explicit. Concurrency controls
   concurrency but does not provide delivery, retry, or dead-letter semantics.
 - Approval is a typed interrupted result. It is never translated into a
   generic runtime error.

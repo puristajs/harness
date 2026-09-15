@@ -825,7 +825,7 @@ harness_v4_minimal_dx_refinement_2026_09_07:
     - "Standalone target run returns the raw RunOutcome; only PURISTA Core owns the generated address-first aggregate wrapper that pairs the resolved sessionId with that unchanged outcome."
     - "PURISTA resolves omitted public session ids once from its Core-generated root invocation id, retains identity isolation, and uses complete RFC 8785 terminal equality plus exact XOR nested ancestry."
     - "PURISTA queue bindings infer payload from the exact target input, expose enqueue only through an explicitly queued contract, and settle the typed receipt with the unchanged Core HarnessTargetRunResult and resolved session id."
-    - "inMemoryAgentAdmission provides bounded FIFO, cancellation/deadline-aware, root-run-reentrant process-local admission; durable queueing remains host-owned."
+    - "inMemoryRunConcurrency provides bounded FIFO, cancellation/deadline-aware, root-run-reentrant process-local run concurrency; durable queueing remains host-owned."
   deterministic_checks:
     git_diff_check:
       command: "git diff --check"

@@ -176,16 +176,23 @@ describe('AI SDK UI Message Stream v1', () => {
 
   it('parses official transport bodies, approval continuations, and regeneration asynchronously', async () => {
     const assistant = approvalMessage(approvalDescriptor(), [true, false])
-    const parsed = await parseHarnessUIMessageRequest({ id: 'session-1', trigger: 'submit-message', messageId: 'assistant-1', messages: [userMessage(), assistant], extra: true })
-    expect(parsed).toMatchObject({ sessionId: 'session-1', lastUserMessage: userMessage(), assistantMessageId: 'assistant-1' })
+    const parsed = await parseHarnessUIMessageRequest(
+      { id: 'transport-1', trigger: 'submit-message', messageId: 'assistant-1', messages: [userMessage(), assistant], extra: true },
+      { sessionId: 'session-1' },
+    )
+    expect(parsed).toMatchObject({ sessionId: 'session-1', transportId: 'transport-1', lastUserMessage: userMessage(), assistantMessageId: 'assistant-1' })
     expect(parsed.resume).toEqual(parseHarnessToolApprovalResume([userMessage(), assistant]))
 
-    const regenerated = await parseHarnessUIMessageRequest({ id: 'session-1', trigger: 'regenerate-message', messageId: 'assistant-old', messages: [userMessage()] })
+    const regenerated = await parseHarnessUIMessageRequest(
+      { id: 'transport-1', trigger: 'regenerate-message', messageId: 'assistant-old', messages: [userMessage()] },
+      { sessionId: 'session-1' },
+    )
     expect(regenerated.assistantMessageId).toBe('assistant-old')
-    await expect(parseHarnessUIMessageRequest({ id: 'session-1', trigger: 'regenerate-message', messages: [userMessage()] })).rejects.toThrow(/messageId/i)
-    await expect(parseHarnessUIMessageRequest({ id: 'session-other', trigger: 'submit-message', messageId: 'assistant-1', messages: [userMessage(), assistant] })).rejects.toThrow(/session/i)
-    await expect(parseHarnessUIMessageRequest({ id: 'session-1', trigger: 'submit-message', messageId: 'wrong', messages: [userMessage(), assistant] })).rejects.toThrow(/assistant/i)
-    await expect(parseHarnessUIMessageRequest({ id: 'session-1', trigger: 'submit-message', messageId: 'assistant-1', messages: [userMessage(), approvalMessage(approvalDescriptor(), [true])] })).rejects.toThrow(/incomplete/i)
+    await expect(parseHarnessUIMessageRequest({ id: 'transport-1', trigger: 'regenerate-message', messages: [userMessage()] }, { sessionId: 'session-1' })).rejects.toThrow(/messageId/i)
+    await expect(parseHarnessUIMessageRequest({ id: 'transport-1', trigger: 'submit-message', messageId: 'assistant-1', messages: [userMessage(), assistant] }, { sessionId: 'session-other' })).rejects.toThrow(/session/i)
+    await expect(parseHarnessUIMessageRequest({ id: 'transport-1', trigger: 'submit-message', messageId: 'wrong', messages: [userMessage(), assistant] }, { sessionId: 'session-1' })).rejects.toThrow(/assistant/i)
+    await expect(parseHarnessUIMessageRequest({ id: 'transport-1', trigger: 'submit-message', messageId: 'assistant-1', messages: [userMessage(), approvalMessage(approvalDescriptor(), [true])] }, { sessionId: 'session-1' })).rejects.toThrow(/incomplete/i)
+    await expect(parseHarnessUIMessageRequest({ id: 'session-1', trigger: 'submit-message', messages: [userMessage()] }, undefined as never)).rejects.toThrow(/sessionId/i)
   })
 
   it('rejects incomplete, duplicate, unknown, mixed, and replayed approvals', () => {
@@ -286,7 +293,7 @@ describe('AI SDK UI Message Stream v1', () => {
       outcome: { status: 'completed', runId: 'run-1', output: 'Hello' } })
     cases.push(stream(oneSided))
     const valid = completedEvents()
-    cases.push({ ...stream(valid), result: Promise.resolve({ status: 'completed', runId: 'run-1', output: 'different' }) } as HarnessTargetStream<UITestTarget>)
+    cases.push({ ...stream(valid), terminal: Promise.resolve({ status: 'completed', runId: 'run-1', output: 'different' }) } as HarnessTargetStream<UITestTarget>)
     const duplicate = completedEvents()
     cases.push(stream([...duplicate, duplicate.at(-1)!]))
     cases.push(stream([...completedEvents(), event({ type: 'output.text.delta', runId: 'run-1', caller: agentCaller, id: 'late', delta: 'late' })]))
@@ -309,13 +316,13 @@ describe('AI SDK UI Message Stream v1', () => {
   it('compares terminal results by canonical JSON content rather than insertion order', async () => {
     const events = completedEvents()
     const equivalent = Object.freeze({ output: 'Hello', runId: 'run-1', status: 'completed' } as const)
-    const source = { ...stream(events), result: Promise.resolve(equivalent) } as HarnessTargetStream<UITestTarget>
+    const source = { ...stream(events), terminal: Promise.resolve(equivalent) } as HarnessTargetStream<UITestTarget>
 
     await expect(collectAsync(createHarnessUIMessageSseEvents(source, { sessionId: 'session-1' })))
       .resolves.toContainEqual({ event: 'data', data: '[DONE]' })
 
     const different = Object.freeze({ output: 'Different', runId: 'run-1', status: 'completed' } as const)
-    const mismatch = { ...stream(completedEvents()), result: Promise.resolve(different) } as HarnessTargetStream<UITestTarget>
+    const mismatch = { ...stream(completedEvents()), terminal: Promise.resolve(different) } as HarnessTargetStream<UITestTarget>
     await expect(collectAsync(createHarnessUIMessageSseEvents(mismatch, { sessionId: 'session-1' })))
       .rejects.toThrow(/does not match/i)
   })
@@ -323,8 +330,8 @@ describe('AI SDK UI Message Stream v1', () => {
   it('cancels target execution and closes iterator observation on disconnect', async () => {
     const cancel = vi.fn(async (_reason?: string) => {})
     const iteratorReturn = vi.fn(async () => ({ done: true as const, value: undefined }))
-    const result = new Promise<never>(() => {})
-    const events = { result, cancel, [Symbol.asyncIterator]() { return { next: async () => new Promise<IteratorResult<ExecutionEvent>>(() => {}), return: iteratorReturn } } } as unknown as HarnessTargetStream<UITestTarget>
+    const terminal = new Promise<never>(() => {})
+    const events = { runId: 'run-1', sessionId: 'session-1', result: terminal, terminal, cancel, [Symbol.asyncIterator]() { return { next: async () => new Promise<IteratorResult<ExecutionEvent>>(() => {}), return: iteratorReturn } } } as unknown as HarnessTargetStream<UITestTarget>
     const reader = createHarnessUIMessageStream(events, { sessionId: 'session-1' }).getReader()
     await reader.cancel('browser disconnected')
     expect(cancel).toHaveBeenCalledWith('browser disconnected')
@@ -351,7 +358,7 @@ describe('AI SDK UI Message Stream v1', () => {
     expect(close).toHaveBeenCalledOnce()
 
     const cancel = vi.fn(async (_reason?: string) => {})
-    const source = stream(completedEvents())
+    const source = stream(completedEvents(), undefined, 'session-2')
     const cancellableSource = { ...source, cancel } as HarnessTargetStream<UITestTarget>
     let cancelled = false
     let onCancel: ((reason?: string) => void) | undefined
@@ -371,7 +378,7 @@ describe('AI SDK UI Message Stream v1', () => {
     expect(cancelledSink.close).not.toHaveBeenCalled()
 
     const failedCancelSource = {
-      ...stream(completedEvents()),
+      ...stream(completedEvents(), undefined, 'session-3'),
       cancel: async () => { throw new Error('cancel failed') },
     } as HarnessTargetStream<UITestTarget>
     let cancelWithFailure: ((reason?: string) => void) | undefined
@@ -394,7 +401,10 @@ describe('AI SDK UI Message Stream v1', () => {
     const cancel = vi.fn(async () => {})
     const iteratorReturn = vi.fn(async () => ({ done: true as const, value: undefined }))
     const events = {
-      result: Promise.reject(producerFailure),
+      runId: 'run-1',
+      sessionId: 'session-1',
+      result: new Promise<never>(() => {}),
+      terminal: Promise.reject(producerFailure),
       cancel,
       [Symbol.asyncIterator]() { return { next: async () => new Promise<IteratorResult<ExecutionEvent>>(() => {}), return: iteratorReturn } },
     } as unknown as HarnessTargetStream<UITestTarget>
@@ -411,7 +421,10 @@ describe('AI SDK UI Message Stream v1', () => {
     const values = completedEvents()
     let index = 0
     const events = {
+      runId: 'run-1',
+      sessionId: 'session-1',
       result: new Promise<never>(() => {}),
+      terminal: new Promise<never>(() => {}),
       cancel,
       [Symbol.asyncIterator]() {
         return {
@@ -437,9 +450,12 @@ describe('AI SDK UI Message Stream v1', () => {
       event({ type: 'run.started', runId: 'run-2', at: '2026-09-02T10:00:00.100Z' }),
     ]
     let index = 0
-    const result = new Promise<never>(() => {})
+    const terminal = new Promise<never>(() => {})
     const events = {
-      result,
+      runId: 'run-1',
+      sessionId: 'session-1',
+      result: terminal,
+      terminal,
       cancel,
       [Symbol.asyncIterator]() {
         return {
@@ -472,11 +488,25 @@ type UITestTarget = HarnessTargetContract<
   readonly HarnessInterruptKind[]
 >
 
-function stream(events: readonly ExecutionEvent[], cancel = vi.fn(async (_reason?: string) => {})): HarnessTargetStream<UITestTarget> {
+function stream(
+  events: readonly ExecutionEvent[],
+  cancel = vi.fn(async (_reason?: string) => {}),
+  sessionId = 'session-1',
+): HarnessTargetStream<UITestTarget> {
   const terminal = events.find((current): current is Extract<ExecutionEvent, { type: 'run.finished' }> =>
     current.type === 'run.finished' && current.parentRunId === undefined && current.parentInvocationId === undefined)
-  const result = terminal === undefined ? new Promise<never>(() => {}) : Promise.resolve(terminal.outcome)
-  return { result, cancel, async *[Symbol.asyncIterator]() { yield* events } } as unknown as HarnessTargetStream<UITestTarget>
+  const terminalOutcome = terminal === undefined ? new Promise<never>(() => {}) : Promise.resolve(terminal.outcome)
+  const result = terminal?.outcome.status === 'completed'
+    ? Promise.resolve(terminal.outcome)
+    : new Promise<never>(() => {})
+  return {
+    runId: terminal?.runId ?? 'run-1',
+    sessionId,
+    result,
+    terminal: terminalOutcome,
+    cancel,
+    async *[Symbol.asyncIterator]() { yield* events },
+  } as unknown as HarnessTargetStream<UITestTarget>
 }
 function readable(chunks: readonly UIMessageChunk[]): ReadableStream<UIMessageChunk> { return new ReadableStream({ start(controller) { for (const chunk of chunks) controller.enqueue(chunk); controller.close() } }) }
 async function collect(value: ReadableStream<UIMessageChunk>): Promise<UIMessageChunk[]> { const reader = value.getReader(); const result: UIMessageChunk[] = []; while (true) { const next = await reader.read(); if (next.done) return result; result.push(next.value) } }

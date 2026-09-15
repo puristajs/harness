@@ -72,13 +72,19 @@ const approvalStream = approvalInvoker.stream('question')
 const externalWaitStream = externalWaitInvoker.stream('question')
 type _PlainRun = Expect<Equal<typeof plainRun, Promise<HarnessTargetRunOutcome<typeof noInterruptAgent.contract>>>>
 type _PlainStream = Expect<Equal<typeof plainStream, HarnessTargetStream<typeof noInterruptAgent.contract>>>
-type _PlainTerminal = Expect<Equal<typeof plainStream.result, Promise<HarnessTargetExecutionTerminalOutcome<typeof noInterruptAgent.contract>>>>
+type _PlainResult = Expect<Equal<typeof plainStream.result, Promise<HarnessTargetRunOutcome<typeof noInterruptAgent.contract>>>>
+type _PlainTerminal = Expect<Equal<typeof plainStream.terminal, Promise<HarnessTargetExecutionTerminalOutcome<typeof noInterruptAgent.contract>>>>
 type _ApprovalInterrupt = Expect<Equal<Extract<Awaited<typeof approvalStream.result>, { status: 'interrupted' }>['interrupt'],
 	import('../src/approvals/index.js').ToolApprovalInterrupt>>
 type _ExternalWaitInterrupt = Expect<Equal<Extract<Awaited<typeof externalWaitStream.result>, { status: 'interrupted' }>['interrupt'],
 	Extract<import('../src/runtime/outcomes.js').HarnessInterrupt, { type: 'external-wait' }>>>
 // @ts-expect-error a target with no reachable approval cannot accept resume
 plainInvoker.run('question', { resume: { type: 'tool-approval', runId: 'r', interruptId: 'i', revision: 'v', eventId: 'e', decisions: [] } })
+// @ts-expect-error continuation is only accepted by the first-class resume surface
+approvalInvoker.stream('question', { resume: { type: 'tool-approval', runId: 'r', interruptId: 'i', revision: 'v', eventId: 'e', decisions: [] } })
+// @ts-expect-error non-durable targets cannot accept durable invocation options
+plainInvoker.run('question', { durable: { runId: 'r' } })
+externalWaitInvoker.run('question', { durable: { runId: 'r' } })
 
 type PlainEvent = HarnessTargetExecutionEvent<typeof noInterruptAgent.contract>
 type PlainRootEvent = RootExecutionEventFor<typeof noInterruptAgent.contract>

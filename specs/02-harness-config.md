@@ -147,7 +147,7 @@ Conditional fields follow these rules:
 - Named sandbox groups are compiled from definitions. A graph that declares
   them requires `sandbox.policy.sharing: 'declared'`; runtime configuration
   never repeats group names.
-- `agentAdmission`, model `admission`, `logger`, and `telemetry` are
+- `concurrency.runs`, `concurrency.modelCalls`, `logger`, and `telemetry` are
   optional deployment controls.
 - A graph containing host-aware tools cannot use ordinary standalone
   `getInstance`; the host integrator must instantiate it.

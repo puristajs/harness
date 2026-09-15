@@ -17,6 +17,9 @@ import type { ArtifactReference } from '../ports/artifact-store.js'
 import type { FinishReason, TokenUsage } from '../ports/model-provider.js'
 import type { ExternalWaitOutcome } from '../storage/external-wait.js'
 
+/** Resume token for a durable target waiting on an application-owned signal. */
+export type ExternalWaitResume = Readonly<{ type: 'external-wait'; runId: string }>
+
 /** Ordered inventory of every event discriminator emitted by Harness v4. */
 export const harnessExecutionEventTypesV1 = Object.freeze([
 	'run.started', 'run.finished', 'agent.started', 'agent.finished', 'model.message', 'model.completed',
@@ -172,8 +175,12 @@ export type HarnessTargetExecutionTerminalOutcome<Target extends AnyHarnessTarge
  * disconnects.
  */
 export interface HarnessTargetStream<Target extends AnyHarnessTargetContract> extends AsyncIterable<HarnessTargetExecutionEvent<Target>> {
-	/** Resolves exactly once with the direct root target's terminal outcome. */
-	readonly result: Promise<HarnessTargetExecutionTerminalOutcome<Target>>
+	readonly runId: string
+	readonly sessionId: string
+	/** Matches aggregate run semantics: failures and cancellation reject. */
+	readonly result: Promise<import('../runtime/outcomes.js').HarnessTargetRunOutcome<Target>>
+	/** Resolves exactly once with the complete protocol terminal outcome. */
+	readonly terminal: Promise<HarnessTargetExecutionTerminalOutcome<Target>>
 	/** Request target cancellation and resolve once the request is accepted. */
 	cancel(reason?: string): Promise<void>
 }

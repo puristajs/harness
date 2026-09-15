@@ -122,19 +122,23 @@ export async function createLivingWikiApi(options: LivingWikiHarnessOptions = {}
   app.get('/api/health', (c) => c.json({ status: 'ok', model }))
 
   app.post('/api/chat', async (c) => {
-    const parsed = await parseHarnessUIMessageRequest(await readJson(c))
+    const body = await readJson(c)
+    const sessionId = typeof body === 'object' && body !== null && typeof (body as { id?: unknown }).id === 'string'
+      ? (body as { id: string }).id
+      : undefined
+    if (sessionId === undefined) throw jsonError('Chat session id is required.', 400, 'id')
+    const parsed = await parseHarnessUIMessageRequest(body, { sessionId })
     const question = parsed.lastUserMessage.parts
       .filter((part) => part.type === 'text')
       .map((part) => part.text)
       .join('')
     const session = await harness.getSession(parsed.sessionId)
-    const events = releaseSessionAfterStream(session.agents.wikiAnswerer.stream(
-      { question },
-      parsed.resume === undefined ? undefined : { resume: parsed.resume },
-    ), () => session.release())
+    const events = parsed.resume === undefined
+      ? session.agents.wikiAnswerer.stream({ question })
+      : session.agents.wikiAnswerer.resume(parsed.resume).stream()
     return createHarnessUIMessageStreamResponse(events, {
-      sessionId: parsed.sessionId,
-      ...(parsed.assistantMessageId === undefined ? {} : { messageId: parsed.assistantMessageId }),
+      request: parsed,
+      onSettled: () => session.release(),
     })
   })
 
@@ -571,11 +575,12 @@ export function releaseSessionAfterStream<Target extends AnyHarnessTargetContrac
     await release()
   }
   return {
-    result: stream.result.finally(releaseOnce),
+    runId: stream.runId,
+    sessionId: stream.sessionId,
+    result: stream.result,
+    terminal: stream.terminal.finally(releaseOnce),
     cancel: reason => stream.cancel(reason),
-    async *[Symbol.asyncIterator]() {
-      yield* stream
-    },
+    async *[Symbol.asyncIterator]() { yield* stream },
   }
 }
 

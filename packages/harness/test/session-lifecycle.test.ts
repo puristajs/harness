@@ -360,9 +360,9 @@ describe('v4 session lifecycle', () => {
 		const interrupted = await session.agents.borrowedReviewer.run('start')
 		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('expected approval')
 		const beforeResume = authorizations
-		await expect(session.agents.borrowedReviewer.run('start', { resume: { type: 'tool-approval', runId: interrupted.runId,
+		await expect(session.agents.borrowedReviewer.resume({ type: 'tool-approval', runId: interrupted.runId,
 			interruptId: interrupted.interrupt.id, revision: interrupted.interrupt.revision, eventId: 'borrowed-resume',
-			decisions: [{ approvalId: interrupted.interrupt.requests[0]!.approvalId, approved: true }] } }))
+			decisions: [{ approvalId: interrupted.interrupt.requests[0]!.approvalId, approved: true }] }).run())
 			.resolves.toMatchObject({ status: 'completed', output: 'reviewed' })
 		expect(authorizations).toBeGreaterThan(beforeResume)
 		const beforeChild = authorizations
@@ -532,7 +532,9 @@ describe('v4 session lifecycle', () => {
 			const invoker = session.workflows[definition.id]
 			const stream = invoker.stream('value')
 			if (cancel !== undefined) await stream.cancel(cancel)
-			await expect(stream.result).resolves.toMatchObject({ status })
+			await expect(stream.terminal).resolves.toMatchObject({ status })
+			if (status === 'failed' || status === 'cancelled') await expect(stream.result).rejects.toBeInstanceOf(Error)
+			else await expect(stream.result).resolves.toMatchObject({ status })
 			await expect(session.release()).resolves.toBeUndefined()
 		}
 		await harness.close()
@@ -827,11 +829,11 @@ describe('v4 session lifecycle', () => {
 		expect(privateScopesBefore).toHaveLength(2)
 		expect(privateScopesBefore).toEqual([privateScope, privateScope])
 		const beforeResume = authorizations
-		await expect(session.workflows.nestedApprovalScope.run('/approval.txt', { resume: {
+		await expect(session.workflows.nestedApprovalScope.resume({
 			type: 'tool-approval', runId: interrupted.runId, interruptId: interrupted.interrupt.id,
 			revision: interrupted.interrupt.revision, eventId: 'nested-borrowed-resume',
 			decisions: [{ approvalId: interrupted.interrupt.requests[0]!.approvalId, approved: true }],
-		} })).resolves.toMatchObject({ status: 'completed', output: 'middle complete' })
+		}).run()).resolves.toMatchObject({ status: 'completed', output: 'middle complete' })
 		expect(effects).toBe(1)
 		expect(approvedEffectCaller).toEqual({ kind: 'agent', agentId: reviewer.id, workflowId: workflow.id })
 		expect(authorizationsAtEffect).toBeGreaterThan(beforeResume)
@@ -883,27 +885,27 @@ describe('v4 session lifecycle', () => {
 			revision: interrupted.interrupt.revision, eventId: 'resume-event-1',
 			decisions: Object.freeze([{ approvalId: request.approvalId, approved: true }]),
 		})
-		const first = session.agents.concurrentApprovalAgent.run('start', { resume })
+		const first = session.agents.concurrentApprovalAgent.resume(resume).run()
 		await effectEntered
-		const joined = session.agents.concurrentApprovalAgent.run('start', { resume })
-		await expect(session.agents.concurrentApprovalAgent.run('start', { resume: {
+		const joined = session.agents.concurrentApprovalAgent.resume(resume).run()
+		await expect(session.agents.concurrentApprovalAgent.resume({
 			...resume, interruptId: 'different-interrupt', decisions: [],
-		} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'stale_continuation' } })
-		await expect(session.agents.concurrentApprovalAgent.run('start', { resume: {
+		}).run()).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'stale_continuation' } })
+		await expect(session.agents.concurrentApprovalAgent.resume({
 			...resume, revision: 'different-revision', decisions: [],
-		} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'interrupt_mismatch' } })
-		await expect(session.agents.concurrentApprovalAgent.run('start', { resume: {
+		}).run()).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'interrupt_mismatch' } })
+		await expect(session.agents.concurrentApprovalAgent.resume({
 			...resume, eventId: 'different-event', decisions: [],
-		} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'stale_continuation' } })
-		await expect(session.agents.concurrentApprovalAgent.run('start', { resume: {
+		}).run()).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'stale_continuation' } })
+		await expect(session.agents.concurrentApprovalAgent.resume({
 			...resume, decisions: [{ approvalId: request.approvalId, approved: false }],
-		} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'event_conflict' } })
+		}).run()).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'event_conflict' } })
 		for (const decisions of [
 			[],
 			[{ approvalId: 'unknown-approval', approved: true }],
 			[{ approvalId: request.approvalId, approved: true }, { approvalId: request.approvalId, approved: false }],
 		]) {
-			await expect(session.agents.concurrentApprovalAgent.run('start', { resume: { ...resume, decisions } }))
+			await expect(Promise.resolve().then(() => session.agents.concurrentApprovalAgent.resume({ ...resume, decisions }).run()))
 				.rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'decision_set_mismatch' } })
 		}
 		releaseEffect()
@@ -912,9 +914,9 @@ describe('v4 session lifecycle', () => {
 			expect.objectContaining({ status: 'completed', output: 'complete' }),
 		])
 		expect(effectCalls).toBe(1)
-		await expect(session.agents.concurrentApprovalAgent.run('start', { resume }))
+		await expect(session.agents.concurrentApprovalAgent.resume(resume).run())
 			.resolves.toMatchObject({ status: 'completed', output: 'complete' })
-		await expect(session.agents.concurrentApprovalAgent.run('start', { resume: { ...resume, eventId: 'resume-event-2' } }))
+		await expect(session.agents.concurrentApprovalAgent.resume({ ...resume, eventId: 'resume-event-2' }).run())
 			.rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'stale_continuation' } })
 		await harness.close()
 	})
@@ -941,8 +943,8 @@ describe('v4 session lifecycle', () => {
 		const resume: ToolApprovalResume = { type: 'tool-approval', runId: firstInterrupt.runId,
 			interruptId: firstInterrupt.interrupt.id, revision: firstInterrupt.interrupt.revision, eventId: 'first-resume',
 			decisions: firstInterrupt.interrupt.requests.map(request => ({ approvalId: request.approvalId, approved: true })) }
-		const first = session.agents.secondApprovalAgent.stream('start', { resume })
-		const joined = session.agents.secondApprovalAgent.stream('start', { resume })
+		const first = session.agents.secondApprovalAgent.resume(resume).stream()
+		const joined = session.agents.secondApprovalAgent.resume(resume).stream()
 		const collect = async (stream: typeof first) => {
 			const events = []
 			for await (const event of stream) events.push(event)
@@ -955,12 +957,12 @@ describe('v4 session lifecycle', () => {
 		expect(joinedResult).toEqual(firstResult)
 		expect(firstResult).toMatchObject({ status: 'interrupted', runId: firstInterrupt.runId,
 			interrupt: { type: 'tool-approval' } })
-		await expect(session.agents.secondApprovalAgent.run('start', { resume: {
+		await expect(session.agents.secondApprovalAgent.resume({
 			...resume, revision: 'tampered-prior-receipt-revision', decisions: [],
-		} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'interrupt_mismatch' } })
+		}).run()).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'interrupt_mismatch' } })
 		expect(effects).toBe(1)
 		expect(provider.requests).toHaveLength(2)
-		const replay = session.agents.secondApprovalAgent.stream('start', { resume })
+		const replay = session.agents.secondApprovalAgent.resume(resume).stream()
 		const replayEvents = []
 		for await (const event of replay) replayEvents.push(event)
 		await expect(replay.result).resolves.toEqual(firstResult)
@@ -995,24 +997,26 @@ describe('v4 session lifecycle', () => {
 		const resume: ToolApprovalResume = { type: 'tool-approval', runId: interrupted.runId,
 			interruptId: interrupted.interrupt.id, revision: interrupted.interrupt.revision, eventId: 'cross-mode-resume',
 			decisions: interrupted.interrupt.requests.map(request => ({ approvalId: request.approvalId, approved: true })) }
-		const aggregate = session.agents.crossModeApprovalAgent.run('start', { resume })
+		const aggregate = session.agents.crossModeApprovalAgent.resume(resume).run()
 		const aggregateRejection = expect(aggregate).rejects.toBeInstanceOf(OperationCancelledError)
 		await effectEntered
-		const joined = session.agents.crossModeApprovalAgent.stream('start', { resume })
+		const joined = session.agents.crossModeApprovalAgent.resume(resume).stream()
 		const joinedEventsPromise = (async () => { const events = []; for await (const event of joined) events.push(event); return events })()
 		await joined.cancel('joined observer cancelled')
 		await aggregateRejection
-		await expect(joined.result).resolves.toMatchObject({ status: 'cancelled', runId: interrupted.runId })
+		await expect(joined.terminal).resolves.toMatchObject({ status: 'cancelled', runId: interrupted.runId })
+		await expect(joined.result).rejects.toBeInstanceOf(OperationCancelledError)
 		const joinedEvents = await joinedEventsPromise
 		expect(joinedEvents[0]?.type).toBe('run.started')
 		expect(joinedEvents.filter(event => event.type === 'run.finished')).toHaveLength(1)
 		expect(joinedEvents.at(-1)).toMatchObject({ outcome: { status: 'cancelled', runId: interrupted.runId } })
 		expect(effects).toBe(1)
 		expect(provider.requests).toHaveLength(1)
-		const replay = session.agents.crossModeApprovalAgent.stream('start', { resume })
+		const replay = session.agents.crossModeApprovalAgent.resume(resume).stream()
 		const replayEvents = []
 		for await (const event of replay) replayEvents.push(event)
-		await expect(replay.result).resolves.toMatchObject({ status: 'cancelled', runId: interrupted.runId })
+		await expect(replay.terminal).resolves.toMatchObject({ status: 'cancelled', runId: interrupted.runId })
+		await expect(replay.result).rejects.toBeInstanceOf(OperationCancelledError)
 		expect(replayEvents.map(event => event.type)).toEqual(['run.started', 'run.finished'])
 		expect(effects).toBe(1)
 		await session.destroy()
@@ -1041,11 +1045,11 @@ describe('v4 session lifecycle', () => {
 		expect(interrupted.interrupt.requests.map(request => request.callId)).toEqual(['batch-call-1', 'batch-call-2'])
 		expect(new Set(interrupted.interrupt.requests.map(request => request.approvalId)).size).toBe(2)
 		expect(effects).toEqual([])
-		await expect(session.agents.multiApprovalAgent.run('start', { resume: {
+		await expect(session.agents.multiApprovalAgent.resume({
 			type: 'tool-approval', runId: interrupted.runId, interruptId: interrupted.interrupt.id,
 			revision: interrupted.interrupt.revision, eventId: 'multi-approval-resume',
 			decisions: interrupted.interrupt.requests.map(request => ({ approvalId: request.approvalId, approved: true })),
-		} })).resolves.toMatchObject({ status: 'completed', output: 'complete' })
+		}).run()).resolves.toMatchObject({ status: 'completed', output: 'complete' })
 		expect(effects).toEqual(['first', 'second'])
 		expect(provider.requests).toHaveLength(2)
 		await session.destroy()
@@ -1087,22 +1091,22 @@ describe('v4 session lifecycle', () => {
 				eventId: `receipt-resume-${terminalStatus}`,
 				decisions: interrupted.interrupt.requests.map(request => ({ approvalId: request.approvalId, approved: true })) }
 			const controller = new AbortController()
-			const first = session.workflows[workflow.id].stream('start', { resume, signal: controller.signal })
+			const first = session.workflows[workflow.id].resume(resume).stream({ signal: controller.signal })
 			const firstEventsPromise = (async () => { const events = []; for await (const event of first) events.push(event); return events })()
 			if (terminalStatus === 'cancelled') { await cancellationReady; controller.abort('stop') }
-			const [firstOutcome] = await Promise.all([first.result, firstEventsPromise])
+			const [firstOutcome] = await Promise.all([first.terminal, firstEventsPromise])
 			expect(firstOutcome.status).toBe(terminalStatus)
 			const requests = provider.requests.length
-			await expect(session.workflows[workflow.id].run('start', { resume: {
+			await expect(session.workflows[workflow.id].resume({
 				...resume, eventId: `${resume.eventId}-wrong`, decisions: [],
-			} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'stale_continuation' } })
-			await expect(session.workflows[workflow.id].run('start', { resume: {
+			}).run()).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'stale_continuation' } })
+			await expect(session.workflows[workflow.id].resume({
 				...resume, revision: `${resume.revision}-tampered`, decisions: [],
-			} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'interrupt_mismatch' } })
-			const replay = session.workflows[workflow.id].stream('start', { resume })
+			}).run()).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'interrupt_mismatch' } })
+			const replay = session.workflows[workflow.id].resume(resume).stream()
 			const replayEvents = []
 			for await (const event of replay) replayEvents.push(event)
-			await expect(replay.result).resolves.toEqual(firstOutcome)
+			await expect(replay.terminal).resolves.toEqual(firstOutcome)
 			expect(replayEvents.map(event => event.type)).toEqual(['run.started', 'run.finished'])
 			expect(replayEvents[1]).toMatchObject({ outcome: firstOutcome })
 			expect(provider.requests).toHaveLength(requests)
@@ -1113,11 +1117,11 @@ describe('v4 session lifecycle', () => {
 			expect(persistedTerminals.filter(event => (event.payload as { outcome?: { status?: string } }).outcome?.status === 'interrupted')).toHaveLength(1)
 			expect(persistedTerminals.filter(event => (event.payload as { outcome?: { status?: string } }).outcome?.status === terminalStatus)).toHaveLength(1)
 			if (terminalStatus === 'completed') {
-				await expect(session.workflows[workflow.id].run('start', { resume })).resolves.toEqual(firstOutcome)
+				await expect(session.workflows[workflow.id].resume(resume).run()).resolves.toEqual(firstOutcome)
 			} else if (terminalStatus === 'failed') {
-				await expect(session.workflows[workflow.id].run('start', { resume })).rejects.toBeInstanceOf(InternalError)
+				await expect(session.workflows[workflow.id].resume(resume).run()).rejects.toBeInstanceOf(InternalError)
 			} else {
-				await expect(session.workflows[workflow.id].run('start', { resume })).rejects.toBeInstanceOf(OperationCancelledError)
+				await expect(session.workflows[workflow.id].resume(resume).run()).rejects.toBeInstanceOf(OperationCancelledError)
 			}
 			expect(provider.requests).toHaveLength(requests)
 			expect(effects).toBe(1)
@@ -1152,10 +1156,10 @@ describe('v4 session lifecycle', () => {
 			sessionIdentityDigest: pending['sessionIdentityDigest'], continuation: pending['continuation'],
 			nextEventSequence: pending['nextEventSequence'], startedAgentRunIds: pending['startedAgentRunIds'] })
 		vi.spyOn(storage, 'loadCheckpoint').mockResolvedValue(Object.freeze({ ...checkpoint, output: postApproval }))
-		await expect(session.agents.postApprovalRevisionAgent.run('start', { resume: {
+		await expect(session.agents.postApprovalRevisionAgent.resume({
 			type: 'tool-approval', runId: interrupted.runId, interruptId: interrupted.interrupt.id,
 			revision: 'tampered-post-approval-revision', eventId: 'post-approval-resume', decisions: [],
-		} })).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'interrupt_mismatch' } })
+		}).run()).rejects.toMatchObject({ code: 'APPROVAL_RESUME_ERROR', meta: { reason: 'interrupt_mismatch' } })
 		expect(effects).toBe(0)
 		expect(provider.requests).toHaveLength(1)
 		await session.destroy()
@@ -1192,14 +1196,22 @@ describe('v4 session lifecycle', () => {
 		const session = await harness.getSession(`resume-matrix-${targetKind}-${mode}`)
 		const invoke = async (resume?: ToolApprovalResume) => {
 			if (targetKind === 'agent') {
-				if (mode === 'run') return session.agents.resumeMatrixAgent.run('start', resume === undefined ? {} : { resume })
-				const opened = session.agents.resumeMatrixAgent.stream('start', resume === undefined ? {} : { resume })
+				if (mode === 'run') return resume === undefined
+					? session.agents.resumeMatrixAgent.run('start')
+					: session.agents.resumeMatrixAgent.resume(resume).run()
+				const opened = resume === undefined
+					? session.agents.resumeMatrixAgent.stream('start')
+					: session.agents.resumeMatrixAgent.resume(resume).stream()
 				const drained = (async () => { for await (const _event of opened) void _event })()
 				const [outcome] = await Promise.all([opened.result, drained])
 				return outcome
 			}
-			if (mode === 'run') return session.workflows.resumeMatrixWorkflow.run('start', resume === undefined ? {} : { resume })
-			const opened = session.workflows.resumeMatrixWorkflow.stream('start', resume === undefined ? {} : { resume })
+			if (mode === 'run') return resume === undefined
+				? session.workflows.resumeMatrixWorkflow.run('start')
+				: session.workflows.resumeMatrixWorkflow.resume(resume).run()
+			const opened = resume === undefined
+				? session.workflows.resumeMatrixWorkflow.stream('start')
+				: session.workflows.resumeMatrixWorkflow.resume(resume).stream()
 			const drained = (async () => { for await (const _event of opened) void _event })()
 			const [outcome] = await Promise.all([opened.result, drained])
 			return outcome

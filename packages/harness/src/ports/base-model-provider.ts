@@ -644,7 +644,7 @@ function sanitizeJsonLike(value: unknown): unknown {
 }
 
 function resolveRetryPolicy(req: ProviderRequest): ResolvedRetryPolicy {
-  const setting = req.call?.retry ?? ('defaults' in req ? req.defaults?.retry : undefined) ?? true
+	const setting = req.call?.retry ?? ('defaults' in req ? req.defaults?.retry : undefined) ?? true
   validateModelRetrySetting(setting)
   if (setting === false) {
     return { ...DEFAULT_RETRY_POLICY, maxAttempts: 1 }

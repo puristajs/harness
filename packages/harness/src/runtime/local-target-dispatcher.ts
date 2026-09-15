@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 
 import type { ToolApprovalResume } from '../approvals/index.js'
+import type { ExternalWaitResume } from '../definitions/execution-events.js'
 import type { AnyAgentDefinition, AnyWorkflowDefinition } from '../definitions/types.js'
 import { getDefinitionIdentity } from '../definitions/identity.js'
 import { HarnessConfigError, HarnessTargetRouteReceiptMismatchError, ValidationError } from '../errors/index.js'
@@ -30,18 +31,18 @@ type ContractOf<D extends AnyDefinition> = D['contract']
 /** Receiving-boundary request supplied only to a registered local target executor. */
 type LocalTargetExecutionRequestBase<D extends AnyDefinition> = Readonly<{
 	definition: D
-	/** Canonical pre-transform wire input retained for durable replay checks. */
-	wireInput: JsonValue
 	invocation: HarnessTargetDispatchInvocation
 }>
 export type LocalTargetExecutionRequest<D extends AnyDefinition> =
 	| Readonly<LocalTargetExecutionRequestBase<D> & {
 		delivery: 'fresh'
+		/** Canonical pre-transform wire input retained for durable replay checks. */
+		wireInput: JsonValue
 		input: HarnessValidatedTargetInput<ContractOf<D>>
 	}>
 	| Readonly<LocalTargetExecutionRequestBase<D> & {
 		delivery: 'resume'
-		resume: ToolApprovalResume
+		resume: ToolApprovalResume | ExternalWaitResume
 	}>
 
 /** One immutable local route from an exact definition identity to its executor. */
@@ -130,7 +131,7 @@ export function createLocalTargetDispatcher(options: LocalTargetDispatcherOption
 		route: LocalRoute,
 		inputValue: JsonValue,
 		invocationValue: HarnessTargetDispatchInvocation,
-		resume?: ToolApprovalResume,
+		resume?: ToolApprovalResume | ExternalWaitResume,
 		ancestry: 'root' | 'nested' = 'nested',
 	): Promise<HarnessTargetDispatchStream<JsonValue, import('./outcomes.js').HarnessInterrupt>> => {
 		validateInvocation(invocationValue, ancestry)
@@ -174,12 +175,9 @@ export function createLocalTargetDispatcher(options: LocalTargetDispatcherOption
 					reason: 'invalid_target_dispatch', path: 'targetDispatcher.resume.runId',
 				})
 			}
-			if (!isJsonValue(request.wireInput)) throw new ValidationError('Target input validation failed.', {
-				where: route.definition.kind === 'agent' ? 'agent_input' : 'workflow_input', issues: { reason: 'non_json_target_input' },
-			})
 			const invocation = normalizeInvocation(request.invocation, route.configuredMaxDepth)
 			return withAbortSignal(request.invocation.signal, route.definition.kind, 'Target dispatch was cancelled.', () => route.execute(Object.freeze({
-				delivery: 'resume' as const, definition: route.definition, wireInput: request.wireInput,
+				delivery: 'resume' as const, definition: route.definition,
 				resume: request.resume, invocation,
 			})))
 		},

@@ -4,7 +4,7 @@
 
 This index assigns public API ownership. Exact generic declarations for
 definition composition, target inference, runtime configuration, invocation,
-streaming, admission, and host integration live in
+streaming, concurrency control, and host integration live in
 [spec 42](./42-composable-definitions-and-catalogs.md). The implementation
 must verify every package export against its owning specification and generated
 declarations before release.
@@ -62,17 +62,18 @@ Core exports the exact contracts needed to call and observe a target:
 - `ToolApprovalInterrupt`, `ToolApprovalResume`, and their decision types;
 - invocation, identity, trace, durable-run, and session option types.
 
-`run` resolves only completed or interrupted `RunOutcome` values and rejects
-for failure or cancellation with the canonical error. `stream().result`
-always resolves the exact `ExecutionTerminalOutcome`, including failed and
-cancelled terminal data already emitted by `run.finished`. Infrastructure
-failure before a trustworthy terminal exists rejects it.
+`run` and `stream().result` resolve only completed or interrupted `RunOutcome`
+values and reject for failure or cancellation with the canonical error.
+`stream().terminal` always resolves the exact `ExecutionTerminalOutcome`,
+including failed and cancelled terminal data already emitted by
+`run.finished`. Infrastructure failure before a trustworthy terminal exists
+rejects both promises.
 
 ### Provider and model surface
 
 Core exports the provider-neutral `ModelProvider`, model request/response,
 stream chunk, message/content-part, capability, outcome, usage, retry,
-admission, error, and adapter-context contracts owned by
+concurrency, error, and adapter-context contracts owned by
 [spec 06](./06-models.md) and
 [spec 23](./23-provider-outcomes-and-retry.md).
 
@@ -111,9 +112,9 @@ their topic specifications:
   sandbox telemetry helpers;
 - `DurableWorkspace`, local directory workspace, and the in-memory test
   implementation;
-- artifact storage, admission, logger, metrics, and telemetry contracts.
+- artifact storage, run/model-call concurrency, logger, metrics, and telemetry contracts.
 
-`inMemoryAgentAdmission` is the optional bounded process-local FIFO admission
+`inMemoryRunConcurrency` is the optional bounded process-local FIFO concurrency
 helper specified by spec 42. It supplies concurrency control only. Durable
 delivery, retry, and dead-letter behavior remain host queue concerns.
 
@@ -148,14 +149,18 @@ PURISTA types, or a second application API.
 
 The testing subpath owns deterministic fakes and reusable contract suites for:
 
-- model providers and model admission;
+- model providers and model-call concurrency;
 - Harness storage and durable workspace;
 - memory engines;
 - Sandbox, text search, snapshots, and multi-client coordination;
 - logger and telemetry capture;
-- artifacts and agent admission;
+- artifacts and run concurrency;
 - sanitized provider replay and diagnostic invariants;
 - generic evaluation scorers.
+
+It also exports `createToolTestContext`, `textReply`, and `objectReply` for
+capability-aware Tool tests and concise operation-specific model scripts.
+`FakeModelProvider` has no ambiguous `enqueue` compatibility alias.
 
 `recordEvents` consumes a target event stream without changing cancellation
 or terminal-result behavior. Test-only fakes and invariant helpers are not
@@ -178,7 +183,7 @@ types:
 
 Factories return the provider-neutral `ModelProvider`. They accept their
 official SDK configuration and optional injected client, and implement only
-the capabilities they support. Harness owns shared timeout, retry, admission,
+the capabilities they support. Harness owns shared timeout, retry, concurrency,
 telemetry, cancellation, and content-safety behavior. Provider packages do not
 export agents, workflows, or provider-specific Harness definitions.
 

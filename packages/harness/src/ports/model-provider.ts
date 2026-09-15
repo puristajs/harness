@@ -123,8 +123,9 @@ export interface ModelDefaults {
   stopSequences?: string[]
   /** Whether providers should allow the model to emit multiple independent tool calls in one turn. */
   parallelToolCalls?: boolean
-  /** Alias-level retry behavior inherited by model calls. Default: `true`. */
+  /** Provider-call retry behavior. Runtime model bindings own this at binding level. */
   retry?: ModelRetrySetting
+  /** Provider-specific generation defaults inherited by model calls. */
   providerOptions?: Record<string, unknown>
 }
 
@@ -476,12 +477,11 @@ export interface ModelAlias {
   provider: ModelProvider
   model: string
   capabilities: readonly ModelCapability[]
-  /** Stable, non-secret credential pool identity used for provider admission. */
+  /** Stable, non-secret credential pool identity used for model-call concurrency. */
   credentialScope?: string
-  defaults?: ModelDefaults
-  /** Alias-level retry behavior. Default: `true`. */
+	defaults?: Omit<ModelDefaults, 'retry'>
+  /** Binding-level retry behavior. Default: `true`. */
   retry?: ModelRetrySetting
   /** Optional retry-only transient context projection for this alias. */
   contextProjection?: ContextProjectionPolicy
-  providerOptions?: Record<string, unknown>
 }

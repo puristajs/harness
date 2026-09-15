@@ -98,6 +98,7 @@ export interface HarnessTargetContract<
 	Interrupts extends readonly HarnessInterruptKind[],
 	Inference extends HarnessTargetInferenceShape<any, any, Infer<Output> & JsonValue, Updates, Interrupts>
 		= HarnessTargetInference<Input, Output, Updates, Interrupts>,
+	Durable extends boolean = boolean,
 > {
 	readonly kind: Kind
 	readonly id: Id
@@ -107,6 +108,7 @@ export interface HarnessTargetContract<
 	readonly executionModes: readonly ['run', 'stream']
 	readonly updates: Updates
 	readonly interrupts: Interrupts
+	readonly durable: Durable
 	/** Type-only invocation contract. The frozen runtime value is non-enumerable. */
 	readonly $infer: Inference
 }
@@ -510,7 +512,7 @@ export type AgentDefinition<
 	instructions: string
 	inputCapabilities?: Capabilities
 	loop?: AgentLoopOptions
-	contract: HarnessTargetContract<'agent', Id, Input, Output, Updates, AgentInterruptTuple<Tools, Permissions, Governance, Subagents>>
+	contract: HarnessTargetContract<'agent', Id, Input, Output, Updates, AgentInterruptTuple<Tools, Permissions, Governance, Subagents>, HarnessTargetInference<Input, Output, Updates, AgentInterruptTuple<Tools, Permissions, Governance, Subagents>>, Durable extends true ? true : false>
 	/** Exact definition inference shared with `contract.$infer`. */
 	readonly $infer: HarnessTargetInference<Input, Output, Updates, AgentInterruptTuple<Tools, Permissions, Governance, Subagents>>
 }> & PresentField<'prompt', Prompt> & PresentField<'tools', Tools> & PresentField<'skills', Skills> & PresentField<'subagents', Subagents>
@@ -758,7 +760,7 @@ export type WorkflowDefinition<
 	childTaskSandboxGroups?: ChildTaskSandboxGroups
 	maxDepth?: number
 	handler: WorkflowOptions<Input, Output, Agents, Tools, Models, ChildTaskSandboxGroups, Workspace, Durable, Sandbox>['handler']
-	contract: HarnessTargetContract<'workflow', Id, Input, Output, 'none', WorkflowInterruptTuple<Agents, Durable>>
+	contract: HarnessTargetContract<'workflow', Id, Input, Output, 'none', WorkflowInterruptTuple<Agents, Durable>, HarnessTargetInference<Input, Output, 'none', WorkflowInterruptTuple<Agents, Durable>>, Durable extends true ? true : false>
 	/** Exact definition inference shared with `contract.$infer`. */
 	readonly $infer: HarnessTargetInference<Input, Output, 'none', WorkflowInterruptTuple<Agents, Durable>>
 }> & PresentField<'agents', Agents> & PresentField<'tools', Tools> & PresentField<'models', Models>

@@ -606,9 +606,9 @@ describe('local durable execution', () => {
     try {
       const session = await second.getSession('workspace-approval-session')
       const request = interrupted.interrupt.requests[0]!
-      await expect(session.agents.workspaceApproval.run('start', { resume: { type: 'tool-approval', runId: interrupted.runId,
-        interruptId: interrupted.interrupt.id, revision: interrupted.interrupt.revision, eventId: 'workspace-resume-event',
-        decisions: [{ approvalId: request.approvalId, approved: true }] } })).resolves.toMatchObject({ status: 'completed', output: 'done' })
+		await expect(session.agents.workspaceApproval.resume({ type: 'tool-approval', runId: interrupted.runId,
+			interruptId: interrupted.interrupt.id, revision: interrupted.interrupt.revision, eventId: 'workspace-resume-event',
+			decisions: [{ approvalId: request.approvalId, approved: true }] }).run()).resolves.toMatchObject({ status: 'completed', output: 'done' })
       expect(resumeWorkspace).toHaveBeenCalledTimes(1)
       expect(effects).toBe(1)
     } finally {

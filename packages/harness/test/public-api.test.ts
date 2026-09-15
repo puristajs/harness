@@ -1,10 +1,10 @@
 import type {
   AgentResponseMode,
   AnyHarnessTargetContract,
-  AgentAdmission,
-  AgentAdmissionLease,
-  AgentAdmissionRequest,
-  InMemoryAgentAdmissionOptions,
+  RunConcurrency,
+  RunConcurrencyLease,
+  RunConcurrencyRequest,
+  InMemoryRunConcurrencyOptions,
   ExecutionEvent,
   ExecutionTerminalOutcome,
   HarnessExecutionCaller,
@@ -80,7 +80,7 @@ void publicInferenceAndEventAliases
  */
 const EXPECTED_MAIN_EXPORTS = [
   'AgentLoopBudgetError',
-  'AgentAdmissionRejectedError',
+  'RunConcurrencyRejectedError',
   'AgentNotFoundError',
   'BaseModelProvider',
   'DecisionBlockedError',
@@ -106,7 +106,7 @@ const EXPECTED_MAIN_EXPORTS = [
   'LocalDirectoryWorkspace',
   'McpAuthError',
   'McpProtocolError',
-  'ModelAdmissionRejectedError',
+  'ModelCallConcurrencyRejectedError',
   'ModelCapabilityError',
   'ModelError',
   'OperationCancelledError',
@@ -165,7 +165,7 @@ const EXPECTED_MAIN_EXPORTS = [
   'providerContinuationItemSchema',
   'providerContinuationSchema',
   'inMemoryHarnessStorage',
-  'inMemoryAgentAdmission',
+  'inMemoryRunConcurrency',
   'inMemoryDurableWorkspace',
   'inMemorySandbox',
   'isJsonValue',
@@ -205,7 +205,7 @@ const EXPECTED_MAIN_EXPORTS = [
   'validateSessionHistoryRetention',
   'validateSandboxTextSearchRequest',
   'messageStorageBytes',
-  'modelAdmissionKey',
+  'modelCallConcurrencyKey',
   'normalizeHarnessTraceContext',
   'withoutObjectTool',
   'evaluationResultToFeedbackRecords',
@@ -225,6 +225,7 @@ const EXPECTED_TESTING_EXPORTS = [
   'assertReplayConsumed',
   'createInMemoryFeedbackRecorder',
   'createReplayInteractionRecorder',
+  'createToolTestContext',
   'DiagnosticInvariantError',
   'durableWorkspaceContract',
   'createDeterministicEvaluationScorer',
@@ -234,6 +235,7 @@ const EXPECTED_TESTING_EXPORTS = [
   'loggerContract',
   'memoryEngineContract',
   'modelProviderContract',
+  'objectReply',
   'recordEvents',
   'ReplayFixtureError',
   'RecordingTelemetry',
@@ -242,6 +244,7 @@ const EXPECTED_TESTING_EXPORTS = [
   'sandboxMultiClientContract',
   'sandboxSnapshotContract',
   'sandboxTextSearchContract',
+  'textReply',
   'harnessStorageContract',
 ]
 
@@ -328,11 +331,11 @@ describe('v4 public API export surface', () => {
 		>()
 	})
 
-  it('publishes v4 runtime binding, admission, and event inventory types', () => {
-    expectTypeOf<AgentAdmission['acquire']>().toBeFunction()
-    expectTypeOf<AgentAdmissionRequest['signal']>().toEqualTypeOf<AbortSignal>()
-    expectTypeOf<AgentAdmissionLease['release']>().toBeFunction()
-    expectTypeOf<InMemoryAgentAdmissionOptions>().toEqualTypeOf<{
+  it('publishes v4 runtime binding, concurrency, and event inventory types', () => {
+    expectTypeOf<RunConcurrency['acquire']>().toBeFunction()
+    expectTypeOf<RunConcurrencyRequest['signal']>().toEqualTypeOf<AbortSignal>()
+    expectTypeOf<RunConcurrencyLease['release']>().toBeFunction()
+    expectTypeOf<InMemoryRunConcurrencyOptions>().toEqualTypeOf<{
       readonly maxConcurrent: number
       readonly maxQueued?: number
       readonly retryAfterMs?: number

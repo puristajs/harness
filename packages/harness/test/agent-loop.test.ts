@@ -190,7 +190,7 @@ describe('v4 standard agent loop', () => {
 		}
 		const model = createModelRegistry({ chat: { provider, model: 'test-model',
 			capabilities: ['text', 'object', 'text_stream', 'object_stream'] as const,
-			providerOptions: { aliasOnly: true }, defaults: { temperature: 0.2, maxTokens: 64,
+			defaults: { temperature: 0.2, maxTokens: 64,
 				providerOptions: { defaultOnly: true }, retry: false } } }).chat!
 		const agent = structured
 			? defineAgent(`effective${operation}`, { model: 'chat', instructions: 'Answer.', output: z.object({ answer: z.string() }), guardrails: guardrails as never })
@@ -204,7 +204,7 @@ describe('v4 standard agent loop', () => {
 
 		await expect(executeStandardAgent(run.options)).resolves.toMatchObject({ output: structured ? { answer: 'done' } : 'done' })
 		const expectedCall = { temperature: 0.2, maxTokens: 64, retry: false,
-			providerOptions: { aliasOnly: true, defaultOnly: true } }
+			providerOptions: { defaultOnly: true } }
 		expect(providerCall).toEqual(expectedCall)
 		expect(beforeModelCall).toEqual(expectedCall)
 		expect(afterModelCall).toEqual(expectedCall)

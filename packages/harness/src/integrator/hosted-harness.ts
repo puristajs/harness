@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto'
 
-import type { ToolApprovalResume } from '../approvals/index.js'
 import type { HarnessCatalogView, HarnessContracts } from '../definitions/catalog.js'
 import { getHarnessRuntimeBlueprint, type HarnessDefinition, type HarnessGraphView } from '../definitions/harness.js'
 import { getDefinitionIdentity } from '../definitions/identity.js'
@@ -33,8 +32,8 @@ import {
 import { consumeHarnessTargetStream } from '../runtime/subagent-execution.js'
 import {
 	createTrustedHostedInvocationEnvironment, instantiateHarnessRuntime,
-	normalizeInvokeOptions, normalizeToolApprovalResume, type HarnessTargetApprovalResume,
-	type HarnessTargetInvokeOptions, type InvokeOptions, type TrustedHostedInvokeOptions,
+	normalizeInvokeOptions, normalizeTargetResume, type HarnessTargetResume,
+	type DurableInvokeOptions, type HarnessTargetInvokeOptions, type InvokeOptions, type TrustedHostedInvokeOptions,
 } from '../runtime/standalone-instance.js'
 import type { HarnessTargetRunOutcome } from '../runtime/outcomes.js'
 import type { RuntimeRequirements } from '../runtime/runtime-requirements.js'
@@ -117,9 +116,13 @@ export type HostedHarnessInstanceConfig<Requirements extends RuntimeRequirements
 	HarnessRuntimeBindingFields<Requirements> & { readonly logger?: never; readonly telemetry?: never }
 >
 
+export type HostedDurableInvokeOptions = Readonly<Omit<DurableInvokeOptions, 'runId'>>
+
 type HostedInvokeBaseOptions<Target extends AnyHarnessTargetContract> = Readonly<
-	Omit<HarnessTargetInvokeOptions<Target>, 'traceparent' | 'tracestate' | 'resume'> & {
+	Omit<HarnessTargetInvokeOptions<Target>, 'traceparent' | 'tracestate' | 'idempotencyKey' | 'durable'> & {
 		readonly sessionId: string
+		readonly idempotencyKey?: never
+		readonly durable?: [Target['durable']] extends [false] ? never : HostedDurableInvokeOptions
 		readonly traceparent?: never
 		readonly tracestate?: never
 	}
@@ -131,11 +134,12 @@ export type HostedFreshInvokeOptions<Target extends AnyHarnessTargetContract> = 
 	readonly resumeIdentity?: never
 }>
 
-/** Options for resuming an approval-interrupted hosted invocation. */
+/** Options for resuming a persisted hosted invocation. */
 export type HostedResumeInvokeOptions<Target extends AnyHarnessTargetContract> = Readonly<
-	Omit<HostedInvokeBaseOptions<Target>, 'idempotencyKey'> & {
+	Omit<HostedInvokeBaseOptions<Target>, 'idempotencyKey' | 'durable'> & {
 		readonly idempotencyKey?: never
-		readonly resume: HarnessTargetApprovalResume<Target>
+		readonly durable?: never
+		readonly resume: HarnessTargetResume<Target>
 		readonly resumeIdentity?: 'current-caller' | 'stored-run-owner'
 	}
 >
@@ -162,6 +166,8 @@ export type HostedTargetRequest<Target extends AnyHarnessTargetContract, HostInv
 	| Readonly<{
 		delivery: 'fresh'
 		target: Target
+		/** Host-owned invocation identity which becomes the Harness root run id. */
+		invocationId: string
 		wireInput: HarnessTargetInput<Target>
 		input: HarnessValidatedTargetInput<Target>
 		invokeOptions: HostedFreshInvokeOptions<Target>
@@ -171,7 +177,7 @@ export type HostedTargetRequest<Target extends AnyHarnessTargetContract, HostInv
 	| Readonly<{
 		delivery: 'resume'
 		target: Target
-		wireInput: HarnessTargetInput<Target>
+		invocationId?: never
 		input?: never
 		invokeOptions: HostedResumeInvokeOptions<Target>
 		hostInvocation: HostInvocation
@@ -199,10 +205,9 @@ export type HostedDispatchedTargetRequest<Target extends AnyHarnessTargetContrac
 	| Readonly<{
 		delivery: 'resume'
 		target: Target
-		wireInput: HarnessTargetInput<Target>
 		input?: never
 		invocation: HostedDispatchInvocation
-		resume: ToolApprovalResume
+		resume: HarnessTargetResume<Target>
 		hostInvocation: HostInvocation
 	}>
 
@@ -282,7 +287,7 @@ export async function instantiateHostedHarness<
 			try {
 				await request.authorize(Object.freeze({ delivery: prepared.delivery, target: request.target, input: prepared.prepared.input }))
 			} catch (error) { kernel.discardHostedRootTrusted(prepared.environment); throw error }
-			return kernel.runTrusted(request.target, prepared.wireInput, prepared.prepared.input,
+			return kernel.runTrusted(request.target, prepared.prepared.wireInput, prepared.prepared.input,
 				prepared.invokeOptions as unknown as TrustedHostedInvokeOptions<Target>, prepared.environment)
 		},
 		async streamHosted<Target extends HostedTargetOf<Catalog['contracts']>>(request: HostedTargetRequest<Target, HostInvocation>) {
@@ -290,7 +295,7 @@ export async function instantiateHostedHarness<
 			try {
 				await request.authorize(Object.freeze({ delivery: prepared.delivery, target: request.target, input: prepared.prepared.input }))
 			} catch (error) { kernel.discardHostedRootTrusted(prepared.environment); throw error }
-			return kernel.streamTrusted(request.target, prepared.wireInput, prepared.prepared.input,
+			return kernel.streamTrusted(request.target, prepared.prepared.wireInput, prepared.prepared.input,
 				prepared.invokeOptions as unknown as TrustedHostedInvokeOptions<Target>, prepared.environment)
 		},
 		async streamDispatched<Target extends CompiledTargetOf<Graph>>(request: HostedDispatchedTargetRequest<Target, HostInvocation>) {
@@ -302,7 +307,7 @@ export async function instantiateHostedHarness<
 				...(environment.identity === undefined ? {} : { identity: environment.identity }),
 				...(environment.traceContext === undefined ? {} : { trace: environment.traceContext }),
 			})
-			const executionInput = validated.delivery === 'fresh' ? validated.input! : validated.wireInput
+			const executionInput = validated.delivery === 'fresh' ? validated.input! : undefined
 			return kernel.streamDispatchedTrusted(request.target, executionInput, validated.wireInput,
 				invocation, validated.resume, environment)
 		},
@@ -564,7 +569,7 @@ function validateHostedRequest<Target extends AnyHarnessTargetContract>(
 	graph: CompiledDefinitionGraph,
 ): Readonly<{
 	delivery: 'fresh' | 'resume'
-	wireInput: HarnessTargetInput<Target>
+	wireInput?: HarnessTargetInput<Target>
 	input?: HarnessValidatedTargetInput<Target>
 	invokeOptions: HostedInvokeOptions<Target>
 }> {
@@ -572,18 +577,20 @@ function validateHostedRequest<Target extends AnyHarnessTargetContract>(
 		where: 'invoke_options', issues: Object.freeze({ reason: 'invalid_hosted_request', ...(field === undefined ? {} : { field }) }),
 	}) }
 	if (!plain(value)) throw new ValidationError('Hosted invocation request is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_hosted_request' } })
-	for (const field of ['delivery', 'target', 'wireInput', 'invokeOptions', 'hostInvocation', 'authorize']) {
+	for (const field of ['delivery', 'target', 'invokeOptions', 'hostInvocation', 'authorize']) {
 		if (!Object.prototype.hasOwnProperty.call(value, field)) invalid(field)
 	}
 	const unknown = Reflect.ownKeys(value).filter(key => typeof key !== 'string'
-		|| !['delivery', 'target', 'wireInput', 'input', 'invokeOptions', 'hostInvocation', 'authorize'].includes(key))
+		|| !['delivery', 'target', 'invocationId', 'wireInput', 'input', 'invokeOptions', 'hostInvocation', 'authorize'].includes(key))
 		.map(String).sort(codePointCompare)[0]
 	if (unknown !== undefined) invalid(unknown)
 	if (value.delivery !== 'fresh' && value.delivery !== 'resume') invalid('delivery')
 	if (typeof value.authorize !== 'function') invalid('authorize')
 	if (value.delivery === 'fresh') {
+		if (!Object.prototype.hasOwnProperty.call(value, 'invocationId') || !validIdentifier(value['invocationId'])) invalid('invocationId')
 		if (!Object.prototype.hasOwnProperty.call(value, 'input')) invalid('input')
-	} else if (Object.prototype.hasOwnProperty.call(value, 'input')) invalid('input')
+		if (!Object.prototype.hasOwnProperty.call(value, 'wireInput')) invalid('wireInput')
+	} else if (Object.prototype.hasOwnProperty.call(value, 'invocationId') || Object.prototype.hasOwnProperty.call(value, 'input') || Object.prototype.hasOwnProperty.call(value, 'wireInput')) invalid('input')
 	const target = value['target'] as AnyHarnessTargetContract
 	if (!isHarnessTargetContract(target)) throw new ValidationError('Hosted target is not part of this Harness graph.', {
 		where: 'invoke_options', issues: { reason: 'unknown_hosted_target' },
@@ -592,7 +599,7 @@ function validateHostedRequest<Target extends AnyHarnessTargetContract>(
 	const known = identity === undefined ? undefined : [...Object.values(contracts.agents), ...Object.values(contracts.workflows)]
 		.find(candidate => getDefinitionIdentity(candidate)?.token === identity.token && candidate === target)
 	if (known === undefined) throw new ValidationError('Hosted target is not part of this Harness graph.', { where: 'invoke_options', issues: { reason: 'unknown_hosted_target' } })
-	if (!isJsonValue(value['wireInput'])) throw new ValidationError('Harness target input must be JSON.', { where: target.kind === 'agent' ? 'agent_input' : 'workflow_input', issues: { reason: 'non_json_input' } })
+	if (value.delivery === 'fresh' && !isJsonValue(value['wireInput'])) throw new ValidationError('Harness target input must be JSON.', { where: target.kind === 'agent' ? 'agent_input' : 'workflow_input', issues: { reason: 'non_json_input' } })
 	if (value.delivery === 'fresh' && !isJsonValue(value['input'])) throw new ValidationError('Harness target input must be JSON.', { where: target.kind === 'agent' ? 'agent_input' : 'workflow_input', issues: { reason: 'non_json_input' } })
 	const invokeOptions = value['invokeOptions']
 	if (!plain(invokeOptions)) throw new ValidationError('Hosted invocation request is invalid.', { where: 'invoke_options', issues: { reason: 'invalid_hosted_request' } })
@@ -604,7 +611,7 @@ function validateHostedRequest<Target extends AnyHarnessTargetContract>(
 		throw new ValidationError('Hosted invocation cannot supply host-owned trace context.', { where: 'invoke_options', issues: { reason: 'host_owned_trace_context', field } })
 	}
 	const sessionId = invokeOptions['sessionId']
-	if (!Object.prototype.hasOwnProperty.call(invokeOptions, 'sessionId') || typeof sessionId !== 'string' || sessionId.length === 0) throw new ValidationError('Invocation options are invalid.', {
+	if (!Object.prototype.hasOwnProperty.call(invokeOptions, 'sessionId') || !validIdentifier(sessionId)) throw new ValidationError('Invocation options are invalid.', {
 		where: 'invoke_options', issues: { reason: 'invalid_invoke_options' },
 	})
 	const hasResume = Object.prototype.hasOwnProperty.call(invokeOptions, 'resume')
@@ -613,24 +620,34 @@ function validateHostedRequest<Target extends AnyHarnessTargetContract>(
 	if (value.delivery === 'fresh') {
 		if (hasResume) invalid('resume')
 		if (hasResumeIdentity) invalid('resumeIdentity')
+		if (hasIdempotencyKey) invalid('idempotencyKey')
 	} else {
 		if (!hasResume || invokeOptions['resume'] === undefined) invalid('resume')
 		if (hasIdempotencyKey) invalid('idempotencyKey')
 		const approvalReachable = target.kind === 'agent'
 			? graph.approval.agents[target.id]?.reachable === true
 			: graph.approval.workflows[target.id]?.reachable === true
-		if (!target.interrupts.includes('tool-approval') && !approvalReachable) invalid(hasResumeIdentity ? 'resumeIdentity' : 'resume')
-		if (invokeOptions['resumeIdentity'] === 'stored-run-owner' && !target.interrupts.includes('tool-approval')) invalid('resumeIdentity')
+		if (!target.interrupts.includes('tool-approval') && !target.interrupts.includes('external-wait') && !approvalReachable) {
+			invalid(hasResumeIdentity ? 'resumeIdentity' : 'resume')
+		}
 		if (hasResumeIdentity && !['current-caller', 'stored-run-owner'].includes(String(invokeOptions['resumeIdentity']))) invalid('resumeIdentity')
 	}
 	const resumeIdentity = hasResumeIdentity ? invokeOptions['resumeIdentity'] : undefined
 	const ordinaryOptions = Object.fromEntries(Object.entries(invokeOptions)
-		.filter(([key]) => key !== 'sessionId' && key !== 'resumeIdentity'))
+		.filter(([key]) => key !== 'sessionId' && key !== 'resumeIdentity' && key !== 'resume' && key !== 'durable'))
+	if (value.delivery === 'fresh' && invokeOptions['durable'] !== undefined) {
+		if (!plain(invokeOptions['durable']) || Object.prototype.hasOwnProperty.call(invokeOptions['durable'], 'runId')) invalid('durable.runId')
+		ordinaryOptions['durable'] = { ...invokeOptions['durable'], runId: value.invocationId }
+	}
 	const normalized = normalizeInvokeOptions(ordinaryOptions as unknown as InvokeOptions)
 	const { traceparent: _traceparent, tracestate: _tracestate, ...hostedOptions } = normalized
 	const normalizedHosted = Object.freeze({ sessionId, ...hostedOptions,
-		...(value.delivery === 'resume' && resumeIdentity !== undefined ? { resumeIdentity } : {}) }) as HostedInvokeOptions<Target>
-	return Object.freeze({ delivery: value.delivery, wireInput: deepFreezeJsonCopy(value.wireInput) as HarnessTargetInput<Target>,
+		...(value.delivery === 'fresh' ? { invocationId: value.invocationId } : {}),
+		...(value.delivery === 'resume' ? { resume: normalizeTargetResume(invokeOptions['resume'] as HarnessTargetResume<Target>, target) } : {}),
+		...(value.delivery === 'resume' && resumeIdentity !== undefined ? { resumeIdentity } : {}) }) as unknown as HostedInvokeOptions<Target>
+	return Object.freeze({ delivery: value.delivery,
+		...(value.delivery === 'fresh' ? { invocationId: value.invocationId } : {}),
+		...(value.delivery === 'fresh' ? { wireInput: deepFreezeJsonCopy(value.wireInput) as HarnessTargetInput<Target> } : {}),
 		...(value.delivery === 'fresh' ? { input: deepFreezeJsonCopy(value.input) as HarnessValidatedTargetInput<Target> } : {}),
 		invokeOptions: normalizedHosted })
 }
@@ -642,14 +659,15 @@ function validateHostedDispatchedRequest<Target extends AnyHarnessTargetContract
 ): Readonly<{
 	delivery: 'fresh' | 'resume'
 	input?: HarnessValidatedTargetInput<Target>
-	wireInput: HarnessTargetInput<Target>
+	wireInput?: HarnessTargetInput<Target>
 	invocation: HostedDispatchInvocation
-	resume?: ToolApprovalResume
+	resume?: HarnessTargetResume<Target>
 }> {
 	const invalid = (field?: string): never => { throw hostedDispatchValidationError(field) }
 	if (!plain(value)) throw hostedDispatchValidationError()
 	const request = value
-	for (const field of ['delivery', 'target', 'wireInput', 'invocation', 'hostInvocation']) {
+	const wireInput = (request as unknown as { readonly wireInput?: unknown }).wireInput
+	for (const field of ['delivery', 'target', 'invocation', 'hostInvocation']) {
 		if (!Object.prototype.hasOwnProperty.call(request, field)) invalid(field)
 	}
 	const requestKeys = ['delivery', 'target', 'wireInput', 'input', 'invocation', 'resume', 'hostInvocation']
@@ -666,7 +684,9 @@ function validateHostedDispatchedRequest<Target extends AnyHarnessTargetContract
 	if (known === undefined) throw new ValidationError('Hosted target is not part of this Harness graph.', {
 		where: 'invoke_options', issues: { reason: 'unknown_hosted_target' },
 	})
-	if (!isJsonValue(request['wireInput'])) throw new ValidationError('Harness target input must be JSON.', {
+	if (request['delivery'] === 'fresh' && !Object.prototype.hasOwnProperty.call(request, 'wireInput')) invalid('wireInput')
+	if (request['delivery'] === 'resume' && Object.prototype.hasOwnProperty.call(request, 'wireInput')) invalid('wireInput')
+	if (request['delivery'] === 'fresh' && !isJsonValue(wireInput)) throw new ValidationError('Harness target input must be JSON.', {
 		where: target.kind === 'agent' ? 'agent_input' : 'workflow_input', issues: { reason: 'non_json_input' },
 	})
 	const deliveryValue = request['delivery']
@@ -702,16 +722,16 @@ function validateHostedDispatchedRequest<Target extends AnyHarnessTargetContract
 	const signal = invocation['signal']
 	if (!objectValue(signal) || typeof signal['aborted'] !== 'boolean'
 		|| typeof signal['addEventListener'] !== 'function' || typeof signal['removeEventListener'] !== 'function') invalid('invocation.signal')
-	let resume: ToolApprovalResume | undefined
+	let resume: HarnessTargetResume<Target> | undefined
 	if (delivery === 'resume') {
-		resume = normalizeToolApprovalResume(request['resume'])
+		resume = normalizeTargetResume<Target>(request['resume'] as HarnessTargetResume<Target>, target as Target)
 		if (resume.runId !== invocation['invocationId']) invalid('resume')
 	}
 	const configuredMaxDepth = known.kind === 'agent' ? known.loop?.maxDepth ?? defaultMaxDepth : known.maxDepth ?? defaultMaxDepth
 	const validatedInvocation = Object.freeze({ ...invocation,
 		remainingDepth: Math.min(invocation['remainingDepth'] as number, configuredMaxDepth),
 	}) as HostedDispatchInvocation
-	return Object.freeze({ delivery, wireInput: request['wireInput'] as HarnessTargetInput<Target>,
+	return Object.freeze({ delivery, ...(delivery === 'fresh' ? { wireInput: wireInput as HarnessTargetInput<Target> } : {}),
 		...(delivery === 'fresh' ? { input: request['input'] as HarnessValidatedTargetInput<Target> } : {}),
 		invocation: validatedInvocation, ...(resume === undefined ? {} : { resume }) })
 }
@@ -766,6 +786,7 @@ function exactKeys(value: Record<string, unknown>, expected: readonly string[]):
 	return actual.length === expected.length && actual.every(key => typeof key === 'string' && expected.includes(key))
 }
 function nonempty(value: unknown): value is string { return typeof value === 'string' && value.length > 0 }
+function validIdentifier(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(value) }
 function deepFreezeJsonCopy(value: JsonValue): JsonValue {
 	if (Array.isArray(value)) return Object.freeze(value.map(deepFreezeJsonCopy)) as JsonValue
 	if (plain(value)) return Object.freeze(Object.fromEntries(Object.entries(value).map(([key, child]) => [key, deepFreezeJsonCopy(child as JsonValue)])))

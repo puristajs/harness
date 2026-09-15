@@ -8,8 +8,8 @@ export {
   isHarnessError,
   HarnessConfigError,
   ValidationError,
-  ModelAdmissionRejectedError,
-  AgentAdmissionRejectedError,
+  ModelCallConcurrencyRejectedError,
+  RunConcurrencyRejectedError,
   PermissionDeniedError,
   PolicyDeniedError,
   DecisionBlockedError,
@@ -134,21 +134,21 @@ export type {
   VideoStreamChunk,
 } from './ports/model-provider.js'
 export type { ModelHandle, ModelInvokeContext } from './models/registry.js'
-export { modelAdmissionKey } from './ports/model-admission.js'
+export { modelCallConcurrencyKey } from './ports/model-call-concurrency.js'
 export type {
-  ModelAdmission,
-  ModelAdmissionKey,
-  ModelAdmissionLease,
-  ModelAdmissionOperation,
-  ModelAdmissionRequest,
-} from './ports/model-admission.js'
-export { inMemoryAgentAdmission } from './ports/agent-admission.js'
+  ModelCallConcurrency,
+  ModelCallConcurrencyKey,
+  ModelCallConcurrencyLease,
+  ModelCallConcurrencyOperation,
+  ModelCallConcurrencyRequest,
+} from './ports/model-call-concurrency.js'
+export { inMemoryRunConcurrency } from './ports/run-concurrency.js'
 export type {
-  AgentAdmission,
-  AgentAdmissionLease,
-  AgentAdmissionRequest,
-  InMemoryAgentAdmissionOptions,
-} from './ports/agent-admission.js'
+  RunConcurrency,
+  RunConcurrencyLease,
+  RunConcurrencyRequest,
+  InMemoryRunConcurrencyOptions,
+} from './ports/run-concurrency.js'
 
 // Shared model adapter helpers (consumed by first-party provider packages)
 export {
@@ -615,7 +615,11 @@ export type {
   HarnessInstance,
   HarnessSession,
   HarnessSessionOptions,
+  HarnessTargetInvokeOptions,
   HarnessTargetInvoker,
+  HarnessTargetResume,
+  HarnessTargetResumeOptions,
+  HarnessTargetResumer,
   InvokeOptions,
 } from './runtime/standalone-instance.js'
 export type { HarnessInstanceConfig, McpBinding, ModelRuntimeBinding, SandboxRuntimeAdapter, SandboxRuntimeConfiguration } from './runtime/instance-config.js'

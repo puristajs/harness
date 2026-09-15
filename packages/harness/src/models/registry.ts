@@ -53,11 +53,11 @@ import { telemetryErrorType, type SpanAttrs, type TelemetryShim } from '../telem
 import { isJsonValue, type JsonValue } from './json.js'
 import { pumpStreamThroughSpan } from './stream-pump.js'
 import type {
-  ModelAdmission,
-  ModelAdmissionLease,
-  ModelAdmissionOperation,
-} from '../ports/model-admission.js'
-import { modelAdmissionKey } from '../ports/model-admission.js'
+  ModelCallConcurrency,
+  ModelCallConcurrencyLease,
+  ModelCallConcurrencyOperation,
+} from '../ports/model-call-concurrency.js'
+import { modelCallConcurrencyKey } from '../ports/model-call-concurrency.js'
 import type { HarnessExecutionCaller } from '../definitions/types.js'
 import type { HarnessIdentity } from '../identity/index.js'
 import type { HarnessTraceContext } from '../telemetry/trace-context.js'
@@ -77,6 +77,8 @@ export interface ModelInvokeContext {
   sessionId?: string
   /** Run id used for telemetry and run-event attribution. */
   runId?: string
+  /** Absolute deadline inherited from the owning Harness invocation. */
+  deadline?: number
   /** Stable base key used when publishing generated artifacts. */
   artifactIdempotencyKey?: string
 }
@@ -223,7 +225,7 @@ export function resolveModelHandleCallOptions(
  */
 export function createModelRegistry<const M extends Record<string, ModelAlias>>(
   aliases: M,
-  options: { telemetry?: TelemetryShim; harnessName?: string; admission?: ModelAdmission; artifacts?: ArtifactStore } = {}
+  options: { telemetry?: TelemetryShim; harnessName?: string; modelCallConcurrency?: ModelCallConcurrency; artifacts?: ArtifactStore } = {}
 ): { readonly [K in keyof M]: ModelHandle<M[K]> } {
   return Object.fromEntries(
     Object.entries(aliases).map(([aliasKey, alias]) => [aliasKey, createHandle(aliasKey, alias, options)])
@@ -233,7 +235,7 @@ export function createModelRegistry<const M extends Record<string, ModelAlias>>(
 function createHandle(
   aliasKey: string,
   alias: ModelAlias,
-  options: { telemetry?: TelemetryShim; harnessName?: string; admission?: ModelAdmission; artifacts?: ArtifactStore },
+  options: { telemetry?: TelemetryShim; harnessName?: string; modelCallConcurrency?: ModelCallConcurrency; artifacts?: ArtifactStore },
 ): ModelHandle {
   const handle: ModelHandle = {
     text(req, signal, ctx) {
@@ -248,7 +250,7 @@ function createHandle(
         signal,
         traceparent: ctx?.trace?.traceparent ?? req.traceparent ?? options.telemetry?.currentTraceparent()
       }
-      return withModelAdmission(options.admission, alias, 'text', signal, () =>
+      return withModelCallConcurrency(options.modelCallConcurrency, alias, 'text', signal, ctx, () =>
         withModelSpan(options, aliasKey, alias, 'text', ctx, () => alias.provider.text!(fullReq)),
       )
     },
@@ -264,7 +266,7 @@ function createHandle(
         signal,
         traceparent: ctx?.trace?.traceparent ?? req.traceparent ?? options.telemetry?.currentTraceparent()
       }
-      return withModelAdmissionStream(options.admission, alias, 'text_stream', signal, () =>
+      return withModelCallConcurrencyStream(options.modelCallConcurrency, alias, 'text_stream', signal, ctx, () =>
         withModelStreamSpan(options, aliasKey, alias, 'text_stream', ctx, () => alias.provider.textStream!(fullReq)),
       )
     },
@@ -282,7 +284,7 @@ function createHandle(
         signal,
         traceparent: ctx?.trace?.traceparent ?? req.traceparent ?? options.telemetry?.currentTraceparent()
       }
-      return withModelAdmission(options.admission, alias, 'object', signal, () =>
+      return withModelCallConcurrency(options.modelCallConcurrency, alias, 'object', signal, ctx, () =>
         withModelSpan(options, aliasKey, alias, 'object', ctx, () => alias.provider.object!(fullReq)),
       )
     },
@@ -300,7 +302,7 @@ function createHandle(
         signal,
         traceparent: ctx?.trace?.traceparent ?? req.traceparent ?? options.telemetry?.currentTraceparent()
       }
-      return withModelAdmissionStream(options.admission, alias, 'object_stream', signal, () =>
+      return withModelCallConcurrencyStream(options.modelCallConcurrency, alias, 'object_stream', signal, ctx, () =>
         withModelStreamSpan(options, aliasKey, alias, 'object_stream', ctx, () => alias.provider.objectStream!(fullReq)),
       )
     },
@@ -315,7 +317,7 @@ function createHandle(
         signal,
         traceparent: ctx?.trace?.traceparent ?? req.traceparent ?? options.telemetry?.currentTraceparent()
       }
-      return withModelAdmission(options.admission, alias, 'embeddings', signal, () =>
+      return withModelCallConcurrency(options.modelCallConcurrency, alias, 'embeddings', signal, ctx, () =>
         withModelSpan(options, aliasKey, alias, 'embeddings', ctx, () => alias.provider.embed!(fullReq)).then(
           (response) => validateEmbeddingResponse(aliasKey, alias, fullReq, response),
         ),
@@ -333,7 +335,7 @@ function createHandle(
         signal,
         traceparent: ctx?.trace?.traceparent ?? req.traceparent ?? options.telemetry?.currentTraceparent()
       }
-      return withModelAdmission(options.admission, alias, 'rerank', signal, () =>
+      return withModelCallConcurrency(options.modelCallConcurrency, alias, 'rerank', signal, ctx, () =>
         withModelSpan(options, aliasKey, alias, 'rerank', ctx, () => alias.provider.rerank!(fullReq)).then(
           (response) => validateRerankResponse(aliasKey, alias, fullReq, response),
         ),
@@ -344,7 +346,7 @@ function createHandle(
       if (!alias.provider.image) throw methodMissing(aliasKey, 'image')
       const artifacts = requireArtifactStore(options.artifacts, aliasKey, 'image')
       const fullReq: ImageRequest = mediaRequest(alias, req, signal, ctx, options.telemetry)
-      const response = await withModelAdmission(options.admission, alias, 'image_generation', signal, () =>
+      const response = await withModelCallConcurrency(options.modelCallConcurrency, alias, 'image_generation', signal, ctx, () =>
         withModelSpan(options, aliasKey, alias, 'image_generation', ctx, () => alias.provider.image!(fullReq)),
       )
       return {
@@ -363,7 +365,7 @@ function createHandle(
       if (!alias.provider.speech) throw methodMissing(aliasKey, 'speech')
       const artifacts = requireArtifactStore(options.artifacts, aliasKey, 'speech')
       const fullReq: SpeechRequest = mediaRequest(alias, req, signal, ctx, options.telemetry)
-      const response = await withModelAdmission(options.admission, alias, 'speech_generation', signal, () =>
+      const response = await withModelCallConcurrency(options.modelCallConcurrency, alias, 'speech_generation', signal, ctx, () =>
         withModelSpan(options, aliasKey, alias, 'speech_generation', ctx, () => alias.provider.speech!(fullReq)),
       )
       return { artifact: await publishArtifact(artifacts, response.artifact, signal, ctx, `${aliasKey}:speech`, options.harnessName) }
@@ -373,7 +375,7 @@ function createHandle(
       if (!alias.provider.video) throw methodMissing(aliasKey, 'video')
       const artifacts = requireArtifactStore(options.artifacts, aliasKey, 'video')
       const fullReq: VideoRequest = mediaRequest(alias, req, signal, ctx, options.telemetry)
-      const response = await withModelAdmission(options.admission, alias, 'video_generation', signal, () =>
+      const response = await withModelCallConcurrency(options.modelCallConcurrency, alias, 'video_generation', signal, ctx, () =>
         withModelSpan(options, aliasKey, alias, 'video_generation', ctx, () => alias.provider.video!(fullReq)),
       )
       return { artifact: await publishArtifact(artifacts, response.artifact, signal, ctx, `${aliasKey}:video`, options.harnessName) }
@@ -384,7 +386,7 @@ function createHandle(
       const artifacts = requireArtifactStore(options.artifacts, aliasKey, 'videoStream')
       const fullReq: VideoRequest = mediaRequest(alias, req, signal, ctx, options.telemetry)
       return publishVideoStream(
-        withModelAdmissionStream(options.admission, alias, 'video_generation', signal, () =>
+        withModelCallConcurrencyStream(options.modelCallConcurrency, alias, 'video_generation', signal, ctx, () =>
           withModelStreamSpan(options, aliasKey, alias, 'video_generation', ctx, () => alias.provider.videoStream!(fullReq)),
         ),
         artifacts,
@@ -471,14 +473,15 @@ async function* publishVideoStream(
   }
 }
 
-async function withModelAdmission<T>(
-  admission: ModelAdmission | undefined,
+async function withModelCallConcurrency<T>(
+  concurrency: ModelCallConcurrency | undefined,
   alias: ModelAlias,
-  operation: ModelAdmissionOperation,
+  operation: ModelCallConcurrencyOperation,
   signal: AbortSignal,
+  context: ModelInvokeContext | undefined,
   run: () => Promise<T>,
 ): Promise<T> {
-  const lease = await acquireModelAdmission(admission, alias, operation, signal)
+  const lease = await acquireModelCallConcurrency(concurrency, alias, operation, signal, context)
   try {
     return await run()
   } finally {
@@ -486,14 +489,15 @@ async function withModelAdmission<T>(
   }
 }
 
-async function* withModelAdmissionStream<T>(
-  admission: ModelAdmission | undefined,
+async function* withModelCallConcurrencyStream<T>(
+  concurrency: ModelCallConcurrency | undefined,
   alias: ModelAlias,
-  operation: ModelAdmissionOperation,
+  operation: ModelCallConcurrencyOperation,
   signal: AbortSignal,
+  context: ModelInvokeContext | undefined,
   run: () => AsyncIterable<T>,
 ): AsyncIterable<T> {
-  const lease = await acquireModelAdmission(admission, alias, operation, signal)
+  const lease = await acquireModelCallConcurrency(concurrency, alias, operation, signal, context)
   try {
     yield* run()
   } finally {
@@ -501,16 +505,23 @@ async function* withModelAdmissionStream<T>(
   }
 }
 
-function acquireModelAdmission(
-  admission: ModelAdmission | undefined,
+function acquireModelCallConcurrency(
+  concurrency: ModelCallConcurrency | undefined,
   alias: ModelAlias,
-  operation: ModelAdmissionOperation,
+  operation: ModelCallConcurrencyOperation,
   signal: AbortSignal,
-): Promise<ModelAdmissionLease> | undefined {
-  if (!admission) return undefined
-  return admission.acquire({
-    ...modelAdmissionKey(alias.provider, alias.model, alias.credentialScope),
+  context: ModelInvokeContext | undefined,
+): Promise<ModelCallConcurrencyLease> | undefined {
+  if (!concurrency) return undefined
+  return concurrency.acquire({
+    ...modelCallConcurrencyKey(alias.provider, alias.model, alias.credentialScope),
     operation,
+    ...(context?.harnessName === undefined ? {} : { harnessName: context.harnessName }),
+    ...(context?.sessionId === undefined ? {} : { sessionId: context.sessionId }),
+    ...(context?.runId === undefined ? {} : { runId: context.runId }),
+    ...(context?.caller === undefined ? {} : { caller: context.caller }),
+    ...(context?.identity === undefined ? {} : { identity: context.identity }),
+    ...(context?.deadline === undefined ? {} : { deadline: context.deadline }),
     signal,
   })
 }
@@ -801,13 +812,12 @@ function mergeDefaults(alias: ModelAlias, call?: ModelCallOptions): ModelAlias['
 }
 
 function mergeCallOptions(alias: ModelAlias, call?: ModelCallOptions): ModelCallOptions | undefined {
-  const retry = call?.retry ?? alias.defaults?.retry ?? alias.retry
+  const retry = call?.retry ?? alias.retry
   const source: ModelCallOptions = {
     ...(alias.defaults ?? {}),
     ...(call ?? {}),
     ...(retry !== undefined ? { retry } : {}),
     providerOptions: {
-      ...(alias.providerOptions ?? {}),
       ...(alias.defaults?.providerOptions ?? {}),
       ...(call?.providerOptions ?? {})
     }

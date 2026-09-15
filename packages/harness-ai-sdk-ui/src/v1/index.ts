@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 
 import type {
   ExecutionEvent,
+  ExecutionTerminalOutcome,
   HarnessInterrupt,
   HarnessInterruptKind,
   HarnessOutputUpdateKind,
@@ -87,14 +88,22 @@ export type HarnessUIMessage = UIMessage<unknown, HarnessUIDataTypes>
 
 /** Options controlling execution-event projection. */
 export interface HarnessUIMessageStreamOptions {
-  readonly sessionId: string
-  readonly messageId?: string
-  readonly onIgnoredEvent?: (type: string) => void
+	readonly sessionId?: string
+	readonly messageId?: string
+	readonly onIgnoredEvent?: (type: string) => void
+	readonly onSettled?: () => void | Promise<void>
+}
+
+/** Host-owned request overrides applied before validating approval correlation. */
+export interface HarnessUIMessageRequestOptions {
+	/** Application-owned session id selected after authentication and tenant scoping. */
+	readonly sessionId: string
 }
 
 /** Validated transport request prepared for an application-owned target call. */
 export interface ParsedHarnessUIMessageRequest {
-  readonly sessionId: string
+	readonly sessionId: string
+	readonly transportId: string
   readonly messages: readonly HarnessUIMessage[]
   readonly lastUserMessage: HarnessUIMessage
   readonly assistantMessageId?: string
@@ -111,12 +120,15 @@ export interface HarnessUIMessageStreamSink {
   onCancel(callback: (reason?: string) => void): void
 }
 /** Standard Response options plus Harness projection settings. */
-export type HarnessUIMessageStreamResponseOptions = Omit<Parameters<typeof createUIMessageStreamResponse>[0], 'stream'> & HarnessUIMessageStreamOptions
+export type HarnessUIMessageStreamResponseOptions = Omit<Parameters<typeof createUIMessageStreamResponse>[0], 'stream'> & HarnessUIMessageStreamOptions & {
+  readonly request?: Pick<ParsedHarnessUIMessageRequest, 'sessionId' | 'assistantMessageId'>
+}
 
 /** Validate a standard AI SDK DefaultChatTransport request. */
-export async function parseHarnessUIMessageRequest(body: unknown): Promise<ParsedHarnessUIMessageRequest> {
+export async function parseHarnessUIMessageRequest(body: unknown, options: HarnessUIMessageRequestOptions): Promise<ParsedHarnessUIMessageRequest> {
   if (!isRecord(body)) throw new TypeError('Harness UI request body must be an object.')
-  const sessionId = nonEmpty(body['id'], 'id')
+  const transportSessionId = nonEmpty(body['id'], 'id')
+	const sessionId = nonEmpty(options?.sessionId, 'sessionId')
   if (body['trigger'] !== 'submit-message' && body['trigger'] !== 'regenerate-message') {
     throw new TypeError('Harness UI request trigger must be submit-message or regenerate-message.')
   }
@@ -135,7 +147,7 @@ export async function parseHarnessUIMessageRequest(body: unknown): Promise<Parse
   let assistantMessageId: string | undefined
   if (pendingDescriptor !== undefined) {
     if (pendingDescriptor.sessionId !== sessionId) {
-      throw new TypeError('Harness UI approval session does not match the transport session.')
+      throw new TypeError('Harness UI approval session does not match the authorized Harness session.')
     }
     if (resume === undefined) throw new TypeError('Harness UI approval continuation is incomplete.')
     if (!lastAssistant || messageId !== lastAssistant.id) {
@@ -145,7 +157,7 @@ export async function parseHarnessUIMessageRequest(body: unknown): Promise<Parse
   } else if (body['trigger'] === 'regenerate-message') {
     assistantMessageId = messageId
   }
-  return Object.freeze({ sessionId, messages: Object.freeze(messages), lastUserMessage,
+	return Object.freeze({ sessionId, transportId: transportSessionId, messages: Object.freeze(messages), lastUserMessage,
     ...(assistantMessageId === undefined ? {} : { assistantMessageId }), ...(resume === undefined ? {} : { resume }) })
 }
 
@@ -154,13 +166,15 @@ export function createHarnessUIMessageStream<const Stream>(
   events: ExactHarnessTargetStream<Stream>,
   options: HarnessUIMessageStreamOptions,
 ): ReadableStream<UIMessageChunk<unknown, HarnessUIDataTypes>> {
-  nonEmpty(options.sessionId, 'sessionId')
   if (events === null || typeof events !== 'object' || typeof events.cancel !== 'function'
-    || !(events.result instanceof Promise) || typeof events[Symbol.asyncIterator] !== 'function') {
+	  || !(events.terminal instanceof Promise) || typeof events[Symbol.asyncIterator] !== 'function') {
     throw new TypeError('Harness UI streaming requires a HarnessTargetStream.')
   }
+  const sessionId = options.sessionId ?? events.sessionId
+  nonEmpty(sessionId, 'sessionId')
+  if (events.sessionId !== sessionId) throw new TypeError('Harness UI session does not match the target stream session.')
   const iterator = events[Symbol.asyncIterator]()
-  const resultFailure = events.result.then<never>(
+  const resultFailure = events.terminal.then<never>(
     () => new Promise<never>(() => {}),
     error => Promise.reject(error),
   )
@@ -170,6 +184,7 @@ export function createHarnessUIMessageStream<const Stream>(
   let activeTextId: string | undefined
   let cancelled = false
   let cleanupPromise: Promise<void> | undefined
+  let settlementPromise: Promise<void> | undefined
   const projectedToolCallIds = new Set<string>()
 
   const cleanup = (reason?: string): Promise<void> => {
@@ -179,10 +194,13 @@ export function createHarnessUIMessageStream<const Stream>(
       let failure: unknown
       try { await events.cancel(reason) } catch (error) { failure = error }
       try { await iterator.return?.() } catch (error) { if (failure === undefined) failure = error }
-      if (failure !== undefined) throw failure
+	  try { await settle() } catch (error) { if (failure === undefined) failure = error }
+	  if (failure !== undefined) throw failure
     })()
     return cleanupPromise
   }
+
+  const settle = (): Promise<void> => settlementPromise ??= Promise.resolve().then(() => options.onSettled?.()).then(() => undefined)
 
   const ignored = (type: string) => { try { options.onIgnoredEvent?.(type) } catch {} }
   const closeText = (controller: ChunkController) => {
@@ -210,7 +228,8 @@ export function createHarnessUIMessageStream<const Stream>(
         const next = await Promise.race([iterator.next(), resultFailure])
         if (next.done) {
           if (!rootTerminalSeen) throw new TypeError('Harness target stream ended without a direct terminal event.')
-          controller.close()
+		  await settle()
+		  controller.close()
           return
         }
         const current = next.value
@@ -246,13 +265,14 @@ export function createHarnessUIMessageStream<const Stream>(
               continue
             }
             if (current.parentRunId !== undefined) throw new TypeError('Harness target stream root terminal event must be parentless.')
-            const [result, afterTerminal] = await Promise.all([events.result, iterator.next()])
+			const [result, afterTerminal] = await Promise.all([events.terminal, iterator.next()])
             if (!sameTerminalOutcome(result, current.outcome)) {
               throw new TypeError('Harness target stream terminal event does not match its result.')
             }
             if (!afterTerminal.done) throw new TypeError('Harness target stream emitted an event after its direct terminal event.')
             rootTerminalSeen = true
-            enqueueTerminal(controller, current, options.sessionId, projectedToolCallIds, closeText, closeTurn)
+			enqueueTerminal(controller, current, sessionId, projectedToolCallIds, closeText, closeTurn)
+			await settle()
             controller.close()
             break
           case 'output.text.delta':
@@ -328,10 +348,12 @@ export function createHarnessUIMessageStream<const Stream>(
 export function createHarnessUIMessageStreamResponse<const Stream>(
   events: ExactHarnessTargetStream<Stream>, options: HarnessUIMessageStreamResponseOptions,
 ): Response {
-  const { sessionId, messageId, onIgnoredEvent, ...responseOptions } = options
+	const { request, sessionId: explicitSessionId, messageId: explicitMessageId, onIgnoredEvent, onSettled, ...responseOptions } = options
+	const sessionId = explicitSessionId ?? request?.sessionId ?? events.sessionId
+	const messageId = explicitMessageId ?? request?.assistantMessageId
   const response = createUIMessageStreamResponse({ ...responseOptions,
-    stream: createHarnessUIMessageStream(events, { sessionId, ...(messageId === undefined ? {} : { messageId }),
-      ...(onIgnoredEvent === undefined ? {} : { onIgnoredEvent }) }) })
+		stream: createHarnessUIMessageStream(events, { sessionId, ...(messageId === undefined ? {} : { messageId }),
+		  ...(onIgnoredEvent === undefined ? {} : { onIgnoredEvent }), ...(onSettled === undefined ? {} : { onSettled }) }) })
   for (const [name, value] of Object.entries(AI_SDK_UI_MESSAGE_STREAM_V1_HEADERS)) response.headers.set(name, value)
   return response
 }
@@ -362,7 +384,7 @@ export async function* createHarnessUIMessageSseEvents<const Stream>(
  *
  * @example
  * ```ts
- * const request = await parseHarnessUIMessageRequest(payload)
+ * const request = await parseHarnessUIMessageRequest(payload, { sessionId: authenticatedSessionId })
  * const events = await agent.stream(input, { sessionId: request.sessionId })
  * await pipeHarnessUIMessageStream(events, writer, request)
  * ```
@@ -371,12 +393,13 @@ export async function pipeHarnessUIMessageStream<const Stream>(
   events: ExactHarnessTargetStream<Stream>,
   sink: HarnessUIMessageStreamSink,
   request: Pick<ParsedHarnessUIMessageRequest, 'sessionId' | 'assistantMessageId'>,
-  options: Pick<HarnessUIMessageStreamOptions, 'onIgnoredEvent'> = {},
+	options: Pick<HarnessUIMessageStreamOptions, 'onIgnoredEvent' | 'onSettled'> = {},
 ): Promise<void> {
   const reader = createHarnessUIMessageStream(events, {
     sessionId: request.sessionId,
     ...(request.assistantMessageId === undefined ? {} : { messageId: request.assistantMessageId }),
-    ...(options.onIgnoredEvent === undefined ? {} : { onIgnoredEvent: options.onIgnoredEvent }),
+		...(options.onIgnoredEvent === undefined ? {} : { onIgnoredEvent: options.onIgnoredEvent }),
+		...(options.onSettled === undefined ? {} : { onSettled: options.onSettled }),
   }).getReader()
   let completed = false
   let projectionFailed = false
@@ -468,7 +491,7 @@ function enqueueTerminal<Target extends UIHarnessTarget>(
   event: Readonly<{
     eventId: string
     runId: string
-    outcome: Extract<Awaited<HarnessTargetStream<Target>['result']>, { status: 'completed' | 'interrupted' | 'failed' | 'cancelled' }>
+	outcome: ExecutionTerminalOutcome<Target['$infer']['output'], Target['$infer']['interrupt']>
   }>,
   sessionId: string,
   projectedToolCallIds: Set<string>,

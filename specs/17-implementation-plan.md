@@ -25,7 +25,7 @@ The plan maintains these dependency boundaries:
    tool-caller, and host integration contracts;
 2. implement immutable definitions, graph compilation, and exact runtime
    requirements;
-3. implement runtime binding validation and optional process-local admission;
+3. implement runtime binding validation and optional process-local concurrency controls;
 4. implement Skill/MCP initialization and the shared tool pipeline;
 5. implement agents, subagents, workflows, model invokers, managed-call replay,
    sessions, streaming, interruption, and durable recovery;

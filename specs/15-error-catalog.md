@@ -176,14 +176,14 @@ tokens, raw headers, or attachments.
 - the operation that would exceed the limit does not start; metadata never
   includes input, output, prompts, messages, tool arguments, or provider data.
 
-### `AgentAdmissionRejectedError`
-- code: `AGENT_ADMISSION_REJECTED`
-- category: `admission`
+### `RunConcurrencyRejectedError`
+- code: `RUN_CONCURRENCY_REJECTED`
+- category: `concurrency`
 - retriable: `true`
-- when: a bounded `AgentAdmission` cannot accept another root execution tree;
+- when: a bounded `RunConcurrency` cannot accept another root execution tree;
   the built-in in-memory adapter uses this when its FIFO has reached
   `maxQueued`.
-- message: fixed `Agent admission capacity is exhausted.`
+- message: fixed `Run concurrency capacity is exhausted.`
 - meta: exactly `{reason:'capacity_exhausted',retryAfterMs?:number}`; a present
   retry delay is a positive safe integer.
 - forbidden meta: input, output, queue contents, prompt, message, credentials,
@@ -252,7 +252,7 @@ tokens, raw headers, or attachments.
 - category: `internal`
 - retriable: `false`
 - when: an agent, tool, or model selected by a workflow managed call returns or
-  throws a failure after admission. Transported/provider error data remains an
+  throws a failure after concurrency acquisition. Transported/provider error data remains an
   untrusted private cause and is never reconstructed as its remote class.
 - message: fixed `Workflow managed call failed.`
 - meta: exactly `{reason:'operation_failed',workflow_id:string,call_id:string,operation:WorkflowManagedCallOperation,target_kind:'agent'|'tool'|'model',target_id:string}`.

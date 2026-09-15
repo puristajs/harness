@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { describe, expect, test } from 'vitest'
 import {
   defineAgent,
-  type HarnessTargetExecutionTerminalOutcome,
+  type HarnessTargetRunOutcome,
   type HarnessTargetStream,
   type ModelProvider,
 } from '@purista/harness'
@@ -25,7 +25,7 @@ async function createFixture(): Promise<{ dataRoot: string; cleanup: () => Promi
 }
 
 const releaseProbe = defineAgent('releaseProbe', { model: 'chat', instructions: 'Test stream cleanup.' })
-type ReleaseProbeOutcome = HarnessTargetExecutionTerminalOutcome<typeof releaseProbe.contract>
+type ReleaseProbeRunOutcome = HarnessTargetRunOutcome<typeof releaseProbe.contract>
 type ReleaseProbeStream = HarnessTargetStream<typeof releaseProbe.contract>
 
 function deferred<T>() {
@@ -34,9 +34,12 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-function releaseProbeStream(result: Promise<ReleaseProbeOutcome>): ReleaseProbeStream {
+function releaseProbeStream(result: Promise<ReleaseProbeRunOutcome>): ReleaseProbeStream {
   return {
+    runId: 'release-run',
+    sessionId: 'release-session',
     result,
+    terminal: result,
     cancel: async () => undefined,
     async *[Symbol.asyncIterator]() {
       yield {
@@ -52,7 +55,7 @@ function releaseProbeStream(result: Promise<ReleaseProbeOutcome>): ReleaseProbeS
 
 describe('living wiki API', () => {
   test('releases a borrowed chat session when result settles without iteration', async () => {
-    const settled = deferred<ReleaseProbeOutcome>()
+    const settled = deferred<ReleaseProbeRunOutcome>()
     let releases = 0
     const wrapped = releaseSessionAfterStream(releaseProbeStream(settled.promise), async () => { releases += 1 })
 
@@ -111,7 +114,7 @@ describe('living wiki API', () => {
   })
 
   test('does not release a borrowed chat session when observation stops before result settles', async () => {
-    const settled = deferred<ReleaseProbeOutcome>()
+    const settled = deferred<ReleaseProbeRunOutcome>()
     let releases = 0
     const wrapped = releaseSessionAfterStream(releaseProbeStream(settled.promise), async () => { releases += 1 })
     const iterator = wrapped[Symbol.asyncIterator]()

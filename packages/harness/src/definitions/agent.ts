@@ -171,6 +171,7 @@ export function defineAgent<
 		executionModes: Object.freeze(['run', 'stream'] as const),
 		updates,
 		interrupts,
+		durable: options.durable === true,
 	}, identity)
 	attachDefinitionInference(contract)
 	Object.freeze(contract)

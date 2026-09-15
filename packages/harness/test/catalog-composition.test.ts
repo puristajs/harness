@@ -20,6 +20,7 @@ import { canonicalJson } from '../src/runtime/canonical-json.js'
 import { inMemorySandbox } from '../src/sandbox/index.js'
 import { compiledGraphTargetPolicyPreimage } from '../src/runtime/standalone-instance.js'
 import { agentExecutionRequirementsSchema } from '../src/harness/agent-requirements.js'
+import { textReply } from "@purista/harness/testing";
 
 const input = z.object({ message: z.string() })
 const output = z.object({ answer: z.string() })
@@ -506,8 +507,8 @@ describe('catalog composition and graph compilation', () => {
 		})
 		const definition = defineHarness({ name: 'lazySessionHarness', revision: 'v1' }).addWorkflow(echo)
 		const model = new FakeModelProvider({ strict: true })
-		model.enqueueText({ content: 'one', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
-		model.enqueueText({ content: 'two', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		model.enqueueText(textReply('one', { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
+		model.enqueueText(textReply('two', { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 		const firstInstance = await definition.getInstance({ storage, sandbox: { adapter: sandbox }, models: { chat: { provider: model, model: 'fake' } } })
 		const first = await firstInstance.getSession('shared-session')
 		const secondFacade = await firstInstance.getSession('shared-session')
@@ -624,8 +625,7 @@ describe('catalog composition and graph compilation', () => {
 	it('fences an approval-capable root before effects and persists its interruption', async () => {
 		const storage = persistentStorage()
 		const provider = new FakeModelProvider({ strict: true })
-		provider.enqueueText({ content: '', toolCalls: [{ id: 'call-1', name: 'bash', arguments: '€10' }],
-			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
+		provider.enqueueText(textReply('', { toolCalls: [{ id: 'call-1', name: 'bash', arguments: '€10' }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' }))
 		let executions = 0
 		const transfer = defineTool('bash', { description: 'Transfer funds.', input: z.string(), output: z.string(),
 			async handler(_context, value) { executions += 1; return value } })
@@ -666,10 +666,8 @@ describe('catalog composition and graph compilation', () => {
 			return appendEvents(runId, events)
 		}
 		const provider = new FakeModelProvider({ strict: true })
-		provider.enqueueText({ content: '', toolCalls: [{ id: 'call-1', name: 'bash', arguments: '€10' }],
-			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
-		provider.enqueueText({ content: 'transferred', toolCalls: [],
-			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		provider.enqueueText(textReply('', { toolCalls: [{ id: 'call-1', name: 'bash', arguments: '€10' }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' }))
+		provider.enqueueText(textReply('transferred', { toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 		let executions = 0
 		let rootParses = 0
 		let toolParses = 0
@@ -719,8 +717,7 @@ describe('catalog composition and graph compilation', () => {
 	it('rejects a forged post-approval cursor that no longer owns its decision set', async () => {
 		const storage = persistentStorage()
 		const provider = new FakeModelProvider({ strict: true })
-		provider.enqueueText({ content: '', toolCalls: [{ id: 'cursor-call', name: 'bash', arguments: 'input' }],
-			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
+		provider.enqueueText(textReply('', { toolCalls: [{ id: 'cursor-call', name: 'bash', arguments: 'input' }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' }))
 		let afterModel = 0
 		const effect = defineTool('bash', { description: 'Effect.', input: z.string(), output: z.string(), async handler() { return 'unused' } })
 		const agent = defineAgent('cursorRestart', { model: 'chat', instructions: 'Use effect.', input: z.string(), output: z.string(), tools: [effect], prompt: value => ({ role: 'user', content: value }),
@@ -782,9 +779,8 @@ describe('catalog composition and graph compilation', () => {
 	it('replays only the immediately prior approval receipt as the current interruption', async () => {
 		const storage = persistentStorage()
 		const provider = new FakeModelProvider({ strict: true })
-		for (const [id, argument] of [['first-call', 'first'], ['second-call', 'second']] as const) provider.enqueueText({ content: '',
-			toolCalls: [{ id, name: 'bash', arguments: argument }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
-		provider.enqueueText({ content: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		for (const [id, argument] of [['first-call', 'first'], ['second-call', 'second']] as const) provider.enqueueText(textReply('', { toolCalls: [{ id, name: 'bash', arguments: argument }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' }))
+		provider.enqueueText(textReply('done', { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 		let effects = 0
 		const effect = defineTool('bash', { description: 'Effect.', input: z.string(), output: z.string(), async handler(_context, value) { effects += 1; return value } })
 		const agent = defineAgent('receiptReplay', { model: 'chat', instructions: 'Use effects.', tools: [effect], permissions: { bash: 'require_approval' } })
@@ -813,10 +809,10 @@ describe('catalog composition and graph compilation', () => {
 	it('resumes an interrupted subagent leaf before completing its parent tool', async () => {
 		const storage = persistentStorage()
 		const provider = new FakeModelProvider({ strict: true })
-		provider.enqueueText({ content: '', toolCalls: [{ id: 'delegate-1', name: 'reviewer', arguments: 'child input' }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
-		provider.enqueueText({ content: '', toolCalls: [{ id: 'effect-1', name: 'bash', arguments: 'approved input' }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
-		provider.enqueueText({ content: 'child done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
-		provider.enqueueText({ content: 'parent done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		provider.enqueueText(textReply('', { toolCalls: [{ id: 'delegate-1', name: 'reviewer', arguments: 'child input' }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' }))
+		provider.enqueueText(textReply('', { toolCalls: [{ id: 'effect-1', name: 'bash', arguments: 'approved input' }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' }))
+		provider.enqueueText(textReply('child done', { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
+		provider.enqueueText(textReply('parent done', { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 		let effects = 0
 		const effect = defineTool('bash', { description: 'Approved effect.', input: z.string(), output: z.string(),
 			async handler(_context, value) { effects += 1; return value } })
@@ -841,10 +837,8 @@ describe('catalog composition and graph compilation', () => {
 	it('re-enters a durable workflow through its saved agent call and restores the cumulative call budget', async () => {
 		const storage = persistentStorage()
 		const provider = new FakeModelProvider({ strict: true })
-		provider.enqueueText({ content: '', toolCalls: [{ id: 'effect-call', name: 'bash', arguments: 'approved input' }],
-			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
-		provider.enqueueText({ content: 'child done', toolCalls: [],
-			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		provider.enqueueText(textReply('', { toolCalls: [{ id: 'effect-call', name: 'bash', arguments: 'approved input' }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' }))
+		provider.enqueueText(textReply('child done', { toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 		let effects = 0
 		let handlerEntries = 0
 		let inputParses = 0

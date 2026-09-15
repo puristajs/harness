@@ -12,6 +12,7 @@ import { FakeSandbox } from '../src/testing/fakeSandbox.js'
 import type { AcquireRunRequest } from '../src/storage/types.js'
 import type { DurableRunLease } from '../src/storage/execution.js'
 import { canonicalJson } from '../src/runtime/canonical-json.js'
+import { textReply } from "@purista/harness/testing";
 
 function persistentStorage(): InMemoryHarnessStorage {
   const storage = new InMemoryHarnessStorage()
@@ -135,7 +136,7 @@ describe('v4 durable session execution', () => {
 	it.each([false, true])('reconciles a nested agent run-start append without committing a parent failure (persisted=%s)', async persisted => {
 		const storage = persistentStorage()
 		const provider = new FakeModelProvider({ strict: true })
-		provider.enqueueText({ content: 'child output', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		provider.enqueueText(textReply('child output', { toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 		const sentinel = new Error(`child start ${persisted ? 'persisted' : 'absent'}`)
 		const parentRunId = 'recoverable-child-parent-run'
 		let fail = true
@@ -170,7 +171,7 @@ describe('v4 durable session execution', () => {
 			const eventType = 'child_task.started' as const
 			const storage = persistentStorage()
 			const provider = new FakeModelProvider({ strict: true })
-			provider.enqueueText({ content: 'task output', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+			provider.enqueueText(textReply('task output', { toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 			const sentinel = new Error(`${eventType} ${persisted ? 'persisted' : 'absent'}`)
 			let fail = true
 			const originalAppend = storage.appendEvents.bind(storage)
@@ -212,7 +213,7 @@ describe('v4 durable session execution', () => {
 	it('replays a durable child settlement publication before completing the parent', async () => {
 		const storage = persistentStorage()
 		const provider = new FakeModelProvider({ strict: true })
-		provider.enqueueText({ content: 'settled output', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		provider.enqueueText(textReply('settled output', { toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 		const sentinel = new Error('child settlement publication failed')
 		let fail = true
 		const originalAppend = storage.appendEvents.bind(storage)
@@ -251,7 +252,7 @@ describe('v4 durable session execution', () => {
 	it('restores a persisted poisoned child settlement when reconstruction skips its producer', async () => {
 		const storage = persistentStorage()
 		const provider = new FakeModelProvider({ strict: true })
-		provider.enqueueText({ content: 'persisted settlement', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		provider.enqueueText(textReply('persisted settlement', { toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 		const sandbox = new FakeSandbox()
 		let sandboxCloses = 0
 		const openSandbox = sandbox.open.bind(sandbox)
@@ -808,7 +809,7 @@ describe('v4 durable session execution', () => {
   it('applies durable execution to agents with the same storage lifecycle', async () => {
     const storage = persistentStorage()
     const provider = new FakeModelProvider({ strict: true })
-    provider.enqueueText({ content: 'ok', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+    provider.enqueueText(textReply('ok', { toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
     const agent = defineAgent('durableAgent', {
       model: 'chat',
       input: z.string(), output: z.string(), durable: true, instructions: 'Answer.',

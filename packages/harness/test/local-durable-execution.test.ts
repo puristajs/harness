@@ -29,6 +29,7 @@ import { defineTool } from '../src/definitions/tool.js'
 import { defineWorkflow } from '../src/definitions/workflow.js'
 import { InternalError, OperationCancelledError } from '../src/errors/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
+import { textReply } from "@purista/harness/testing";
 
 async function tempRoot(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'purista-harness-'))
@@ -582,9 +583,8 @@ describe('local durable execution', () => {
     const local = localDurableExecution({ root })
     const resumeWorkspace = vi.spyOn(local.workspace, 'resumeWorkspace')
     const provider = new FakeModelProvider({ strict: true })
-    provider.enqueueText({ content: '', toolCalls: [{ id: 'call-1', name: 'effect', arguments: 'approved' }],
-      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
-    provider.enqueueText({ content: 'done', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+    provider.enqueueText(textReply('', { toolCalls: [{ id: 'call-1', name: 'effect', arguments: 'approved' }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' }))
+    provider.enqueueText(textReply('done', { toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
     let effects = 0
     const effect = defineTool('effect', { description: 'Apply one approved effect.', input: z.string(), output: z.string(),
       async handler(_context, value) { effects += 1; return value } })

@@ -13,6 +13,7 @@ import { canonicalJson } from '../runtime/canonical-json.js'
 import { defineAgent } from '../definitions/agent.js'
 import { defineHarness } from '../definitions/harness.js'
 import { FakeModelProvider } from '../testing/fakeModelProvider.js'
+import { objectReply } from "@purista/harness/testing";
 
 function sandboxBinding(id: string, instanceId: string, identity?: { tenantId?: string; principalId?: string }) {
   return {
@@ -106,7 +107,7 @@ describe('SqliteHarnessStorage', () => {
     try {
       const session = await harness.getSession('history')
       for (let index = 0; index < 9; index += 1) {
-        provider.enqueueObject({ object: { answer: `answer-${index}` }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+        provider.enqueueObject(objectReply({ answer: `answer-${index}` }, { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
         await expect(session.agents.historyAgent.run({ question: `question-${index}` })).resolves.toMatchObject({ status: 'completed' })
       }
       const history = await session.history.list()

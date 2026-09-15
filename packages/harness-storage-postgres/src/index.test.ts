@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
 
 import { defineAgent, defineHarness, type SessionRecord } from '@purista/harness'
-import { FakeModelProvider, harnessStorageContract } from '@purista/harness/testing'
+import { FakeModelProvider, harnessStorageContract, objectReply } from '@purista/harness/testing'
 import { postgresHarnessStorage } from './index.js'
 
 const openPgliteDatabases = new Set<() => Promise<void>>()
@@ -176,7 +176,7 @@ describe('postgresHarnessStorage', () => {
     try {
       const session = await harness.getSession('history')
       for (let index = 0; index < 9; index += 1) {
-        provider.enqueueObject({ object: { answer: `answer-${index}` }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+        provider.enqueueObject(objectReply({ answer: `answer-${index}` }, { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
         await expect(session.agents.historyAgent.run({ question: `question-${index}` })).resolves.toMatchObject({ status: 'completed' })
       }
       const history = await session.history.list()

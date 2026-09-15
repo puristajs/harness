@@ -176,7 +176,7 @@ describe('FakeModelProvider strict fixtures', () => {
     )
 
     const mismatched = new FakeModelProvider({ strict: true })
-    mismatched.enqueueText({ content: 'wrong operation', finishReason: 'stop' })
+    mismatched.enqueueText(textReply('wrong operation', { finishReason: 'stop' }))
     await expect(
       mismatched.object({ model: 'fake', messages: [], signal: new AbortController().signal }),
     ).rejects.toThrow('unexpected object request. The next queued response is for text.')
@@ -185,7 +185,7 @@ describe('FakeModelProvider strict fixtures', () => {
 
   it('confirms that every scripted response was consumed', async () => {
     const provider = new FakeModelProvider({ strict: true })
-    provider.enqueueObject({ object: { priority: 'high' }, finishReason: 'stop' })
+    provider.enqueueObject(objectReply({ priority: 'high' }, { finishReason: 'stop' }))
 
     await provider.object({ model: 'fake', messages: [], signal: new AbortController().signal })
 

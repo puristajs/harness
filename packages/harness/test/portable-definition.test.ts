@@ -3,6 +3,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest'
 
 import { HarnessConfigError, defineAgent, defineHarness, type ModelProvider } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
+import { objectReply } from "@purista/harness/testing";
 
 const answer = defineAgent('answer', {
   model: 'chat', input: z.object({ question: z.string() }), output: z.object({ answer: z.string() }),
@@ -31,9 +32,9 @@ describe('portable Harness definitions', () => {
 
   it('instantiates the same definition with independent runtime model bindings', async () => {
     const firstProvider = new FakeModelProvider()
-    firstProvider.enqueueObject({ object: { answer: 'first' }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+    firstProvider.enqueueObject(objectReply({ answer: 'first' }, { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
     const secondProvider = new FakeModelProvider()
-    secondProvider.enqueueObject({ object: { answer: 'second' }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+    secondProvider.enqueueObject(objectReply({ answer: 'second' }, { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
     const first = await supportDefinition.getInstance({ models: { chat: { provider: firstProvider, model: 'model-a' } } })
     const second = await supportDefinition.getInstance({ models: { chat: { provider: secondProvider, model: 'model-b' } } })
     const firstSession = await first.getSession('first')

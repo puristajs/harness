@@ -14,7 +14,7 @@ import {
   type HarnessAdapterContext,
   type Schema,
 } from '@purista/harness'
-import { FakeLogger, FakeModelProvider, RecordingTelemetry } from '@purista/harness/testing'
+import { FakeLogger, FakeModelProvider, RecordingTelemetry, objectReply, textReply } from '@purista/harness/testing'
 import {
   createSensitiveDataActions,
   defineGuardrailAction,
@@ -250,11 +250,7 @@ it('normalizes invalid and hostile action registries without leaking access fail
 
 it('runs canonical input and output rails with the Harness test adapter', async () => {
   const provider = new FakeModelProvider()
-  provider.enqueueText({
-    content: 'unsafe answer',
-    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-    finishReason: 'stop',
-  })
+  provider.enqueueText(textReply('unsafe answer', { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
   const rails = defineGuardrails({
     config: inlineConfig({
       rails: {
@@ -293,12 +289,7 @@ it('runs canonical input and output rails with the Harness test adapter', async 
 
 it('blocks a configured tool-input rail before the Harness tool has a side effect', async () => {
   const provider = new FakeModelProvider()
-  provider.enqueueText({
-    content: '',
-    toolCalls: [{ id: 'transfer-1', name: 'transfer', arguments: { amount: 100 } }],
-    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-    finishReason: 'tool_calls',
-  })
+  provider.enqueueText(textReply('', { toolCalls: [{ id: 'transfer-1', name: 'transfer', arguments: { amount: 100 } }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' }))
   const rails = defineGuardrails({
     config: inlineConfig({ rails: { tool_input: { flows: ['approve transfer'] } } }),
     actions: { 'approve transfer': { phase: 'tool_input', evaluate: () => ({ decision: 'block' }) } },
@@ -331,13 +322,8 @@ it('blocks a configured tool-input rail before the Harness tool has a side effec
 
 it('masks an explicitly selected structured tool-input field before the Harness tool executes', async () => {
   const provider = new FakeModelProvider()
-  provider.enqueueText({
-    content: '',
-    toolCalls: [{ id: 'transfer-1', name: 'transfer', arguments: { amount: 100, memo: 'refund test@example.test' } }],
-    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-    finishReason: 'tool_calls',
-  })
-  provider.enqueueText({ content: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+  provider.enqueueText(textReply('', { toolCalls: [{ id: 'transfer-1', name: 'transfer', arguments: { amount: 100, memo: 'refund test@example.test' } }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' }))
+  provider.enqueueText(textReply('done', { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
   const detector: SensitiveDataDetector = {
     id: 'email-detector',
     executionMode: 'local',
@@ -404,13 +390,8 @@ it('masks an explicitly selected structured tool-input field before the Harness 
 
 it('snapshots sensitive-data helper options and codec functions while retaining the live detector', async () => {
   const provider = new FakeModelProvider()
-  provider.enqueueText({
-    content: '',
-    toolCalls: [{ id: 'transfer-1', name: 'transfer', arguments: { memo: 'refund test@example.test' } }],
-    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-    finishReason: 'tool_calls',
-  })
-  provider.enqueueText({ content: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+  provider.enqueueText(textReply('', { toolCalls: [{ id: 'transfer-1', name: 'transfer', arguments: { memo: 'refund test@example.test' } }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' }))
+  provider.enqueueText(textReply('done', { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
   let detectorCalls = 0
   const detector: SensitiveDataDetector = {
     id: 'mutable-detector',
@@ -507,11 +488,7 @@ it('filters caller-owned retrieval chunks without creating a vector store', asyn
 
 it('uses a direct Harness model alias for a model-backed check', async () => {
   const safety = new FakeModelProvider()
-  safety.enqueueObject({
-    object: { allow: false },
-    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-    finishReason: 'stop',
-  })
+  safety.enqueueObject(objectReply({ allow: false }, { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
   const assistant = new FakeModelProvider()
   const rails = defineGuardrails({
     config: inlineConfig({ rails: { input: { flows: ['self check'] } } }),
@@ -543,13 +520,9 @@ it('uses a direct Harness model alias for a model-backed check', async () => {
 
 it('snapshots model-check helper configuration before caller mutation', async () => {
   const safety = new FakeModelProvider()
-  safety.enqueueObject({
-    object: { allow: true },
-    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-    finishReason: 'stop',
-  })
+  safety.enqueueObject(objectReply({ allow: true }, { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
   const assistant = new FakeModelProvider()
-  assistant.enqueueText({ content: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+  assistant.enqueueText(textReply('done', { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
   const options = {
     phase: 'input' as const,
     model: 'safety' as const,
@@ -869,11 +842,7 @@ it('requires selected action models as exact runtime bindings before provider wo
 
 it('projects only declared attached action models and rejects unavailable requirements before action callbacks', async () => {
   const assistant = new FakeModelProvider()
-  assistant.enqueueText({
-    content: 'safe answer',
-    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-    finishReason: 'stop',
-  })
+  assistant.enqueueText(textReply('safe answer', { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
   const safety = new FakeModelProvider()
   const unrelated = new FakeModelProvider()
   let exposedAliases: string[] = []
@@ -1222,11 +1191,7 @@ it('adapts a workflow-provided managed model handle inside the guardrail span', 
     }
   }
   const provider = new ObservedProvider()
-  provider.enqueueObject({
-    object: { allow: true },
-    usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18, cachedInputTokens: 3, reasoningTokens: 2 },
-    finishReason: 'stop',
-  })
+  provider.enqueueObject(objectReply({ allow: true }, { usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18, cachedInputTokens: 3, reasoningTokens: 2 }, finishReason: 'stop' }))
   const rails = defineGuardrails({
     config: inlineConfig({ rails: { retrieval: { flows: ['safety model'] } } }),
     observability: { telemetry },
@@ -1498,12 +1463,7 @@ it('fails closed on extra outcome fields and schema normalization without record
     },
   })
   const provider = new FakeModelProvider()
-  provider.enqueueText({
-    content: 'pending',
-    toolCalls: [{ id: 'transfer-1', name: 'transfer', arguments: { amount: '10' } }],
-    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-    finishReason: 'tool_calls',
-  })
+  provider.enqueueText(textReply('pending', { toolCalls: [{ id: 'transfer-1', name: 'transfer', arguments: { amount: '10' } }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' }))
   const transfer = defineTool('transfer', {
     description: 'Transfer.',
     input: z.object({ amount: z.number() }),
@@ -1527,7 +1487,7 @@ it('fails closed on extra outcome fields and schema normalization without record
 
 it('blocks final output before model-object delivery or assistant persistence', async () => {
   const provider = new FakeModelProvider()
-  provider.enqueueText({ content: 'restricted final', finishReason: 'stop' })
+  provider.enqueueText(textReply('restricted final', { finishReason: 'stop' }))
   const rails = defineGuardrails({
     config: inlineConfig({ rails: { output: { flows: ['final gate'] } } }),
     actions: { 'final gate': { phase: 'output', evaluate: () => ({ decision: 'block', reasonCode: 'restricted' }) } },
@@ -1557,17 +1517,8 @@ it('blocks final output before model-object delivery or assistant persistence', 
 
 it('applies output rails only to the final candidate after tool execution', async () => {
   const provider = new FakeModelProvider()
-  provider.enqueueText({
-    content: 'intermediate tool text',
-    toolCalls: [{ id: 'lookup-1', name: 'lookup', arguments: { id: 'one' } }],
-    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-    finishReason: 'tool_calls',
-  })
-  provider.enqueueText({
-    content: 'restricted final',
-    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-    finishReason: 'stop',
-  })
+  provider.enqueueText(textReply('intermediate tool text', { toolCalls: [{ id: 'lookup-1', name: 'lookup', arguments: { id: 'one' } }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' }))
+  provider.enqueueText(textReply('restricted final', { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
   let railCalls = 0
   let toolCalls = 0
   const rails = defineGuardrails({
@@ -1712,12 +1663,7 @@ it('keeps ordered transforms and rejects malformed phase outcomes and transform 
 it('inherits the enclosing tool deadline and fences a late rail continuation', async () => {
   vi.useFakeTimers()
   const provider = new FakeModelProvider()
-  provider.enqueueText({
-    content: 'pending',
-    toolCalls: [{ id: 'lookup-timeout', name: 'lookup', arguments: { id: 'one' } }],
-    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-    finishReason: 'tool_calls',
-  })
+  provider.enqueueText(textReply('pending', { toolCalls: [{ id: 'lookup-timeout', name: 'lookup', arguments: { id: 'one' } }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' }))
   let actionSignal: AbortSignal | undefined
   let resolveAction: (() => void) | undefined
   let startAction: () => void = () => undefined
@@ -1823,12 +1769,7 @@ it.each([
   const count = mode === 'delegated' ? 2 : 1
   if (phase === 'tool_input')
     for (let index = 0; index < count; index += 1) {
-      provider.enqueueText({
-        content: 'pending',
-        toolCalls: [{ id: 'same-call', name: 'lookup', arguments: { id: 'one' } }],
-        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-        finishReason: 'tool_calls',
-      })
+      provider.enqueueText(textReply('pending', { toolCalls: [{ id: 'same-call', name: 'lookup', arguments: { id: 'one' } }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' }))
     }
   const contexts: GuardrailActionContext[] = []
   const failures: DecisionBlockedError[] = []

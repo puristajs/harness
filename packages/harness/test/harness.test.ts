@@ -3,15 +3,12 @@ import { z } from 'zod'
 
 import { defineAgent, defineHarness } from '../src/index.js'
 import { FakeModelProvider } from '../src/testing/index.js'
+import { objectReply } from "@purista/harness/testing";
 
 describe('v4 Harness lifecycle entrypoint', () => {
   it('binds a portable definition and executes its typed agent', async () => {
     const provider = new FakeModelProvider()
-    provider.enqueueObject({
-      object: { answer: 'ready' },
-      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-      finishReason: 'stop',
-    })
+    provider.enqueueObject(objectReply({ answer: 'ready' }, { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
     const answer = defineAgent('answer', {
       model: 'chat',
       input: z.string(), output: z.object({ answer: z.string() }),

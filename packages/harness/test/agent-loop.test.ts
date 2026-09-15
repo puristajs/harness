@@ -418,7 +418,7 @@ describe('v4 standard agent loop', () => {
 		}
 		const knowledge = Object.freeze({ id: 'knowledge', manifest: Object.freeze({ name: 'knowledge', description: 'Search reviewed facts.', ignored: true }) })
 		const analysis = Object.freeze({ id: 'analysis', manifest: Object.freeze({ name: 'Analysis', description: 'Analyze records.' }) })
-		const agent = defineAgent('skilledAgent', { model: 'chat', instructions: 'Application rules.', skills: [] as never })
+		const agent = defineAgent('skilledAgent', { model: 'chat', instructions: 'Application rules.' })
 		const run = baseOptions(agent, model, 'run')
 		run.options.skills = Object.freeze({ knowledge, analysis }) as never
 		await executeStandardAgent(run.options)

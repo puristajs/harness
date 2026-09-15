@@ -1,10 +1,11 @@
 import { expect, it } from 'vitest'
 import { assertReplayConsumed, createReplayInteractionRecorder, replayModelProvider } from '../src/testing/index.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
+import { textReply } from "@purista/harness/testing";
 
 it('records only sanitizer output and replays it without the source provider', async () => {
   const source = new FakeModelProvider()
-  source.enqueueText({ content: 'secret output', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+  source.enqueueText(textReply('secret output', { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
   const recorder = createReplayInteractionRecorder({ sanitize: () => ({ redacted: true }) })
   const wrapped = recorder.wrap(source)
   await wrapped.text?.({ model: 'demo', messages: [{ role: 'user', content: 'secret input' }], signal: new AbortController().signal })
@@ -40,7 +41,7 @@ it('rejects malformed interactions as invalid fixtures before replay', () => {
 
 it('rejects non-JSON sanitizer output while recording', async () => {
   const source = new FakeModelProvider()
-  source.enqueueText({ content: 'ok', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+  source.enqueueText(textReply('ok', { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
   const recorder = createReplayInteractionRecorder({ sanitize: () => undefined })
   const wrapped = recorder.wrap(source)
   await expect(wrapped.text?.({ model: 'demo', messages: [], signal: new AbortController().signal })).rejects.toMatchObject({

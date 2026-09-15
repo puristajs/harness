@@ -16,6 +16,7 @@ function testRoute(target: { readonly kind: 'agent' | 'workflow'; readonly id: s
 	return { schemaVersion: 1 as const, kind: 'harness_target_route' as const, target: { kind: target.kind, id: target.id }, bindingDigest: `sha256:${'0'.repeat(64)}` }
 }
 import { compileDefinitionGraph } from '../src/runtime/compiled-graph.js'
+import { textReply } from "@purista/harness/testing";
 
 function persistentStorage(): InMemoryHarnessStorage {
 	const storage = new InMemoryHarnessStorage()
@@ -129,7 +130,7 @@ describe('v4 workflow child-task runtime', () => {
 
 	it('exposes a completed standalone child through its session owner after the workflow returns', async () => {
 		const provider = new FakeModelProvider()
-		provider.enqueueText({ content: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		provider.enqueueText(textReply('done', { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 		const worker = defineAgentV4('worker', { model: 'chat', input: z.string(), instructions: 'Work.', prompt: value => ({ role: 'user', content: value }) })
 		let taskId = ''
 		const launch = defineWorkflowV4('launch', { input: z.string(), output: z.string(), agents: [worker], durable: true,

@@ -23,6 +23,7 @@ import { InMemoryHarnessStorage } from '../src/storage/in-memory.js'
 import { FakeModelProvider } from '../src/testing/fakeModelProvider.js'
 import { OtelTelemetryShim } from '../src/telemetry/shim.js'
 import type { JsonValue } from '../src/models/json.js'
+import { textReply } from "@purista/harness/testing";
 
 function persistentStorage(): TrackingHarnessStorage {
 	const storage = new TrackingHarnessStorage()
@@ -347,10 +348,9 @@ describe('v4 session lifecycle', () => {
 		const parent = defineWorkflow('borrowedParent', { input: z.string(), output: z.string(), agents: [child],
 			async handler({ input, agents }) { return agents.borrowedChild.run(input, { callId: 'child-call' }) } })
 		const provider = new FakeModelProvider({ strict: true })
-		provider.enqueueText({ content: '', toolCalls: [{ id: 'approval-call', name: 'bash', arguments: 'approved' }],
-			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
-		provider.enqueueText({ content: 'reviewed', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
-		provider.enqueueText({ content: 'child-result', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		provider.enqueueText(textReply('', { toolCalls: [{ id: 'approval-call', name: 'bash', arguments: 'approved' }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' }))
+		provider.enqueueText(textReply('reviewed', { toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
+		provider.enqueueText(textReply('child-result', { toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 		const harness = await defineHarness({ name: 'borrowedReentry', revision: 'v1' }).addAgent(unused).addAgent(reviewer).addWorkflow(parent)
 			.getInstance({ storage, sandbox: { adapter: sandbox, policy: { authorizeBorrowedOwner() {
 				authorizations += 1
@@ -400,8 +400,7 @@ describe('v4 session lifecycle', () => {
 			}
 		}
 		const provider = new RevokingProvider({ strict: true })
-		provider.enqueueText({ content: '', toolCalls: [{ id: 'delegate', name: 'leaf', arguments: 'blocked' }],
-			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
+		provider.enqueueText(textReply('', { toolCalls: [{ id: 'delegate', name: 'leaf', arguments: 'blocked' }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' }))
 		const harness = await defineHarness({ name: 'recursiveBorrowed', revision: 'v1', defaults: { maxDepth: 3 } }).addWorkflow(workflow).getInstance({
 			storage: persistentStorage(), models: { chat: { provider, model: 'fake' } }, sandbox: { adapter: sandbox,
 				policy: { sharing: 'declared', authorizeBorrowedOwner: () => allowed } },
@@ -452,7 +451,7 @@ describe('v4 session lifecycle', () => {
 		const { harness, storage, sandbox, provider } = await buildLifecycleHarness()
 		const session = await harness.getSession('release-and-reopen')
 		await session.replaceHistory([{ role: 'user', content: 'remember this' }])
-		provider.enqueueText({ content: 'first', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		provider.enqueueText(textReply('first', { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 		await expect(session.agents.owner.run('first')).resolves.toMatchObject({
 			status: 'completed', output: 'first',
 		})
@@ -471,7 +470,7 @@ describe('v4 session lifecycle', () => {
 		}))
 
 		const reopened = await harness.getSession('release-and-reopen')
-		provider.enqueueText({ content: 'second', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		provider.enqueueText(textReply('second', { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 		await expect(reopened.agents.owner.run('second')).resolves.toMatchObject({
 			status: 'completed', output: 'second',
 		})
@@ -490,7 +489,7 @@ describe('v4 session lifecycle', () => {
 			.getInstance({ storage, sandbox: { adapter: sandbox }, models: { chat: { provider, model: 'fake' } } })
 		const session = await harness.getSession('ordered-history')
 		for (let index = 0; index < 9; index += 1) {
-			provider.enqueueText({ content: `answer-${index}`, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+			provider.enqueueText(textReply(`answer-${index}`, { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 			await expect(session.agents.owner.run(`question-${index}`)).resolves.toMatchObject({ status: 'completed' })
 		}
 		const expectedRoles = Array.from({ length: 8 }, () => ['user', 'assistant']).flat()
@@ -569,7 +568,7 @@ describe('v4 session lifecycle', () => {
 		const sandbox = new TrackingSandbox()
 		const { harness, provider } = await buildLifecycleHarness(persistentStorage(), sandbox)
 		const session = await harness.getSession('retry-cleanup')
-		provider.enqueueText({ content: 'opened', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		provider.enqueueText(textReply('opened', { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 		await session.agents.owner.run('open')
 
 		sandbox.failNextSessionClose = new Error('first session close failed')
@@ -578,7 +577,7 @@ describe('v4 session lifecycle', () => {
 		expect(sandbox.closeCalls).toBe(2)
 
 		const reopened = await harness.getSession('retry-cleanup')
-		provider.enqueueText({ content: 'reopened', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		provider.enqueueText(textReply('reopened', { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 		await reopened.agents.owner.run('open again')
 		sandbox.failNextSessionClose = new Error('first instance close failed')
 		await expect(harness.close()).rejects.toThrow('Harness close failed.')
@@ -632,7 +631,7 @@ describe('v4 session lifecycle', () => {
 		const sandboxAgent = defineAgent('sandboxConsumer', { model: 'chat', instructions: 'Use tools.', tools: [inspect] })
 		const plainAgent = defineAgent('plainAgent', { model: 'chat', instructions: 'Reply.' })
 		const provider = new FakeModelProvider({ strict: true })
-		provider.enqueueText({ content: 'plain', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		provider.enqueueText(textReply('plain', { toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 		const harness = await defineHarness({ name: 'targetSandboxLaziness' }).addAgent(sandboxAgent).addAgent(plainAgent)
 			.getInstance({ sandbox: { adapter: sandbox }, models: { chat: { provider, model: 'fake' } } })
 		const session = await harness.getSession('plain-agent')
@@ -644,7 +643,7 @@ describe('v4 session lifecycle', () => {
 
 	it('uses a private target partition when sandbox policy is omitted', async () => {
 		const { harness, sandbox, provider } = await buildLifecycleHarness()
-		provider.enqueueText({ content: 'done', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		provider.enqueueText(textReply('done', { toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 		const session = await harness.getSession('implicit-private')
 		await expect(session.agents.owner.run('write')).resolves.toMatchObject({ status: 'completed', output: 'done' })
 		expect(sandbox.openedScopes).toEqual(expect.arrayContaining([
@@ -870,9 +869,8 @@ describe('v4 session lifecycle', () => {
 			prompt: input => ({ role: 'user', content: input }),
 		})
 		const provider = new FakeModelProvider({ strict: true })
-		provider.enqueueText({ content: '', toolCalls: [{ id: 'effect-call', name: effect.id, arguments: 'approved' }],
-			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
-		provider.enqueueText({ content: 'complete', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		provider.enqueueText(textReply('', { toolCalls: [{ id: 'effect-call', name: effect.id, arguments: 'approved' }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' }))
+		provider.enqueueText(textReply('complete', { toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 		const harness = await defineHarness({ name: 'concurrentApprovalResume', revision: 'v1' }).addAgent(agent).getInstance({
 			storage: persistentStorage(), models: { chat: { provider, model: 'fake' } },
 		})
@@ -929,7 +927,7 @@ describe('v4 session lifecycle', () => {
 			permissions: { bash: 'require_approval' } })
 		const provider = new FakeModelProvider({ strict: true })
 		const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
-		provider.enqueueText({ content: '', toolCalls: [{ id: 'first-call', name: effect.id, arguments: 'first' }], usage, finishReason: 'tool_calls' })
+		provider.enqueueText(textReply('', { toolCalls: [{ id: 'first-call', name: effect.id, arguments: 'first' }], usage, finishReason: 'tool_calls' }))
 		provider.enqueueTextStream([
 			{ kind: 'tool_call', call: { id: 'second-call', name: effect.id, arguments: 'second' } },
 			{ kind: 'finish', usage, finishReason: 'tool_calls' },
@@ -986,8 +984,7 @@ describe('v4 session lifecycle', () => {
 		const agent = defineAgent('crossModeApprovalAgent', { model: 'chat', instructions: 'Use the effect.', tools: [effect],
 			permissions: { bash: 'require_approval' } })
 		const provider = new FakeModelProvider({ strict: true })
-		provider.enqueueText({ content: '', toolCalls: [{ id: 'cross-mode-effect', name: effect.id, arguments: 'approved' }],
-			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
+		provider.enqueueText(textReply('', { toolCalls: [{ id: 'cross-mode-effect', name: effect.id, arguments: 'approved' }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' }))
 		const storage = persistentStorage()
 		const harness = await defineHarness({ name: 'crossModeApprovalHarness', revision: 'v1' }).addAgent(agent)
 			.getInstance({ storage, models: { chat: { provider, model: 'fake' } } })
@@ -1031,11 +1028,11 @@ describe('v4 session lifecycle', () => {
 			permissions: { bash: 'require_approval' } })
 		const provider = new FakeModelProvider({ strict: true })
 		const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
-		provider.enqueueText({ content: '', toolCalls: [
+		provider.enqueueText(textReply('', { toolCalls: [
 			{ id: 'batch-call-1', name: bash.id, arguments: 'first' },
 			{ id: 'batch-call-2', name: bash.id, arguments: 'second' },
-		], usage, finishReason: 'tool_calls' })
-		provider.enqueueText({ content: 'complete', toolCalls: [], usage, finishReason: 'stop' })
+		], usage, finishReason: 'tool_calls' }))
+		provider.enqueueText(textReply('complete', { toolCalls: [], usage, finishReason: 'stop' }))
 		const storage = persistentStorage()
 		const harness = await defineHarness({ name: 'multiApprovalHarness', revision: 'v1' }).addAgent(agent)
 			.getInstance({ storage, models: { chat: { provider, model: 'fake' } } })
@@ -1078,8 +1075,8 @@ describe('v4 session lifecycle', () => {
 			})
 			const provider = new FakeModelProvider({ strict: true })
 			const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
-			provider.enqueueText({ content: '', toolCalls: [{ id: 'receipt-call', name: bash.id, arguments: 'approved' }], usage, finishReason: 'tool_calls' })
-			provider.enqueueText({ content: 'child complete', toolCalls: [], usage, finishReason: 'stop' })
+			provider.enqueueText(textReply('', { toolCalls: [{ id: 'receipt-call', name: bash.id, arguments: 'approved' }], usage, finishReason: 'tool_calls' }))
+			provider.enqueueText(textReply('child complete', { toolCalls: [], usage, finishReason: 'stop' }))
 			const storage = persistentStorage()
 			const harness = await defineHarness({ name: `receiptHarness${terminalStatus}`, revision: 'v1' }).addWorkflow(workflow)
 				.getInstance({ storage, models: { chat: { provider, model: 'fake' } } })
@@ -1139,8 +1136,7 @@ describe('v4 session lifecycle', () => {
 		const agent = defineAgent('postApprovalRevisionAgent', { model: 'chat', instructions: 'Apply.', tools: [effect],
 			permissions: { bash: 'require_approval' } })
 		const provider = new FakeModelProvider({ strict: true })
-		provider.enqueueText({ content: '', toolCalls: [{ id: 'post-approval-call', name: effect.id, arguments: 'approved' }],
-			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
+		provider.enqueueText(textReply('', { toolCalls: [{ id: 'post-approval-call', name: effect.id, arguments: 'approved' }], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' }))
 		const harness = await defineHarness({ name: 'postApprovalRevisionHarness', revision: 'v1' }).addAgent(agent)
 			.getInstance({ storage, models: { chat: { provider, model: 'fake' } } })
 		const session = await harness.getSession('post-approval-revision-session')
@@ -1188,8 +1184,8 @@ describe('v4 session lifecycle', () => {
 				{ kind: 'finish', usage, finishReason: 'stop' },
 			])
 		} else {
-			provider.enqueueText({ content: '', toolCalls: [{ id: 'matrix-effect-call', name: effect.id, arguments: 'approved' }], usage, finishReason: 'tool_calls' })
-			provider.enqueueText({ content: 'complete', toolCalls: [], usage, finishReason: 'stop' })
+			provider.enqueueText(textReply('', { toolCalls: [{ id: 'matrix-effect-call', name: effect.id, arguments: 'approved' }], usage, finishReason: 'tool_calls' }))
+			provider.enqueueText(textReply('complete', { toolCalls: [], usage, finishReason: 'stop' }))
 		}
 		const harness = await defineHarness({ name: `resumeMatrix${targetKind}${mode}`, revision: 'v1' })
 			.addAgent(agent).addWorkflow(workflow).getInstance({ storage: persistentStorage(), models: { chat: { provider, model: 'fake' } } })
@@ -1237,8 +1233,7 @@ describe('v4 session lifecycle', () => {
 				return output
 			} })
 		const provider = new FakeModelProvider({ strict: true })
-		for (let index = 0; index < 64; index += 1) provider.enqueueText({ content: `leaf-${index}`,
-			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		for (let index = 0; index < 64; index += 1) provider.enqueueText(textReply(`leaf-${index}`, { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 		const harness = await defineHarness({ name: 'nestedEventCorrelation', revision: 'v1',
 			defaults: { maxDepth: 3, maxWorkflowAgentCalls: 64 } })
 			.addWorkflow(workflow).getInstance({ storage: persistentStorage(), models: { chat: { provider, model: 'fake' } } })
@@ -1262,7 +1257,7 @@ describe('v4 session lifecycle', () => {
 		const { harness, storage, sandbox, provider } = await buildLifecycleHarness()
 		const session = await harness.getSession('destroyed')
 		await session.replaceHistory([{ role: 'user', content: 'delete me' }])
-		provider.enqueueText({ content: 'delete run', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		provider.enqueueText(textReply('delete run', { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' }))
 		await session.agents.owner.run('delete run')
 
 		await session.destroy()

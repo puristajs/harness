@@ -215,7 +215,7 @@ export async function createGuardrailsExample(options: GuardrailsExampleOptions 
     defaults: { decisionTimeoutMs: options.decisionTimeoutMs ?? 1_000, toolTimeoutMs: 5_000 },
   }).addAgent(support).getInstance({
     models: { chat: { provider, model: 'fake' } },
-    sandbox: inMemorySandbox(),
+    sandbox: { adapter: inMemorySandbox() },
     storage,
     logger: new JsonLogger({ level: 'error' }),
     telemetry: { contentCaptureMode: 'NO_CONTENT' },

@@ -143,9 +143,10 @@ Conditional fields follow these rules:
 - `memory` is required for declared memory needs and may replace the
   process-local default otherwise.
 - `sandbox`, `workspace`, and `artifacts` exist only when the graph needs
-  them.
-- `sandboxBinding` configures explicit sandbox ownership groups when a
-  sandbox exists.
+  them. `sandbox` contains its `adapter` and optional deployment `policy`.
+- Named sandbox groups are compiled from definitions. A graph that declares
+  them requires `sandbox.policy.sharing: 'declared'`; runtime configuration
+  never repeats group names.
 - `agentAdmission`, model `admission`, `logger`, and `telemetry` are
   optional deployment controls.
 - A graph containing host-aware tools cannot use ordinary standalone

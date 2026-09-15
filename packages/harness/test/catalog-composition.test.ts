@@ -497,7 +497,7 @@ describe('catalog composition and graph compilation', () => {
 		const model = new FakeModelProvider({ strict: true })
 		model.enqueueText({ content: 'one', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
 		model.enqueueText({ content: 'two', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
-		const firstInstance = await definition.getInstance({ storage, sandbox, models: { chat: { provider: model, model: 'fake' } } })
+		const firstInstance = await definition.getInstance({ storage, sandbox: { adapter: sandbox }, models: { chat: { provider: model, model: 'fake' } } })
 		const first = await firstInstance.getSession('shared-session')
 		const secondFacade = await firstInstance.getSession('shared-session')
 		expect(first).not.toBe(secondFacade)
@@ -511,7 +511,7 @@ describe('catalog composition and graph compilation', () => {
 		expect(await storage.getSession('shared-session')).toMatchObject({ runCount: 1 })
 		await first.release()
 
-		const secondInstance = await definition.getInstance({ storage, sandbox, models: { chat: { provider: model, model: 'fake' } } })
+		const secondInstance = await definition.getInstance({ storage, sandbox: { adapter: sandbox }, models: { chat: { provider: model, model: 'fake' } } })
 		const reopened = await secondInstance.getSession('shared-session')
 		expect(ownerModes).toEqual(['create'])
 		expect(opens).toBe(1)

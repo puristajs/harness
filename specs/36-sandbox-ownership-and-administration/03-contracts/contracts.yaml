@@ -1,7 +1,7 @@
 contract_version: 1
 public_api_inventory:
   - SandboxPolicy
-  - SandboxBindingOptions
+  - SandboxRuntimePolicy
   - SandboxOwnerAuthorizationContext
   - SessionOptions
   - SandboxOwner
@@ -39,7 +39,7 @@ execution_semantics:
 contracts:
   - contract_id: CTR-SOWN-POLICY
     canonical_source: api.md#CTR-SOWN-POLICY
-    closed_fields: [groups, defaultPolicy, authorizeOwner]
+    closed_fields: [default, sharing, authorizeBorrowedOwner]
     policy_variants: [inherit, private, group]
     group_limit: 64
     group_max_length: 64
@@ -77,12 +77,12 @@ contracts:
     new_validation_location: sandbox_options
   - contract_id: CTR-SOWN-PURISTA
     canonical_source: ../05-purista.md#CTR-SOWN-PURISTA
-    policy_fields: [adapter, options, sharing, owner]
+    policy_fields: [adapter, policy, default, sharing, authorizeBorrowedOwner]
     removed_fields: [enabled]
     session_id_prefix: "agent-session:"
     durable_run_id_prefix: "agent-run:"
-    manifest_fields: [sharing, groups, defaultPolicy, usesExplicitOwner]
-    executable_binding: AttachedAgentDefinition.sandboxPolicy
+    manifest_fields: [sharing, usesExplicitOwner]
+    executable_binding: AttachedAgentDefinition.sandbox
   - contract_id: CTR-SOWN-OPTIONS
     canonical_source: api.md#CTR-SOWN-OPTIONS
     sandbox_admin_fields: [maxCatalogEntries, selectorRevocationReserve, maxActiveSandboxes]

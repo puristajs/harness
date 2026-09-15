@@ -31,7 +31,7 @@ export function createReportHarness() {
       })
   const harness = defineHarness({ name: 'customSandboxExample' }).addAgent(reporter).getInstance({
     models: { chat: { provider, model: 'scripted-report-model' } },
-    sandbox,
+    sandbox: { adapter: sandbox },
   })
 
   return { harness, provider, sandbox }

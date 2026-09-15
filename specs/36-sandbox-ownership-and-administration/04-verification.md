@@ -6,8 +6,9 @@ or durable restart recovery. Production-provider tests remain separately gated.
 
 ## ACC-SOWN-POLICY — definition and child selection
 
-One session executes two agents and two workflows: default sharing sees the same
-file; private agent/workflow keys are disjoint and stable across turns; group
+One session executes two agents and two workflows: default private partitions
+are disjoint and stable across turns; explicitly inherited partitions see the
+same file; group
 members share only within the owner/lifetime; inline inheritance follows a private
 parent. Different Harnesses sharing an explicit owner still have distinct private
 definitions. Child tasks are isolated by default, including continuables; explicit

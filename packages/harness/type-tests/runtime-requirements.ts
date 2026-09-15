@@ -140,7 +140,7 @@ const advancedConfig: HarnessInstanceConfig<AdvancedRequirements> = {
 	mcp: { knowledge: http },
 	storage,
 	memory,
-	sandbox,
+	sandbox: { adapter: sandbox },
 	workspace,
 	artifacts,
 	agentAdmission: { async acquire() { return { release() {} } } },
@@ -176,13 +176,13 @@ void invalidHttpField
 
 type RuntimeOnlyRequirements = Requirements<EmptyModels, never, 'python'>
 declare const runtimeOnlySandbox: Sandbox & { readonly runtimes: readonly ['python'] }
-const runtimeOnlyConfig: HarnessInstanceConfig<RuntimeOnlyRequirements> = { sandbox: runtimeOnlySandbox }
+const runtimeOnlyConfig: HarnessInstanceConfig<RuntimeOnlyRequirements> = { sandbox: { adapter: runtimeOnlySandbox } }
 void runtimeOnlyConfig
 // @ts-expect-error a Skill runtime requirement makes sandbox.runtimes mandatory
-const missingRuntimeMetadata: HarnessInstanceConfig<RuntimeOnlyRequirements> = { sandbox: noSpawnSandbox }
+const missingRuntimeMetadata: HarnessInstanceConfig<RuntimeOnlyRequirements> = { sandbox: { adapter: noSpawnSandbox } }
 void missingRuntimeMetadata
 
-const guardrailRuntimeConfig: HarnessInstanceConfig<GuardrailRuntimeRequirements> = { models: { chat: modelBinding }, sandbox: runtimeOnlySandbox }
+const guardrailRuntimeConfig: HarnessInstanceConfig<GuardrailRuntimeRequirements> = { models: { chat: modelBinding }, sandbox: { adapter: runtimeOnlySandbox } }
 void guardrailRuntimeConfig
 // @ts-expect-error a guardrail-only Skill runtime still requires a matching sandbox
 const missingGuardrailRuntimeSandbox: HarnessInstanceConfig<GuardrailRuntimeRequirements> = { models: { chat: modelBinding } }
@@ -191,5 +191,5 @@ void missingGuardrailRuntimeSandbox
 type SandboxOnlyRequirements = Requirements<EmptyModels, never, never, never, 'sandbox.fs'>
 declare const sandboxWithoutCapabilities: Sandbox
 // @ts-expect-error a sandbox capability requirement makes sandbox.capabilities mandatory
-const missingSandboxCapabilities: HarnessInstanceConfig<SandboxOnlyRequirements> = { sandbox: sandboxWithoutCapabilities }
+const missingSandboxCapabilities: HarnessInstanceConfig<SandboxOnlyRequirements> = { sandbox: { adapter: sandboxWithoutCapabilities } }
 void missingSandboxCapabilities

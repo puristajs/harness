@@ -365,7 +365,7 @@ export type {
   TextSearchCapableSandboxSession,
 } from './sandbox/index.js'
 export type {
-  SandboxBindingOptions,
+  SandboxRuntimePolicy,
   SandboxOwner,
   SandboxOwnerAuthorizationContext,
   SandboxOwnerRegistrationOptions,
@@ -618,7 +618,7 @@ export type {
   HarnessTargetInvoker,
   InvokeOptions,
 } from './runtime/standalone-instance.js'
-export type { HarnessInstanceConfig, McpBinding, ModelRuntimeBinding } from './runtime/instance-config.js'
+export type { HarnessInstanceConfig, McpBinding, ModelRuntimeBinding, SandboxRuntimeAdapter, SandboxRuntimeConfiguration } from './runtime/instance-config.js'
 export type { HarnessExecutionDefaults, ResolvedHarnessExecutionDefaults } from './runtime/execution-defaults.js'
 export type { RuntimeRequirements, RuntimeRequirementsFor } from './runtime/runtime-requirements.js'
 export type {

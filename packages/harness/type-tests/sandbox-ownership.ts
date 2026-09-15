@@ -4,7 +4,7 @@ import {
   SandboxQuotaExceededError
 } from '../src/index.js'
 import type {
-  SandboxBindingOptions,
+  SandboxRuntimePolicy,
   SandboxOwner,
   SandboxPolicy,
   SessionOptions
@@ -19,10 +19,10 @@ const owner: SandboxOwner = {
 
 const sessionOptions: SessionOptions = { sandboxOwner: owner }
 const policy: SandboxPolicy<'reviewers'> = { group: 'reviewers' }
-const binding: SandboxBindingOptions<'reviewers'> = { groups: ['reviewers'], defaultPolicy: policy }
+const runtimePolicy: SandboxRuntimePolicy<'reviewers'> = { sharing: 'declared', default: policy }
 const runScope: SandboxScope = { owner, partition: { kind: 'group', id: 'reviewers' }, lifetime: 'run', runId: 'run-1' }
 void sessionOptions
-void binding
+void runtimePolicy
 void runScope
 
 new SandboxPermissionDeniedError('scope_mismatch')
@@ -35,6 +35,8 @@ new SandboxPermissionDeniedError('private owner value', { reason: 'scope_mismatc
 const invalidPolicy: SandboxPolicy = { mode: 'multi_instance' }
 // @ts-expect-error group policies are constrained to the configured group vocabulary.
 const invalidGroup: SandboxPolicy<'reviewers'> = { group: 'authors' }
+// @ts-expect-error group-free graphs cannot enable group sharing.
+const invalidGroupFreeSharing: SandboxRuntimePolicy = { sharing: 'declared' }
 // @ts-expect-error run scopes require a run id.
 const missingRunId: SandboxScope = { owner, partition: { kind: 'shared' }, lifetime: 'run' }
 // @ts-expect-error session scopes cannot retain a run id.
@@ -45,6 +47,7 @@ const invalidOwner: SandboxOwner = { ...owner, identity: { tenantId: 'tenant-1',
 const invalidSessionOptions: SessionOptions = { sandboxOwner: owner, legacySandboxId: 'sandbox-1' }
 void invalidPolicy
 void invalidGroup
+void invalidGroupFreeSharing
 void missingRunId
 void sessionWithRunId
 void invalidOwner

@@ -313,6 +313,8 @@ export interface HarnessRuntimeKernel<Contracts extends HarnessContracts, Requir
 interface SessionRuntime {
 	record: SessionRecord
 	readonly sandboxes: Map<string, SandboxSessionBase>
+	/** Exact session-lifetime scopes opened through this session, retained for owner cleanup. */
+	readonly sandboxScopes: Map<string, SandboxScope>
 	readonly sandboxOpenings: Map<string, Promise<SandboxSessionBase>>
 	ownerRegistration?: Promise<void>
 	readonly controller: AbortController
@@ -729,8 +731,8 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			|| childSandboxHandoff?.policy !== undefined || definition.sandbox !== undefined
 		if (targetNeedsSandbox && childSandboxScope === undefined) await ensureSandboxOwnerRegistered(session)
 		const effectiveSandboxSource = childSandboxScope?.source ?? Object.freeze({
-			scope: rootSandboxScope(options.name, definition, session.record.sandboxBinding.owner, runId,
-				options.bindings.sandboxBinding?.defaultPolicy),
+				scope: rootSandboxScope(options.name, definition, session.record.sandboxBinding.owner, runId,
+					options.bindings.sandboxPolicy?.default),
 			relation: session.record.sandboxBinding.relation,
 			authorizationRecord: session.record,
 		})
@@ -1851,7 +1853,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 						record = authoritative
 						ownerRegistration = Promise.resolve()
 				}
-				const value: SessionRuntime = { record, sandboxes: new Map(), sandboxOpenings: new Map(), controller: new AbortController(), taskRegistry: new Map(), activeRoots: new Map(), busy: false, releasing: false, released: false }
+				const value: SessionRuntime = { record, sandboxes: new Map(), sandboxScopes: new Map(), sandboxOpenings: new Map(), controller: new AbortController(), taskRegistry: new Map(), activeRoots: new Map(), busy: false, releasing: false, released: false }
 				if (ownerRegistration !== undefined) value.ownerRegistration = ownerRegistration
 				sessions.set(id, value)
 				return value
@@ -1888,7 +1890,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 		if (scopeOverride === undefined) await ensureSandboxOwnerRegistered(state)
 		const partition = definition === undefined
 			? Object.freeze({ kind: 'shared' as const })
-			: targetSandboxPartition(options.name, definition, options.bindings.sandboxBinding?.defaultPolicy)
+			: targetSandboxPartition(options.name, definition, options.bindings.sandboxPolicy?.default)
 		const scope = scopeOverride?.scope ?? Object.freeze({ owner: state.record.sandboxBinding.owner, partition, lifetime: 'session' as const })
 		const key = canonicalJson(scope as unknown as JsonValue)
 		const known = state.sandboxes.get(key)
@@ -1901,6 +1903,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			try {
 				for (const skill of Object.values(skills)) await skill.mountReadOnly(opened.session)
 				state.sandboxes.set(key, opened.session)
+				state.sandboxScopes.set(key, scope)
 				if (scopeOverride?.terminateOnRelease === true) {
 					state.childSandboxCleanup = Object.freeze({ scope, terminated: false })
 				}
@@ -1942,8 +1945,8 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 		const parentSession = sessions.get(parentSessionId)
 		if (parentSession === undefined || parentSession.released) throw new InternalError('Child launch parent session is unavailable.')
 		const source = effectiveSandboxScopes.get(parentRunId) ?? Object.freeze({
-			scope: rootSandboxScope(options.name, parent, parentSession.record.sandboxBinding.owner, parentRunId,
-				options.bindings.sandboxBinding?.defaultPolicy),
+				scope: rootSandboxScope(options.name, parent, parentSession.record.sandboxBinding.owner, parentRunId,
+				options.bindings.sandboxPolicy?.default),
 			relation: parentSession.record.sandboxBinding.relation,
 			authorizationRecord: parentSession.record,
 		})
@@ -1990,9 +1993,9 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 			|| (ownerIdentity?.tenantId === undefined && ownerIdentity?.principalId === undefined && actorIdentity?.principalId !== undefined)) {
 			throw new SandboxPermissionDeniedError('scope_mismatch')
 		}
-		const authorize = options.bindings.sandboxBinding?.authorizeOwner
-		if (authorize === undefined) throw new HarnessConfigError('A borrowed sandbox owner requires authorizeOwner.', {
-			reason: 'invalid_runtime_binding', path: 'sandboxBinding.authorizeOwner',
+		const authorize = options.bindings.sandboxPolicy?.authorizeBorrowedOwner
+		if (authorize === undefined) throw new HarnessConfigError('A borrowed sandbox owner requires authorizeBorrowedOwner.', {
+			reason: 'invalid_runtime_binding', path: 'sandbox.policy.authorizeBorrowedOwner',
 		})
 		let allowed: boolean
 		try {
@@ -2057,7 +2060,7 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				workerId: lease?.workerId ?? instanceWorkerId, attempt, idempotencyKey: `${runId}:start`,
 				...(invokeOptions.durable?.workspacePolicy === undefined ? {} : { policy: invokeOptions.durable.workspacePolicy }), signal })
 		}
-		const partition = targetSandboxPartition(options.name, definition, options.bindings.sandboxBinding?.defaultPolicy)
+		const partition = targetSandboxPartition(options.name, definition, options.bindings.sandboxPolicy?.default)
 		let runSandbox: SandboxSessionBase
 		try {
 			runSandbox = (await sandbox.open({ scope: Object.freeze({ owner: state.record.sandboxBinding.owner, partition,
@@ -2453,17 +2456,29 @@ export async function instantiateHarnessRuntime<Contracts extends HarnessContrac
 				if (result.status === 'fulfilled') state.sandboxes.delete(sandboxRows[index]![0])
 				else failures.push(normalizeInternal(result.reason))
 			}
+			const terminatedScopes = new Set<string>()
 			if (state.childSandboxCleanup !== undefined && !state.childSandboxCleanup.terminated && state.sandboxes.size === 0) {
 				try {
 					await sandbox.terminate({ scope: state.childSandboxCleanup.scope, reason: 'run_disposed' })
+					terminatedScopes.add(canonicalJson(state.childSandboxCleanup.scope as unknown as JsonValue))
 					state.childSandboxCleanup = Object.freeze({ ...state.childSandboxCleanup, terminated: true })
 				} catch (error) { failures.push(normalizeInternal(error)) }
 			}
 			if (destroy && requiresSandbox && state.record.sandboxBinding.relation === 'owned' && state.sandboxTerminated !== true) {
-				try {
-					await sandbox.terminate({ scope: { owner: state.record.sandboxBinding.owner, partition: { kind: 'shared' }, lifetime: 'session' }, reason: 'session_closed' })
-					state.sandboxTerminated = true
-				} catch (error) { failures.push(normalizeInternal(error)) }
+				for (const scope of state.sandboxScopes.values()) {
+					const key = canonicalJson(scope as unknown as JsonValue)
+					if (terminatedScopes.has(key)) continue
+					try { await sandbox.terminate({ scope, reason: 'session_closed' }); terminatedScopes.add(key) }
+					catch (error) { failures.push(normalizeInternal(error)) }
+				}
+				const ownerScope = Object.freeze({ owner: state.record.sandboxBinding.owner,
+					partition: Object.freeze({ kind: 'shared' as const }), lifetime: 'session' as const })
+				const ownerScopeKey = canonicalJson(ownerScope as unknown as JsonValue)
+				if (!terminatedScopes.has(ownerScopeKey)) {
+					try { await sandbox.terminate({ scope: ownerScope, reason: 'session_closed' }); terminatedScopes.add(ownerScopeKey) }
+					catch (error) { failures.push(normalizeInternal(error)) }
+				}
+				if (failures.length === 0) state.sandboxTerminated = true
 			}
 			if (destroy && state.storageClosed !== true) {
 				try { await storage.closeSession(state.record.id, state.record.instanceId); state.storageClosed = true }
@@ -3788,11 +3803,11 @@ function checkpointReplacement(
 function targetSandboxPartition(
 	harnessName: string,
 	definition: AnyAgentDefinition | AnyWorkflowDefinition,
-	defaultPolicy: import('../sandbox/ownership.js').SandboxPolicy<string> = 'inherit',
+	runtimeDefaultPolicy: import('../sandbox/ownership.js').SandboxPolicy<string> = 'private',
 	childPolicy?: import('../sandbox/ownership.js').SandboxPolicy<string>,
 ): import('../sandbox/ownership.js').SandboxPartition {
 	const policy = childPolicy === undefined
-		? definition.sandbox ?? defaultPolicy
+		? definition.sandbox ?? runtimeDefaultPolicy
 		: childPolicy === 'inherit' ? definition.sandbox ?? 'inherit' : childPolicy
 	if (policy === 'inherit') return Object.freeze({ kind: 'shared' })
 	if (policy === 'private') return Object.freeze({ kind: definition.kind, harnessName, id: definition.id })
@@ -3804,9 +3819,9 @@ function rootSandboxScope(
 	definition: AnyAgentDefinition | AnyWorkflowDefinition,
 	owner: import('../sandbox/ownership.js').SandboxOwner,
 	runId: string,
-	defaultPolicy: import('../sandbox/ownership.js').SandboxPolicy<string> = 'inherit',
+	runtimeDefaultPolicy: import('../sandbox/ownership.js').SandboxPolicy<string> = 'private',
 	): SandboxScope {
-	const partition = targetSandboxPartition(harnessName, definition, defaultPolicy)
+	const partition = targetSandboxPartition(harnessName, definition, runtimeDefaultPolicy)
 	return definition.durable === true || definition.workspace === true
 		? Object.freeze({ owner, partition, lifetime: 'run', runId })
 		: Object.freeze({ owner, partition, lifetime: 'session' })
@@ -3845,8 +3860,8 @@ function resolveChildSandboxScope(
 
 function sandboxLayoutPreimage(options: InstantiateStandaloneHarnessOptions): JsonValue {
 	return ['harness.sandbox-layout.v1', options.name,
-		sandboxPolicyDigest(options.bindings.sandboxBinding?.defaultPolicy),
-		sortedSet(options.bindings.sandboxBinding?.groups ?? []),
+		sandboxPolicyDigest(options.bindings.sandboxPolicy?.default ?? 'private'),
+		sortedSet(options.graph.requirements.sandbox.requiredGroups),
 		Object.values(options.graph.agents).map(value => ['agent', value.id, sandboxPolicyDigest(value.sandbox)] as JsonValue).sort(compareCanonical),
 		Object.values(options.graph.workflows).map(value => ['workflow', value.id, sandboxPolicyDigest(value.sandbox),
 			sortedSet(value.childTaskSandboxGroups ?? [])] as JsonValue).sort(compareCanonical)]

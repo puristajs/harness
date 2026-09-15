@@ -667,19 +667,14 @@ const groupedAgent = defineAgent('groupedRuntimeAgent', { model: 'chat', instruc
 const groupedRuntimeHarness = defineHarness({ name: 'groupedRuntimeHarness' }).addAgent(groupedAgent)
 type _GraphSandboxGroup = Expect<Equal<typeof groupedRuntimeHarness.$infer.requirements.sandbox.requiredGroups[number], 'banking'>>
 const groupedRuntimeInstance = groupedRuntimeHarness.getInstance({
-	models: { chat: { provider: typedModelProvider, model: 'model' } }, sandbox: typedSandbox,
-	sandboxBinding: { groups: ['banking'] as const, defaultPolicy: { group: 'banking' } },
+	models: { chat: { provider: typedModelProvider, model: 'model' } },
+	sandbox: { adapter: typedSandbox, policy: { sharing: 'declared', default: { group: 'banking' } } },
 })
-const additionalGroupRuntimeInstance = groupedRuntimeHarness.getInstance({
-	models: { chat: { provider: typedModelProvider, model: 'model' } }, sandbox: typedSandbox,
-	sandboxBinding: { groups: ['banking', 'support'] as const, defaultPolicy: { group: 'support' } },
-})
-// @ts-expect-error every graph-required group must be present in the configured tuple
-groupedRuntimeHarness.getInstance({ models: { chat: { provider: typedModelProvider, model: 'model' } }, sandbox: typedSandbox, sandboxBinding: { groups: ['support'] as const } })
-// @ts-expect-error default policy cannot widen the configured group tuple
-groupedRuntimeHarness.getInstance({ models: { chat: { provider: typedModelProvider, model: 'model' } }, sandbox: typedSandbox, sandboxBinding: { groups: ['banking'] as const, defaultPolicy: { group: 'typo' } } })
+// @ts-expect-error graphs with declared groups require deployment opt-in.
+groupedRuntimeHarness.getInstance({ models: { chat: { provider: typedModelProvider, model: 'model' } }, sandbox: { adapter: typedSandbox } })
+// @ts-expect-error default groups are restricted to the compiled graph.
+groupedRuntimeHarness.getInstance({ models: { chat: { provider: typedModelProvider, model: 'model' } }, sandbox: { adapter: typedSandbox, policy: { sharing: 'declared', default: { group: 'typo' } } } })
 void groupedRuntimeInstance
-void additionalGroupRuntimeInstance
 type InferredRuntimeInstance = Awaited<ReturnType<typeof directHarness.getInstance>>
 declare const inferredRuntimeInstance: InferredRuntimeInstance
 declare const dynamicTargetId: string

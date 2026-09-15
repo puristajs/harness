@@ -10,11 +10,10 @@ No duplicate framework interfaces or optional old/new overloads are permitted.
 ```ts
 type SandboxPolicy<G extends string = string> = 'inherit' | 'private' | { group: G }
 
-interface SandboxBindingOptions<G extends string = never> {
-  groups?: readonly G[]
-  defaultPolicy?: SandboxPolicy<G> // default: inherit
-  authorizeOwner?: (context: SandboxOwnerAuthorizationContext) => boolean | Promise<boolean>
-}
+type SandboxRuntimePolicy<G extends string = never> = {
+  default?: SandboxPolicy<G> // default: private
+  authorizeBorrowedOwner?: (context: SandboxOwnerAuthorizationContext) => boolean | Promise<boolean>
+} & ([G] extends [never] ? { sharing?: never } : { sharing: 'declared' })
 
 interface SandboxOwnerAuthorizationContext {
   owner: SandboxOwner
@@ -29,18 +28,19 @@ interface SessionOptions {
 }
 ```
 
-`getInstance({ sandbox, sandboxBinding })` preserves the exact capability tuple
-of `sandbox` and literal `groups`. There is no zero-argument form and no
-auto-detection. `AgentDefinition`, `WorkflowDefinition`, and
-`ChildTaskStartOptions` accept `sandbox?: SandboxPolicy<ConfiguredGroups>`.
+`getInstance({ sandbox: { adapter, policy } })` preserves the exact capability
+tuple of `adapter` and graph-derived group literals. There is no zero-argument
+form and no auto-detection. `AgentDefinition`, `WorkflowDefinition`, and
+`ChildTaskStartOptions` accept a sandbox policy constrained by that workflow's
+declared child-task groups.
 `getSession(id, options?: SessionOptions)` replaces the bare identity argument.
 The callback is runtime composition only and is not serialized into manifests.
 
-Group IDs: nonempty ASCII `[a-zA-Z][a-zA-Z0-9_.-]{0,63}`, at most 64 configured
-groups, no duplicates. Closed schemas reject unknown properties and unknown group
-values. Catalog composition preserves the graph's group requirements without
-registering another adapter or silently widening group literals to `string`.
-Explicitly named groups are application runtime values and are never prefixed.
+Group IDs are nonempty ASCII `[a-zA-Z][a-zA-Z0-9_.-]{0,63}`. Closed schemas
+reject unknown properties and unknown group values. Catalog composition preserves
+the graph's group requirements without registering another adapter or silently
+widening group literals to `string`. Explicitly named groups are definition
+values and are never prefixed.
 
 ## CTR-SOWN-OWNER
 

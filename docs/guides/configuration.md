@@ -119,6 +119,30 @@ The tool handler sees only the declared sandbox facade, and the Harness instance
 requires a sandbox that advertises `sandbox.fs`. Skills with executable
 runtimes also require a sandbox with the corresponding runtime metadata.
 
+Bind the adapter beneath `sandbox.adapter`. The optional `sandbox.policy`
+controls partition selection for this deployment; it does not configure the
+adapter itself. Without a policy, unconfigured top-level targets use private
+partitions. Named groups are declared by agents and workflows, then enabled
+once by the deployment:
+
+```ts
+const instance = await definition.getInstance({
+  models: { chat: { provider, model: 'gpt-5-mini' } },
+  sandbox: {
+    adapter: sandbox,
+    policy: {
+      sharing: 'declared',
+      default: { group: 'support-review' },
+      authorizeBorrowedOwner: async ({ owner, identity }) =>
+        owner.identity?.tenantId === identity?.tenantId,
+    },
+  },
+})
+```
+
+Do not configure group names again at runtime. Graphs without declared groups
+cannot enable sharing; graphs with groups require `sharing: 'declared'`.
+
 ## Add durable execution and workspaces
 
 ```ts
@@ -139,7 +163,7 @@ const definition = defineHarness({
 
 const instance = await definition.getInstance({
   storage,
-  sandbox,
+  sandbox: { adapter: sandbox },
   workspace,
 })
 ```

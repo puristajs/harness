@@ -145,7 +145,7 @@ export function createShowcaseHarness(provider?: ModelProvider) {
       structured: { provider: modelProvider, model },
       toolReady: { provider: modelProvider, model },
     },
-    sandbox: inMemorySandbox(),
+    sandbox: { adapter: inMemorySandbox() },
   }) }
 }
 

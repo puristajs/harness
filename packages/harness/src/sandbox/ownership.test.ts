@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  sandboxBindingOptionsSchema,
+  sandboxRuntimePolicySchema,
   sandboxOwnerSchema,
   sandboxPartitionSchema,
   sandboxScopeSchema,
@@ -41,10 +41,10 @@ describe('sandbox ownership contracts', () => {
     expect(() => sandboxScopeSchema.parse({ owner, partition: { kind: 'shared' }, lifetime: 'run' })).toThrow()
   })
 
-  it('validates configured sharing groups and immutable binding fields', () => {
-    expect(sandboxBindingOptionsSchema.parse({ groups: ['reviewers'], defaultPolicy: { group: 'reviewers' } })).toEqual({ groups: ['reviewers'], defaultPolicy: { group: 'reviewers' } })
-    expect(() => sandboxBindingOptionsSchema.parse({ groups: ['reviewers', 'reviewers'] })).toThrow()
-    expect(() => sandboxBindingOptionsSchema.parse({ groups: ['reviewers'], defaultPolicy: { group: 'authors' } })).toThrow()
+  it('validates nested runtime policy fields and immutable session bindings', () => {
+    expect(sandboxRuntimePolicySchema.parse({ sharing: 'declared', default: { group: 'reviewers' } })).toEqual({ sharing: 'declared', default: { group: 'reviewers' } })
+    expect(sandboxRuntimePolicySchema.parse({ default: { group: 'reviewers' } })).toEqual({ default: { group: 'reviewers' } })
+    expect(() => sandboxRuntimePolicySchema.parse({ groups: ['reviewers'] })).toThrow()
     expect(sessionSandboxBindingSchema.parse({ owner, relation: 'borrowed', registration: 'registered', policyDigest: 'policy_abc', disposed: false })).toEqual({
       owner,
       relation: 'borrowed',

@@ -83,34 +83,38 @@ export interface SandboxOwnerAuthorizationContext {
   readonly sessionId: string
 }
 
-/** Typed sharing vocabulary and trusted external-owner authorization callback. */
-export interface SandboxBindingOptions<G extends string = never> {
-  readonly groups?: readonly G[]
-  readonly defaultPolicy?: SandboxPolicy<G>
-  readonly authorizeOwner?: (context: SandboxOwnerAuthorizationContext) => boolean | Promise<boolean>
-}
+/**
+ * Deployment policy for a graph's sandbox adapter.
+ *
+ * The compiled graph supplies the only allowed group vocabulary. A graph with
+ * declared groups must explicitly opt in with `sharing: 'declared'`; callers
+ * never repeat those groups in runtime configuration.
+ */
+export type SandboxRuntimePolicy<G extends string = never> = Readonly<{
+  /** Partition selected when a definition does not declare its own policy. Defaults to `private`. */
+  readonly default?: SandboxPolicy<G>
+  /** Authorizes attachment to a sandbox owner supplied through `getSession`. */
+  readonly authorizeBorrowedOwner?: (context: SandboxOwnerAuthorizationContext) => boolean | Promise<boolean>
+} & (
+  [G] extends [never]
+    ? { readonly sharing?: never }
+    : { readonly sharing: 'declared' }
+)>
 
-const ownerAuthorizationCallbackSchema = z.custom<SandboxBindingOptions<string>['authorizeOwner']>(
+const ownerAuthorizationCallbackSchema = z.custom<SandboxRuntimePolicy<string>['authorizeBorrowedOwner']>(
   (value) => typeof value === 'function',
   'Expected an owner authorization callback.'
 )
 
-/** Strict runtime validation for the closed, non-generic binding option fields. */
-export const sandboxBindingOptionsSchema = z.strictObject({
-  groups: z.array(sandboxGroupIdSchema).max(64).readonly().optional(),
-  defaultPolicy: z.union([
+/** Strict runtime validation for the closed, non-generic sandbox policy fields. */
+export const sandboxRuntimePolicySchema = z.strictObject({
+  default: z.union([
     z.literal('inherit'),
     z.literal('private'),
     z.strictObject({ group: sandboxGroupIdSchema })
   ]).optional(),
-  authorizeOwner: ownerAuthorizationCallbackSchema.optional()
-}).superRefine((value, context) => {
-  if (value.groups && new Set(value.groups).size !== value.groups.length) {
-    context.addIssue({ code: 'custom', path: ['groups'], message: 'Sandbox sharing groups must be unique.' })
-  }
-  if (typeof value.defaultPolicy === 'object' && (!value.groups || !value.groups.includes(value.defaultPolicy.group))) {
-    context.addIssue({ code: 'custom', path: ['defaultPolicy', 'group'], message: 'The default sandbox group must be configured.' })
-  }
+  sharing: z.literal('declared').optional(),
+  authorizeBorrowedOwner: ownerAuthorizationCallbackSchema.optional()
 })
 
 /** Strict session input supplied before the later session/runtime integration cutover. */

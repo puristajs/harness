@@ -33,7 +33,7 @@ export async function createLocalDurableHarness(root?: string) {
     },
   })
   const harness = await defineHarness({ name: 'localDurableExample', revision: 'v1' }).addWorkflow(plan)
-    .getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace })
+    .getInstance({ storage: local.storage, sandbox: { adapter: local.sandbox }, workspace: local.workspace })
   return { local, harness }
 }
 

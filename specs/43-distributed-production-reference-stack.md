@@ -53,8 +53,10 @@ const service = await mountedService.getInstance(eventBridge, {
       embeddings: embeddingModel,
     },
     storage,
-    sandbox: execution.sandbox,
-    sandboxBinding: sandboxOptions,
+    sandbox: {
+      adapter: execution.sandbox,
+      policy: sandboxOptions,
+    },
     workspace: execution.workspace,
   },
 })

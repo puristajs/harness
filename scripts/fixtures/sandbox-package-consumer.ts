@@ -40,7 +40,7 @@ const sandboxProbe = defineAgent('sandboxProbe', {
 const packedHarness = defineHarness({ name: 'packedConsumer' }).addAgent(sandboxProbe)
 const packedInstance = await packedHarness.getInstance({
   models: { chat: { provider: new FakeModelProvider(), model: 'fake' } },
-  sandbox: docker,
+  sandbox: { adapter: docker },
 })
 await packedInstance.close()
 assert.deepEqual(docker.runtimes, ['shell'])

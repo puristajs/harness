@@ -291,7 +291,7 @@ describe('v4 durable session execution', () => {
 				return task.result()
 			} })
 		const instance = await defineHarness({ name: 'persistedSettlementHarness', revision: 'v1' })
-			.addAgent(child).addWorkflow(workflow).getInstance({ models: { chat: { provider, model: 'fake' } }, sandbox, storage })
+			.addAgent(child).addWorkflow(workflow).getInstance({ models: { chat: { provider, model: 'fake' } }, sandbox: { adapter: sandbox }, storage })
 		const session = await instance.getSession('persisted-settlement-session')
 		const invoke = { durable: { runId: 'persisted-settlement-run' } } as const
 		await expect(session.workflows.persistedSettlementParent.run('value', invoke)).rejects.toBe(sentinel)

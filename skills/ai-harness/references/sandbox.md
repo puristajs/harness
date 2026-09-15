@@ -4,7 +4,9 @@ Agents and tools declare only the capabilities they need. The application binds 
 
 ```ts
 const instance = await definition.getInstance({
-  sandbox: dockerSandbox({ root: '/var/lib/app/sandboxes', image }),
+  sandbox: {
+    adapter: dockerSandbox({ root: '/var/lib/app/sandboxes', image }),
+  },
 })
 ```
 
@@ -13,3 +15,22 @@ Use the in-memory sandbox for hermetic tests and trusted local demonstrations. U
 A `DurableWorkspace` persists checkpointed files independently from a live sandbox. `localDurableExecution({ root, exec })` returns matching storage, sandbox, and workspace adapters for one trusted host. It is not a distributed production backend.
 
 The application owns sandbox administration, owner registration, cleanup, retention, and offboarding. Never expose provider references, filesystem content, or credentials in logs and telemetry.
+
+The adapter says where execution happens. Its optional `policy` controls only
+runtime partitioning and owner attachment. With no policy, each target uses its
+private partition. Named groups come from the compiled definition graph and
+need one explicit deployment opt-in:
+
+```ts
+sandbox: {
+  adapter,
+  policy: {
+    sharing: 'declared',
+    default: { group: 'support-review' },
+    authorizeBorrowedOwner: async ({ owner, identity }) => owner.identity?.tenantId === identity?.tenantId,
+  },
+}
+```
+
+Do not repeat group names in runtime configuration. A graph without named
+groups cannot enable `sharing`; a graph with named groups requires it.

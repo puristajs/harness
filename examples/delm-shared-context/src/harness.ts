@@ -103,7 +103,7 @@ export async function createDelmSharedContextHarness(options: DelmSharedContextH
   const harness = await delmHarness.getInstance({
     models: { workerModel: { provider, model: options.model ?? process.env['OPENAI_MODEL'] ?? 'gpt-5-mini' } },
     storage: local.storage,
-    sandbox: local.sandbox,
+    sandbox: { adapter: local.sandbox },
     workspace: local.workspace,
     logger: new JsonLogger({ level: 'error' }),
     telemetry: { contentCaptureMode: 'NO_CONTENT' },

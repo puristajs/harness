@@ -93,8 +93,8 @@ harness, not separately on every sandbox adapter.
 - **Definition-first inference.** A portable tool declares its required sandbox
   capabilities through `defineTool(...)`; agents and workflows reference tools
   directly and may add a sandbox policy. The compiled graph retains the exact
-  capability tuple. `getInstance({ sandbox, sandboxBinding })` accepts only a
-  binding that satisfies those requirements. Dynamically widened adapters expose
+  capability tuple. `getInstance({ sandbox: { adapter, policy } })` accepts only
+  an adapter binding that satisfies those requirements. Dynamically widened adapters expose
   only guaranteed base operations; narrow with `isTextSearchCapableSession`,
   `isExecCapableSession`, or `isSpawnCapableSession`.
 - **Path semantics.** All paths are POSIX style, absolute (must start with `/`). Implementations validate and normalize. Relative paths throw `SandboxError{reason:'invalid_path'}`.
@@ -345,10 +345,13 @@ Windows/Linux containment requirements.
 ### Runtime binding
 
 Harness does not auto-detect or silently grant a sandbox. A graph without
-sandbox requirements forbids `sandbox` and `sandboxBinding` at instance
-creation. A graph with sandbox requirements requires an explicit compatible
-adapter. `inMemorySandbox()` and `bashSandbox()` remain explicit application
-choices; configuration and initialization failures surface normally.
+sandbox requirements forbids sandbox configuration at instance creation. A
+graph with sandbox requirements requires `sandbox: { adapter }` with an
+explicit compatible adapter. The optional nested policy defaults to `private`;
+declared sharing groups require `policy.sharing: 'declared'`; when supplied, a
+default group must be declared by the compiled graph. `inMemorySandbox()` and `bashSandbox()`
+remain explicit application choices; configuration and initialization failures
+surface normally.
 
 ## Local durable sandbox
 

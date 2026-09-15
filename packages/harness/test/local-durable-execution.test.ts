@@ -439,7 +439,7 @@ describe('local durable execution', () => {
       handler: async ({ step }) => await step('oversized', async () => '1234567'),
     })
     const harness = await defineV4Harness({ name: 'checkpointQuota', revision: 'v1' }).addWorkflow(workflow)
-      .getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace })
+      .getInstance({ storage: local.storage, sandbox: { adapter: local.sandbox }, workspace: local.workspace })
 
     try {
       const session = await harness.getSession('payload-limit-session')
@@ -464,7 +464,7 @@ describe('local durable execution', () => {
       async handler({ input }) { return input },
     })
     const harness = await defineV4Harness({ name: 'workspacePolicyHarness', revision: 'v1' }).addWorkflow(workflow)
-      .getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace })
+      .getInstance({ storage: local.storage, sandbox: { adapter: local.sandbox }, workspace: local.workspace })
     try {
       const session = await harness.getSession('workspace-policy-session')
       await expect(session.workflows.workspacePolicy.run('go', {
@@ -495,7 +495,7 @@ describe('local durable execution', () => {
       handler: async ({ step }) => await step('prepare', async () => 'ready'),
     })
     const harness = await defineV4Harness({ name: 'workspaceSuccessHarness', revision: 'v1' }).addWorkflow(workflow)
-      .getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace })
+      .getInstance({ storage: local.storage, sandbox: { adapter: local.sandbox }, workspace: local.workspace })
     try {
       const session = await harness.getSession('workspace-success-session')
       await expect(session.workflows.workspaceSuccess.run('go', { durable: { runId: 'workspace-success-run' } }))
@@ -528,7 +528,7 @@ describe('local durable execution', () => {
 			async handler({ input, tools }) { return tools.workspacePublishTool.run(input, { callId: 'workspace-call' }) },
 		})
 		const harness = await defineV4Harness({ name: 'workspacePublishRecoveryHarness', revision: 'v1' }).addWorkflow(workflow)
-			.getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace })
+			.getInstance({ storage: local.storage, sandbox: { adapter: local.sandbox }, workspace: local.workspace })
 		try {
 			const session = await harness.getSession('workspace-publish-session')
 			const invoke = { durable: { runId: 'workspace-publish-run' } } as const
@@ -555,17 +555,16 @@ describe('local durable execution', () => {
 	it.each([
 		['private', 'private', { kind: 'workflow', harnessName: 'workspaceDefaultPrivate', id: 'workspacePartition' }],
 		['group', { group: 'reviewers' }, { kind: 'group', id: 'reviewers' }],
-	] as const)('uses the runtime %s default policy for a durable workspace partition', async (_case, defaultPolicy, expectedPartition) => {
+	] as const)('uses the runtime %s default policy for a durable workspace partition', async (_case, runtimeDefaultPolicy, expectedPartition) => {
 		const root = await tempRoot()
 		const local = localDurableExecution({ root })
 		const opened = vi.spyOn(local.sandbox, 'open')
 		const workflow = defineWorkflow('workspacePartition', { input: z.string(), output: z.string(), durable: true, workspace: true,
+			childTaskSandboxGroups: ['reviewers'] as const,
 			async handler({ input }) { return input } })
-		const instance = await defineV4Harness({ name: defaultPolicy === 'private' ? 'workspaceDefaultPrivate' : 'workspaceDefaultGroup', revision: 'v1' })
-			.addWorkflow(workflow).getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace,
-				sandboxBinding: defaultPolicy === 'private'
-					? { defaultPolicy }
-					: { groups: ['reviewers'] as const, defaultPolicy } } as never)
+		const instance = await defineV4Harness({ name: runtimeDefaultPolicy === 'private' ? 'workspaceDefaultPrivate' : 'workspaceDefaultGroup', revision: 'v1' })
+			.addWorkflow(workflow).getInstance({ storage: local.storage, sandbox: { adapter: local.sandbox,
+				policy: { sharing: 'declared', default: runtimeDefaultPolicy } }, workspace: local.workspace } as never)
 		try {
 			const session = await instance.getSession(`workspace-${_case}`)
 			await session.workflows.workspacePartition.run('go', { durable: { runId: `workspace-${_case}-run` } })
@@ -594,7 +593,7 @@ describe('local durable execution', () => {
       governance: { policies: [{ kind: 'native', id: 'approvalPolicy', rules: [{ id: 'approveEffect', tools: ['effect'], effect: 'require_approval' }] }] },
       durable: true, workspace: true })
     const definition = defineV4Harness({ name: 'workspaceApprovalHarness', revision: 'v1' }).addAgent(agent)
-    const first = await definition.getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace,
+    const first = await definition.getInstance({ storage: local.storage, sandbox: { adapter: local.sandbox }, workspace: local.workspace,
       models: { chat: { provider, model: 'fake' } } })
     const firstSession = await first.getSession('workspace-approval-session')
     const interrupted = await firstSession.agents.workspaceApproval.run('start', { durable: { runId: 'workspace-approval-run' } })
@@ -602,7 +601,7 @@ describe('local durable execution', () => {
     expect(effects).toBe(0)
     await first.close()
 
-    const second = await definition.getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace,
+    const second = await definition.getInstance({ storage: local.storage, sandbox: { adapter: local.sandbox }, workspace: local.workspace,
       models: { chat: { provider, model: 'fake' } } })
     try {
       const session = await second.getSession('workspace-approval-session')
@@ -634,7 +633,7 @@ describe('local durable execution', () => {
       },
     })
     const harness = await defineV4Harness({ name: 'workspaceCancelledHarness', revision: 'v1' }).addWorkflow(workflow)
-      .getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace })
+      .getInstance({ storage: local.storage, sandbox: { adapter: local.sandbox }, workspace: local.workspace })
     try {
       const session = await harness.getSession('workspace-cancel-session')
       const controller = new AbortController()
@@ -674,7 +673,7 @@ describe('local durable execution', () => {
       async handler() { throw new Error('workflow failed') },
     })
     const harness = await defineV4Harness({ name: 'workspaceFailedHarness', revision: 'v1' }).addWorkflow(workflow)
-      .getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace })
+      .getInstance({ storage: local.storage, sandbox: { adapter: local.sandbox }, workspace: local.workspace })
     try {
       const session = await harness.getSession('workspace-failed-session')
       await expect(session.workflows.workspaceFailed.run('go', { durable: { runId: 'workspace-failed-run' } }))
@@ -701,7 +700,7 @@ describe('local durable execution', () => {
       async handler({ input }) { effects += 1; return input },
     })
     const harness = await defineV4Harness({ name: 'workspaceBindingFailureHarness', revision: 'v1' }).addWorkflow(workflow)
-      .getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace })
+      .getInstance({ storage: local.storage, sandbox: { adapter: local.sandbox }, workspace: local.workspace })
     try {
       const session = await harness.getSession('workspace-binding-failure-session')
       await expect(session.workflows.workspaceBindingFailure.run('go', { durable: { runId: 'workspace-binding-failure-run' } }))
@@ -732,7 +731,7 @@ describe('local durable execution', () => {
       },
     })
     const harness = await defineV4Harness({ name: 'workspaceCleanupFailureHarness', revision: 'v1' }).addWorkflow(workflow)
-      .getInstance({ storage: local.storage, sandbox: local.sandbox, workspace: local.workspace, logger })
+      .getInstance({ storage: local.storage, sandbox: { adapter: local.sandbox }, workspace: local.workspace, logger })
     try {
       const session = await harness.getSession('workspace-cleanup-failure-session')
       const controller = new AbortController()

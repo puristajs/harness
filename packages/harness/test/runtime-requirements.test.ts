@@ -96,7 +96,7 @@ describe('exact Harness instance requirements', () => {
 			models: { chat: { provider: modelProvider, model: 'demo' } },
 		}))).toBe('missing_runtime_binding')
 		expect(validateHarnessInstanceConfig(required, {
-			models: { chat: { provider: modelProvider, model: 'demo' } }, sandbox: sandboxAdapter(() => {}, []),
+			models: { chat: { provider: modelProvider, model: 'demo' } }, sandbox: { adapter: sandboxAdapter(() => {}, []) },
 		}).sandbox).toBeDefined()
 	})
 	it('accepts an empty graph, rejects unknown configuration, and freezes a detached snapshot', () => {
@@ -232,7 +232,7 @@ describe('exact Harness instance requirements', () => {
 		const headers = { authorization: 'secret' }
 		const snapshot = validateHarnessInstanceConfig(required, {
 			mcp: { knowledge: { transport: 'http', url: 'https://example.com/mcp', headers } },
-			storage, memory, sandbox, workspace, artifacts,
+			storage, memory, sandbox: { adapter: sandbox }, workspace, artifacts,
 		})
 		headers.authorization = 'changed'
 		expect(calls).toBe(0)
@@ -246,30 +246,26 @@ describe('exact Harness instance requirements', () => {
 		expect(snapshot.mcp?.knowledge?.headers?.authorization).toBe('secret')
 	})
 
-	it('validates and snapshots sandbox ownership policy without cloning authorization', () => {
+	it('validates graph-declared sandbox sharing without cloning authorization', () => {
 		const required = requirements({ sandbox: Object.freeze({ capabilities: Object.freeze(['sandbox.fs']), requiredGroups: Object.freeze(['banking']), required: true }) })
-		const authorizeOwner = async () => true
-		const groups = ['banking', 'support']
+		const authorizeBorrowedOwner = async () => true
 		const snapshot = validateHarnessInstanceConfig(required, {
-			sandbox: sandboxAdapter(() => {}, ['sandbox.fs']),
-			sandboxBinding: { groups, defaultPolicy: { group: 'banking' }, authorizeOwner },
+			sandbox: { adapter: sandboxAdapter(() => {}, ['sandbox.fs']), policy: { sharing: 'declared', default: { group: 'banking' }, authorizeBorrowedOwner } },
 		})
-		groups[0] = 'mutated'
-		expect(snapshot.sandboxBinding).toEqual({ groups: ['banking', 'support'], defaultPolicy: { group: 'banking' }, authorizeOwner })
-		expect(snapshot.sandboxBinding?.authorizeOwner).toBe(authorizeOwner)
-		expect(Object.isFrozen(snapshot.sandboxBinding)).toBe(true)
-		expect(Object.isFrozen(snapshot.sandboxBinding?.groups)).toBe(true)
-		expect(Object.isFrozen(snapshot.sandboxBinding?.defaultPolicy)).toBe(true)
+		expect(snapshot.sandboxPolicy).toEqual({ sharing: 'declared', default: { group: 'banking' }, authorizeBorrowedOwner })
+		expect(snapshot.sandboxPolicy?.authorizeBorrowedOwner).toBe(authorizeBorrowedOwner)
+		expect(Object.isFrozen(snapshot.sandboxPolicy)).toBe(true)
+		expect(Object.isFrozen(snapshot.sandboxPolicy?.default)).toBe(true)
 		expect(reasonOf(() => validateHarnessInstanceConfig(emptyRequirements, { sandboxBinding: {} }))).toBe('unexpected_runtime_binding')
 		expect(errorOf(() => validateHarnessInstanceConfig(required, {
-			sandbox: sandboxAdapter(() => {}, ['sandbox.fs']), sandboxBinding: { groups: ['banking', 'support'], defaultPolicy: { group: 'missing' } },
-		})).meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'sandboxBinding' })
+			sandbox: { adapter: sandboxAdapter(() => {}, ['sandbox.fs']), policy: { sharing: 'declared', default: { group: 'missing' } } },
+		})).meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'sandbox.policy.default.group' })
 		expect(reasonOf(() => validateHarnessInstanceConfig(required, {
-			sandbox: sandboxAdapter(() => {}, ['sandbox.fs']), sandboxBinding: { groups: ['support', 'support'] },
-		}))).toBe('invalid_runtime_binding')
-		expect(errorOf(() => validateHarnessInstanceConfig(required, {
-			sandbox: sandboxAdapter(() => {}, ['sandbox.fs']), sandboxBinding: { groups: ['support'] },
-		})).meta).toMatchObject({ reason: 'invalid_runtime_binding', path: 'sandboxBinding.groups' })
+			sandbox: { adapter: sandboxAdapter(() => {}, ['sandbox.fs']), policy: { default: { group: 'banking' } } },
+		}))).toBe('missing_runtime_binding')
+		expect(reasonOf(() => validateHarnessInstanceConfig(requirements({ sandbox: Object.freeze({ capabilities: Object.freeze(['sandbox.fs']), requiredGroups: Object.freeze([]), required: true }) }), {
+			sandbox: { adapter: sandboxAdapter(() => {}, ['sandbox.fs']), policy: { sharing: 'declared' } },
+		}))).toBe('unexpected_runtime_binding')
 	})
 
 	it('derives exact sandbox group requirements from definition policies', () => {
@@ -282,8 +278,8 @@ describe('exact Harness instance requirements', () => {
 		const childRequirement = defineHarness({ name: 'childGroupHarness' }).addWorkflow(workflow).requirements.sandbox
 		expect(childRequirement).toEqual({ capabilities: [], requiredGroups: ['operators', 'reviewers'], required: true })
 		expect(reasonOf(() => validateHarnessInstanceConfig(requirements({ sandbox: childRequirement }), {
-			sandbox: sandboxAdapter(() => {}, []), sandboxBinding: { groups: ['reviewers'] },
-		}))).toBe('invalid_runtime_binding')
+			sandbox: { adapter: sandboxAdapter(() => {}, []) },
+		}))).toBe('missing_runtime_binding')
 	})
 
 	it('validates MCP transport branches and treats stdio sandbox independently', () => {
@@ -339,15 +335,15 @@ describe('exact Harness instance requirements', () => {
 		const runtimeRequired = requirements({ skillRuntimes: Object.freeze(['python']),
 			sandbox: Object.freeze({ capabilities: Object.freeze([]), requiredGroups: Object.freeze([]), required: true }) })
 		const { runtimes: _runtimes, ...withoutRuntime } = sandboxAdapter(() => {}, [])
-		expect(reasonOf(() => validateHarnessInstanceConfig(runtimeRequired, { sandbox: withoutRuntime }))).toBe('missing_required_capability')
+		expect(reasonOf(() => validateHarnessInstanceConfig(runtimeRequired, { sandbox: { adapter: withoutRuntime } }))).toBe('missing_required_capability')
 		const sandboxRequired = requirements({ sandbox: Object.freeze({ capabilities: Object.freeze(['sandbox.fs']), requiredGroups: Object.freeze([]), required: true }) })
 		const superset = sandboxAdapter(() => {}, ['sandbox.fs', 'sandbox.exec'])
-		expect(validateHarnessInstanceConfig(sandboxRequired, { sandbox: superset }).sandbox).toBe(superset)
+		expect(validateHarnessInstanceConfig(sandboxRequired, { sandbox: { adapter: superset } }).sandbox).toBe(superset)
 		for (const method of ['list', 'purge', 'sweep', 'deleteSnapshot'] as const) {
 			const incomplete = sandboxAdapter(() => {}, ['sandbox.fs'])
 			delete incomplete.administration[method]
-			expect(errorOf(() => validateHarnessInstanceConfig(sandboxRequired, { sandbox: incomplete })).meta)
-				.toMatchObject({ reason: 'invalid_runtime_binding', path: `sandbox.administration.${method}` })
+				expect(errorOf(() => validateHarnessInstanceConfig(sandboxRequired, { sandbox: { adapter: incomplete } })).meta)
+					.toMatchObject({ reason: 'invalid_runtime_binding', path: `sandbox.adapter.administration.${method}` })
 		}
 		const durableRequired = requirements({ storage: Object.freeze({ durable: true }) })
 		const nonPersistent = storageAdapter(() => {})

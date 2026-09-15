@@ -130,7 +130,7 @@ async function buildLifecycleHarness(
 	const provider = new FakeModelProvider()
 	const harness = await defineHarness({ name: 'sessionLifecycle', revision: 'v1' })
 		.addAgent(owner).addWorkflow(echo)
-		.getInstance({ storage, sandbox, models: { chat: { provider, model: 'fake' } } })
+		.getInstance({ storage, sandbox: { adapter: sandbox }, models: { chat: { provider, model: 'fake' } } })
 	return { harness, storage, sandbox, provider }
 }
 
@@ -159,7 +159,7 @@ describe('v4 session lifecycle', () => {
 		const close = vi.spyOn(InMemoryHarnessStorage.prototype, 'close')
 		try {
 			await expect(defineHarness({ name: 'configurationRollback' }).addAgent(agent).getInstance({
-				models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox,
+				models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: { adapter: sandbox },
 			})).rejects.toBe(configureFailure)
 			expect(close).toHaveBeenCalledTimes(1)
 		} finally {
@@ -254,6 +254,7 @@ describe('v4 session lifecycle', () => {
 		await session.destroy()
 		expect(storage.closeSessionCalls).toBe(1)
 		expect(sandbox.terminatedScopes).toHaveLength(1)
+		expect(sandbox.terminatedScopes[0]?.partition).toEqual({ kind: 'shared' })
 		await harness.close()
 	})
 
@@ -264,7 +265,7 @@ describe('v4 session lifecycle', () => {
 		const { owner, echo } = lifecycleDefinitions()
 		const harness = await defineHarness({ name: 'registrationRollback', revision: 'v1' })
 			.addAgent(owner).addWorkflow(echo)
-			.getInstance({ storage, sandbox, models: { chat: { provider: new FakeModelProvider(), model: 'fake' } } })
+			.getInstance({ storage, sandbox: { adapter: sandbox }, models: { chat: { provider: new FakeModelProvider(), model: 'fake' } } })
 
 		await expect(harness.getSession('registration-retry')).rejects.toThrow('owner registration unavailable')
 		await expect(storage.getSession('registration-retry')).resolves.toBeUndefined()
@@ -291,12 +292,12 @@ describe('v4 session lifecycle', () => {
 		const durableMarker = defineWorkflow('durableMarker', { input: z.string(), output: z.string(), durable: true,
 			async handler({ input }) { return input } })
 		const provider = new FakeModelProvider({ strict: true })
-		const harness = await defineHarness({ name: 'borrowedAuthorization', revision: 'v1' }).addAgent(agent).addWorkflow(durableMarker).getInstance({ storage, sandbox,
-			models: { chat: { provider, model: 'fake' } }, sandboxBinding: { async authorizeOwner() {
+		const harness = await defineHarness({ name: 'borrowedAuthorization', revision: 'v1' }).addAgent(agent).addWorkflow(durableMarker).getInstance({ storage,
+			sandbox: { adapter: sandbox, policy: { async authorizeBorrowedOwner() {
 				calls += 1
 				if (decision === 'throw') throw new Error('private authorization diagnostics')
 				return decision === 'allow'
-			} } })
+			} } }, models: { chat: { provider, model: 'fake' } } })
 
 		await expect(harness.getSession('wrong-scope', { identity: { tenantId: 'tenant-b', principalId: 'principal-a' }, sandboxOwner: owner }))
 			.rejects.toMatchObject({ code: 'SANDBOX_PERMISSION_DENIED', meta: { reason: 'scope_mismatch' } })
@@ -351,10 +352,10 @@ describe('v4 session lifecycle', () => {
 		provider.enqueueText({ content: 'reviewed', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
 		provider.enqueueText({ content: 'child-result', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
 		const harness = await defineHarness({ name: 'borrowedReentry', revision: 'v1' }).addAgent(unused).addAgent(reviewer).addWorkflow(parent)
-			.getInstance({ storage, sandbox, models: { chat: { provider, model: 'fake' } }, sandboxBinding: { authorizeOwner() {
+			.getInstance({ storage, sandbox: { adapter: sandbox, policy: { authorizeBorrowedOwner() {
 				authorizations += 1
 				return authorizations !== denyAuthorizationAt
-			} } })
+			} } }, models: { chat: { provider, model: 'fake' } } })
 		const session = await harness.getSession('borrowed-reentry', { identity: owner.identity, sandboxOwner: owner })
 		const interrupted = await session.agents.borrowedReviewer.run('start')
 		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('expected approval')
@@ -402,8 +403,8 @@ describe('v4 session lifecycle', () => {
 		provider.enqueueText({ content: '', toolCalls: [{ id: 'delegate', name: 'leaf', arguments: 'blocked' }],
 			usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'tool_calls' })
 		const harness = await defineHarness({ name: 'recursiveBorrowed', revision: 'v1', defaults: { maxDepth: 3 } }).addWorkflow(workflow).getInstance({
-			storage: persistentStorage(), models: { chat: { provider, model: 'fake' } }, sandbox, sandboxBinding: { groups: ['reviewers'] as const,
-				authorizeOwner: () => allowed },
+			storage: persistentStorage(), models: { chat: { provider, model: 'fake' } }, sandbox: { adapter: sandbox,
+				policy: { sharing: 'declared', authorizeBorrowedOwner: () => allowed } },
 		})
 		const session = await harness.getSession('recursive-borrowed', { identity: owner.identity, sandboxOwner: owner })
 		await sandbox.registerOwner({ owner, mode: 'create' })
@@ -486,7 +487,7 @@ describe('v4 session lifecycle', () => {
 		const provider = new FakeModelProvider()
 		const harness = await defineHarness({ name: 'orderedHistory', defaults: { historyRetention: { maxTurns: 8 } } })
 			.addAgent(owner)
-			.getInstance({ storage, sandbox, models: { chat: { provider, model: 'fake' } } })
+			.getInstance({ storage, sandbox: { adapter: sandbox }, models: { chat: { provider, model: 'fake' } } })
 		const session = await harness.getSession('ordered-history')
 		for (let index = 0; index < 9; index += 1) {
 			provider.enqueueText({ content: `answer-${index}`, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
@@ -631,10 +632,22 @@ describe('v4 session lifecycle', () => {
 		const provider = new FakeModelProvider({ strict: true })
 		provider.enqueueText({ content: 'plain', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
 		const harness = await defineHarness({ name: 'targetSandboxLaziness' }).addAgent(sandboxAgent).addAgent(plainAgent)
-			.getInstance({ sandbox, models: { chat: { provider, model: 'fake' } } })
+			.getInstance({ sandbox: { adapter: sandbox }, models: { chat: { provider, model: 'fake' } } })
 		const session = await harness.getSession('plain-agent')
 		await expect(session.agents.plainAgent.run('hello')).resolves.toMatchObject({ status: 'completed', output: 'plain' })
 		expect(sandbox.openCalls).toBe(0)
+		await session.destroy()
+		await harness.close()
+	})
+
+	it('uses a private target partition when sandbox policy is omitted', async () => {
+		const { harness, sandbox, provider } = await buildLifecycleHarness()
+		provider.enqueueText({ content: 'done', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, finishReason: 'stop' })
+		const session = await harness.getSession('implicit-private')
+		await expect(session.agents.owner.run('write')).resolves.toMatchObject({ status: 'completed', output: 'done' })
+		expect(sandbox.openedScopes).toEqual(expect.arrayContaining([
+			expect.objectContaining({ partition: { kind: 'agent', harnessName: 'sessionLifecycle', id: 'owner' } }),
+		]))
 		await session.destroy()
 		await harness.close()
 	})
@@ -670,7 +683,7 @@ describe('v4 session lifecycle', () => {
 		provider.enqueueText(response('isolated'))
 		const sandbox = new TrackingSandbox()
 		const harness = await defineHarness({ name: 'childSandboxScopes' }).addAgent(writer).addWorkflow(workflow).getInstance({
-			models: { chat: { provider, model: 'fake' } }, sandbox, sandboxBinding: { groups: ['reviewers'] as const },
+			models: { chat: { provider, model: 'fake' } }, sandbox: { adapter: sandbox, policy: { sharing: 'declared' } },
 		})
 		const session = await harness.getSession('sandbox-owner')
 		await expect(session.agents.groupWriter.run('write')).resolves.toMatchObject({ status: 'completed' })
@@ -710,7 +723,7 @@ describe('v4 session lifecycle', () => {
 		provider.enqueueText(response('done'))
 		const sandbox = new TrackingSandbox()
 		const harness = await defineHarness({ name: 'subagentSandboxScopes', revision: 'v1' }).addAgent(parent).getInstance({
-			storage: persistentStorage(), models: { chat: { provider, model: 'fake' } }, sandbox, sandboxBinding: { groups: ['reviewers'] as const },
+			storage: persistentStorage(), models: { chat: { provider, model: 'fake' } }, sandbox: { adapter: sandbox, policy: { sharing: 'declared' } },
 		})
 		const session = await harness.getSession('subagent-owner')
 		await expect(session.agents.sandboxParent.run('start')).resolves.toMatchObject({ status: 'completed', output: 'done' })
@@ -746,7 +759,7 @@ describe('v4 session lifecycle', () => {
 		provider.enqueueText(response('middle complete'))
 		const sandbox = new TrackingSandbox()
 		const harness = await defineHarness({ name: 'recursiveSandboxScopes', revision: 'v1', defaults: { maxDepth: 3 } }).addAgent(writer).addWorkflow(workflow).getInstance({
-			storage: persistentStorage(), models: { chat: { provider, model: 'fake' } }, sandbox, sandboxBinding: { groups: ['reviewers'] as const },
+			storage: persistentStorage(), models: { chat: { provider, model: 'fake' } }, sandbox: { adapter: sandbox, policy: { sharing: 'declared' } },
 		})
 		const session = await harness.getSession('recursive-owner')
 		await expect(session.agents.recursiveWriter.run('write')).resolves.toMatchObject({ status: 'completed' })
@@ -799,8 +812,8 @@ describe('v4 session lifecycle', () => {
 		provider.enqueueText(response('middle complete'))
 		const storage = persistentStorage()
 		const harness = await defineHarness({ name: 'nestedApprovalSandbox', revision: 'v1', defaults: { maxDepth: 3 } })
-			.addWorkflow(workflow).getInstance({ storage, sandbox, models: { chat: { provider, model: 'fake' } },
-				sandboxBinding: { groups: ['reviewers'] as const, authorizeOwner: () => { authorizations += 1; return true } } })
+			.addWorkflow(workflow).getInstance({ storage, sandbox: { adapter: sandbox, policy: { sharing: 'declared',
+				authorizeBorrowedOwner: () => { authorizations += 1; return true } } }, models: { chat: { provider, model: 'fake' } } })
 		const session = await harness.getSession('nested-approval', { identity: owner.identity, sandboxOwner: owner })
 		const interrupted = await session.workflows.nestedApprovalScope.run('/approval.txt')
 		if (interrupted.status !== 'interrupted' || interrupted.interrupt.type !== 'tool-approval') throw new Error('expected nested approval')
@@ -1246,7 +1259,11 @@ describe('v4 session lifecycle', () => {
 		await expect(storage.listMessages('destroyed')).resolves.toEqual([])
 		await expect(storage.listRuns('destroyed')).resolves.toEqual([])
 		expect(sandbox.closeCalls).toBe(1)
-		expect(sandbox.terminatedScopes).toHaveLength(1)
+		expect(sandbox.terminatedScopes).toHaveLength(2)
+		expect(sandbox.terminatedScopes.map(scope => scope.partition)).toEqual(expect.arrayContaining([
+			{ kind: 'shared' },
+			{ kind: 'agent', harnessName: 'sessionLifecycle', id: 'owner' },
+		]))
 		await harness.close()
 	})
 

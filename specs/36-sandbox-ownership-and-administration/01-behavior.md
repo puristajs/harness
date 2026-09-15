@@ -33,7 +33,7 @@ Policy precedence, from highest to lowest:
 3. For a background child task, the built-in isolated task-root behavior; for an
    subagent, inherit the caller's resolved partition.
 4. For top-level ordinary/durable invocations only, the Harness binding's
-   `defaultPolicy`, default `inherit`.
+   `sandbox.policy.default`, default `private`.
 
 An invoked subagent uses its own definition policy when present; otherwise
 it inherits the caller's **resolved partition**, not the session's primary
@@ -41,7 +41,7 @@ partition. Top-level `inherit` resolves the owner lifetime's shared partition.
 `private` resolves the target definition's partition; agent/workflow kinds remain
 distinct even with the same ID. Private keys also include the Harness name so
 equally named definitions in different Harnesses do not collide under a shared
-explicit owner. `{ group }` resolves the configured group within
+explicit owner. `{ group }` resolves a group declared by the compiled graph within
 the same owner and lifetime. Definition IDs are the exact immutable ids from
 their definitions. No runtime string lookup or callback chooses a partition.
 
@@ -53,7 +53,7 @@ their definitions. No runtime string lookup or callback chooses a partition.
 | Background task, explicit policy | Parent partition | Target definition within parent lifetime | Group within parent lifetime |
 | Background task, no explicit/definition policy | New task-run shared partition | N/A | N/A |
 
-Background tasks remain isolated by default even if `defaultPolicy` is `private`
+Background tasks remain isolated by default even if `sandbox.policy.default` is `private`
 or a group. Configuring a definition explicitly for a group changes both direct
 and child calls to that definition. Shared child tasks are intentional borrowers;
 they never terminate the parent's partition. Multiple concurrent writers are
@@ -77,7 +77,7 @@ the tuple for private paths and labels and separately index its validated fields
 
 Explicit owner: application composition first registers an owner on the chosen
 adapter; `getSession` receives that exact owner and treats it as borrowed.
-The `authorizeOwner` callback is required for explicit owners, even when identity
+The `authorizeBorrowedOwner` callback is required for explicit owners, even when identity
 matches. It receives trusted session identity, never model arguments. Tenant
 presence and tenant value must match before the callback. A principal-owned
 owner additionally requires exact principal equality. A tenant-owned owner omits
@@ -153,7 +153,7 @@ and checkpoint trees. Bindings carry owner and run identity explicitly, not in
 arbitrary metadata. The same host path must not be claimed by another owner/run.
 
 The run's partition-policy digest covers the resolved registered definition IDs,
-their policies, default policy, configured groups, and layout version. Persist
+their policies, effective runtime default, declared groups, and layout version. Persist
 it in the durable workspace/checkpoint metadata and replay record. Resume with a
 different digest fails `SandboxConflictError` before replacing files. The digest does
 not include transient call order or newly discovered paths. Default-isolated

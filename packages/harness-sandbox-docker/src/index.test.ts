@@ -88,7 +88,7 @@ function noLiveSessionHarness(adapter: DockerSandbox, storage = inMemoryHarnessS
     instructions: 'Call noopTool once.', tools: [noopTool], durable: true,
   })
   return defineHarness({ name: 'dockerNoLiveSession', revision: '1' }).addAgent(noopAgent).getInstance({
-    models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, storage, sandbox: adapter,
+    models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, storage, sandbox: { adapter },
   })
 }
 
@@ -209,7 +209,7 @@ describe('Docker sandbox public configuration', () => {
     const matching = dockerSandbox({ root: '/private/data', image, runtimes: ['python'] })
     const matchingOpen = vi.spyOn(matching, 'open')
     const instance = await definition.getInstance({
-      models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: matching,
+      models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: { adapter: matching },
     })
     expect(matchingOpen).not.toHaveBeenCalled()
     await instance.close()
@@ -217,7 +217,7 @@ describe('Docker sandbox public configuration', () => {
     const missing = dockerSandbox({ root: '/private/data', image, runtimes: [] })
     const missingOpen = vi.spyOn(missing, 'open')
     expect(() => definition.getInstance({
-      models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: missing,
+      models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: { adapter: missing },
     })).toThrowError(expect.objectContaining({
       meta: { reason: 'missing_required_capability', path: 'sandbox.runtimes' },
     }))
@@ -236,7 +236,7 @@ describe('Docker sandbox public configuration', () => {
     const adapter = dockerSandbox({ root: '/private/data', image, runtimes: ['python'] })
     const open = vi.spyOn(adapter, 'open')
     expect(() => definition.getInstance({
-      models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: adapter,
+      models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: { adapter },
     } as never)).toThrowError(expect.objectContaining({
       meta: { reason: 'missing_required_capability', path: 'sandbox.capabilities' },
     }))

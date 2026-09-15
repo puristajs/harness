@@ -169,8 +169,8 @@ export type HarnessDefinition<
 	readonly [harnessCompiledGraphType]: (graph: Graph) => Graph
 	readonly $infer: HarnessInfer<Catalog['contracts'], Catalog['requirements']>
 	inspect(): HarnessInspection<Catalog['requirements']>
-	getInstance<const AdditionalGroups extends readonly string[] = readonly []>(
-		config: HarnessInstanceConfig<Catalog['requirements'], AdditionalGroups>,
+	getInstance(
+		config: HarnessInstanceConfig<Catalog['requirements']>,
 	): Promise<HarnessInstance<Catalog['contracts'], Catalog['requirements']>>
 	use<Other extends HarnessCatalogView>(
 		catalog: ExecutableCatalogDefinition<string, Other>,
@@ -246,7 +246,7 @@ function createHarnessDefinition<Catalog extends HarnessCatalogView, Name extend
 		contracts: catalog.contracts,
 		requirements: catalog.requirements,
 		inspect: () => inspectHarness(name, catalog, graph),
-		getInstance: (config: HarnessInstanceConfig<Catalog['requirements'], readonly string[]>) => instantiateStandaloneHarness({
+		getInstance: (config: HarnessInstanceConfig<Catalog['requirements']>) => instantiateStandaloneHarness({
 			name, ...(revision === undefined ? {} : { revision }), defaults, graph,
 			bindings: validateHarnessInstanceConfig(graph.requirements, config),
 		}) as Promise<HarnessInstance<Catalog['contracts'], Catalog['requirements']>>,

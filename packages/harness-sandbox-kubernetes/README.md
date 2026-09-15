@@ -41,7 +41,7 @@ const definition = defineHarness({ name: 'workspaceApp', revision: 'v1' })
 const instance = await definition.getInstance({
   models: { chat: { provider, model: 'gpt-5-mini' } },
   storage,
-  sandbox: execution.sandbox,
+  sandbox: { adapter: execution.sandbox },
   workspace: execution.workspace,
 })
 

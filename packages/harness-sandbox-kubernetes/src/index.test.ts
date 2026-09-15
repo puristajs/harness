@@ -197,7 +197,7 @@ describe('kubernetesSandboxRuntime', () => {
     })
     const matchingOpen = vi.spyOn(matching.sandbox, 'open')
     const instance = await definition.getInstance({
-      models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: matching.sandbox,
+      models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: { adapter: matching.sandbox },
     })
     expect(matchingOpen).not.toHaveBeenCalled()
     await instance.close()
@@ -207,7 +207,7 @@ describe('kubernetesSandboxRuntime', () => {
     })
     const missingOpen = vi.spyOn(missing.sandbox, 'open')
     expect(() => definition.getInstance({
-      models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: missing.sandbox,
+      models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: { adapter: missing.sandbox },
     })).toThrowError(expect.objectContaining({
       meta: { reason: 'missing_required_capability', path: 'sandbox.runtimes' },
     }))
@@ -228,7 +228,7 @@ describe('kubernetesSandboxRuntime', () => {
     })
     const open = vi.spyOn(execution.sandbox, 'open')
     expect(() => definition.getInstance({
-      models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: execution.sandbox,
+      models: { chat: { provider: new FakeModelProvider(), model: 'fake' } }, sandbox: { adapter: execution.sandbox },
     } as never)).toThrowError(expect.objectContaining({
       meta: { reason: 'missing_required_capability', path: 'sandbox.capabilities' },
     }))

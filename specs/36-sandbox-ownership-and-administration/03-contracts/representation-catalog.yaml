@@ -100,7 +100,7 @@ mappings:
     direction: domain_to_projection
     allowed_differences: [drop_executable_bindings_and_project_declared_options]
     redaction_or_loss_policy: No callbacks adapter objects or resolved owner identity in public manifests.
-    field_operations: [sharing_copy, groups_copy_when_declared, defaultPolicy_copy_when_declared, usesExplicitOwner_derive]
+    field_operations: [declared_sharing_copy, default_copy_when_supplied, usesExplicitOwner_derive]
     verification: [ACC-SOWN-PURISTA, ACC-SOWN-SAFETY]
   - mapping_id: MAP-SOWN-SCOPE
     from_shape: sown.owner

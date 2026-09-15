@@ -11,7 +11,7 @@ copy their interfaces.
 An agent or workflow declares `sandbox: 'inherit' | 'private' | { group }` on
 its own definition. `ServiceBuilder.mountHarness(definition, policy?)` mounts
 the complete graph. The service's inferred `ai` instance configuration supplies
-one sandbox adapter and the closed `sandboxBinding` options:
+one nested sandbox adapter and deployment policy:
 
 ```ts
 const service = serviceBuilder.mountHarness(supportHarness)
@@ -19,11 +19,12 @@ const service = serviceBuilder.mountHarness(supportHarness)
 const instance = await service.getInstance(eventBridge, {
   ai: {
     models: { chat: { provider, model: 'chat-model' } },
-    sandbox,
-    sandboxBinding: {
-      groups: ['support-review'],
-      defaultPolicy: 'inherit',
-      authorizeOwner,
+    sandbox: {
+      adapter: sandbox,
+      policy: {
+        sharing: 'declared',
+        authorizeBorrowedOwner,
+      },
     },
   },
 })
@@ -50,7 +51,7 @@ identity values never appear in logs or telemetry.
 ## Borrowed owners
 
 The application may pass an explicit `sandboxOwner` only through the trusted
-session attachment performed by the integration. `authorizeOwner` is mandatory
+session attachment performed by the integration. `authorizeBorrowedOwner` is mandatory
 for borrowing. Tenant and principal scope checks run before the callback and the
 callback runs again before each top-level invocation, nested launch, and resume.
 A resolver or callback receives validated identity and application data, never a

@@ -2472,7 +2472,8 @@ shapes and only accepts keys from the workflow's declared `agents` map. Its
 optional sandbox policy follows spec 36 precedence. A group policy accepts
 only a literal from the workflow's `childTaskSandboxGroups`; `inherit` and
 `private` need no group declaration. The declared tuple contributes required
-sandbox groups to the graph, but the runtime host must still configure them.
+sandbox groups to the graph, and the runtime host must explicitly set
+`sandbox.policy.sharing: 'declared'` to enable them.
 One-shot tasks may outlive a successful handler return. Continuable tasks are
 in-process only and reject any invocation with `InvokeOptions.durable` before
 creating the task. A durable one-shot start requires a non-empty
@@ -3185,7 +3186,8 @@ overrides. It is a requirement, not a configured or authorized group registry.
 `defineAgent` and `defineWorkflow` preserve their sandbox policy as a const
 generic, and `defineWorkflow` preserves `childTaskSandboxGroups` as a const
 tuple, so this union never widens to `string` in a concrete graph.
-The runtime host must explicitly include every required group in its binding.
+The runtime host must explicitly opt in to the graph's declared groups with
+`sandbox.policy.sharing: 'declared'`; it cannot add or repeat group names.
 `sandbox.required` is literal `true` exactly when sandbox capabilities are
 nonempty, Skill runtimes are nonempty, `workspace` is true, an agent/workflow
 sandbox policy is present, or `sandbox.requiredGroups` is nonempty; otherwise
@@ -3269,7 +3271,7 @@ type RequiredOrOptionalField<
   ? Readonly<{ [Field in Key]: Value }>
   : Readonly<{ [Field in Key]?: Value }>
 
-type SandboxBinding<Requirements extends RuntimeRequirements> =
+type SandboxRuntimeAdapter<Requirements extends RuntimeRequirements> =
   Sandbox
   & (HasMembers<Requirements['sandbox']['capabilities']> extends true
     ? Readonly<{ capabilities: readonly AdapterCapability[] }>
@@ -3278,53 +3280,28 @@ type SandboxBinding<Requirements extends RuntimeRequirements> =
     ? Readonly<{ runtimes: readonly SkillRuntimeId[] }>
     : object)
 
-type HarnessSandboxBindingOptions<
-  Requirements extends RuntimeRequirements,
-  ConfiguredGroups extends readonly string[],
-> = Exclude<
-  Requirements['sandbox']['requiredGroups'][number],
-  ConfiguredGroups[number]
-> extends never
-  ? Readonly<
-      Omit<
-        SandboxBindingOptions<NoInfer<ConfiguredGroups[number]>>,
-        'groups'
-      > & (
-        [Requirements['sandbox']['requiredGroups'][number]] extends [never]
-          ? { groups?: ConfiguredGroups }
-          : { groups: ConfiguredGroups }
+type RequiredSandboxGroups<Requirements extends RuntimeRequirements> =
+  Requirements['sandbox']['requiredGroups'][number] & string
+
+type SandboxRuntimeConfiguration<Requirements extends RuntimeRequirements> =
+  Requirements['sandbox']['required'] extends true
+    ? Readonly<{ adapter: SandboxRuntimeAdapter<Requirements> }> & (
+        [RequiredSandboxGroups<Requirements>] extends [never]
+          ? Readonly<{ policy?: SandboxRuntimePolicy<never> }>
+          : Readonly<{
+              policy: SandboxRuntimePolicy<RequiredSandboxGroups<Requirements>>
+                & Readonly<{ sharing: 'declared' }>
+            }>
       )
-    >
-  : never
+    : never
 
-type SandboxBindingOptionsField<
-  Requirements extends RuntimeRequirements,
-  ConfiguredGroups extends readonly string[],
-> = [Requirements['sandbox']['requiredGroups'][number]] extends [never]
-  ? Readonly<{
-      sandboxBinding?: HarnessSandboxBindingOptions<
-        Requirements,
-        ConfiguredGroups
-      >
-    }>
-  : Readonly<{
-      sandboxBinding: HarnessSandboxBindingOptions<
-        Requirements,
-        ConfiguredGroups
-      >
-    }>
-
-type SandboxFields<
-  Requirements extends RuntimeRequirements,
-  ConfiguredGroups extends readonly string[],
-> = Requirements['sandbox']['required'] extends true
-    ? Readonly<{ sandbox: SandboxBinding<Requirements> }>
-      & SandboxBindingOptionsField<Requirements, ConfiguredGroups>
-    : Readonly<{ sandbox?: never; sandboxBinding?: never }>
+type SandboxFields<Requirements extends RuntimeRequirements> =
+  Requirements['sandbox']['required'] extends true
+    ? Readonly<{ sandbox: SandboxRuntimeConfiguration<Requirements> }>
+    : Readonly<{ sandbox?: never }>
 
 type HarnessRuntimeBindingFields<
   Requirements extends RuntimeRequirements,
-  const ConfiguredGroups extends readonly string[] = readonly [],
 > = ModelFields<Requirements>
   & RequiredField<
     HasMembers<Requirements['mcpServers']>,
@@ -3342,7 +3319,7 @@ type HarnessRuntimeBindingFields<
     'memory',
     MemoryEngine
   >
-  & SandboxFields<Requirements, ConfiguredGroups>
+  & SandboxFields<Requirements>
   & RequiredField<Requirements['workspace'], 'workspace', DurableWorkspace>
   & RequiredField<Requirements['artifacts'], 'artifacts', ArtifactStore>
   & Readonly<{
@@ -3352,9 +3329,8 @@ type HarnessRuntimeBindingFields<
 
 type HarnessInstanceConfig<
   Requirements extends RuntimeRequirements,
-  const ConfiguredGroups extends readonly string[] = readonly [],
 > = [Requirements['hostTools'][number]] extends [never]
-  ? Readonly<HarnessRuntimeBindingFields<Requirements, ConfiguredGroups> & {
+  ? Readonly<HarnessRuntimeBindingFields<Requirements> & {
       logger?: Logger
       telemetry?: TelemetryOptions
     }>
@@ -3383,9 +3359,9 @@ deployment enhancement. Conditional infrastructure resolves as follows:
   optional replacement for the in-memory default otherwise;
 - `memory` is required when memory capabilities or memory model aliases are
   nonempty and is an optional replacement for the in-memory default otherwise;
-- `sandbox` is required exactly when `sandbox.required` is literal `true`; in
-  that case strict `sandboxBinding` options are optional, while both fields are
-  forbidden when it is literal `false`;
+- `sandbox` is required exactly when `sandbox.required` is literal `true`. It
+  contains a compatible `adapter` and an optional `policy`; it is forbidden
+  when `sandbox.required` is literal `false`;
 - `workspace` is required exactly when `workspace` is literal `true`; and
 - `artifacts` is required exactly when `artifacts` is literal `true`.
 
@@ -3423,11 +3399,13 @@ const runtime = await bankingHarness.getInstance({
   },
   storage,
   memory,
-  sandbox,
-  sandboxBinding: {
-    groups: ['case-review', 'support'],
-    defaultPolicy: { group: 'support' },
-    authorizeOwner: authorizeBankingOwner,
+  sandbox: {
+    adapter: sandboxAdapter,
+    policy: {
+      sharing: 'declared',
+      default: { group: 'support' },
+      authorizeBorrowedOwner: authorizeBankingOwner,
+    },
   },
   workspace,
   agentAdmission,
@@ -3459,18 +3437,14 @@ required Skill runtime in its Sandbox runtime metadata. Workspace passes
 `validateDurableWorkspace`. Required model aliases, MCP server ids,
 capabilities, and runtimes are checked in deterministic lexical order.
 
-`sandboxBinding` reuses spec 36's closed `SandboxBindingOptions` contract.
-`getInstance` infers `groups` as one composition-owned const tuple. The field is
-required when the graph has any `RuntimeRequirements.sandbox.requiredGroups`,
-and that tuple must contain all of them; it may also contain runtime-only
-groups. A graph reference never configures or authorizes its own group.
-`defaultPolicy` uses `NoInfer<ConfiguredGroups[number]>`, so only `groups`
-supplies the group vocabulary and a typo cannot become another inference
-source. Runtime validation rejects malformed or duplicate configured groups,
-a missing required group, and a default group outside the configured set. It
-copies and freezes `groups` and `defaultPolicy` while preserving the trusted
-`authorizeOwner` callback identity. The exact configured group set and default
-policy participate in partition selection and the durable partition-policy
+`sandbox.policy` is a closed `SandboxRuntimePolicy` contract. The compiled
+graph supplies the complete group vocabulary. When that vocabulary is nonempty,
+`policy.sharing: 'declared'` is required; when it is empty, `sharing` is
+forbidden. A default group is restricted to the compiled vocabulary, and
+runtime configuration cannot add another group. The policy defaults to
+`private`; it freezes the selected default while retaining the trusted
+`authorizeBorrowedOwner` callback identity. The compiled group set and effective
+default participate in partition selection and the durable partition-policy
 digest.
 
 An explicit borrowed `sandboxOwner` is available only when
@@ -3513,7 +3487,7 @@ stable order and stops at the first failure:
 5. validate exact aliases and model binding structure;
 6. validate provider methods and optional provider model metadata;
 7. validate required or forbidden groups in `mcp`, `storage`, `memory`,
-   `sandbox` with its optional `sandboxBinding`, `workspace`, `artifacts`
+   `sandbox`, `workspace`, `artifacts`
    order;
 8. validate each present group in that same order;
 9. validate present admissions, logger, and telemetry structurally; and
@@ -3910,11 +3884,8 @@ interface HarnessDefinition<
     Catalog['requirements']
   >
   inspect(): HarnessInspection<Catalog['requirements']>
-  getInstance<const ConfiguredGroups extends readonly string[] = readonly []>(
-    config: HarnessInstanceConfig<
-      Catalog['requirements'],
-      ConfiguredGroups
-    >,
+  getInstance(
+    config: HarnessInstanceConfig<Catalog['requirements']>,
   ): Promise<HarnessInstance<
     Catalog['contracts'],
     Catalog['requirements']
@@ -4327,8 +4298,7 @@ declare function visitHostedHarnessTargets<
 
 type HostedHarnessInstanceConfig<
   Requirements extends RuntimeRequirements,
-  const ConfiguredGroups extends readonly string[] = readonly [],
-> = Readonly<HarnessRuntimeBindingFields<Requirements, ConfiguredGroups> & {
+> = Readonly<HarnessRuntimeBindingFields<Requirements> & {
   logger?: never
   telemetry?: never
 }>
@@ -4460,13 +4430,9 @@ declare function instantiateHostedHarness<
   Graph extends HarnessGraphView<any, any, any, any, any, any>,
   HostInvocation,
   HostContext,
-  const ConfiguredGroups extends readonly string[] = readonly [],
 >(
   definition: HarnessDefinition<Catalog, Name, Graph>,
-  config: HostedHarnessInstanceConfig<
-    Graph['requirements'],
-    ConfiguredGroups
-  >,
+  config: HostedHarnessInstanceConfig<Graph['requirements']>,
   hostBindings: HarnessHostBindings<HostInvocation, HostContext>,
 ): Promise<HostedHarnessInstance<
   Catalog['contracts'],
@@ -7027,12 +6993,12 @@ H4-003 specifically proves the spec 36 `ACC-SOWN-POLICY` boundary introduced by
 the v4 compiler and instance-config projection: graph agent/workflow policies
 and workflow child-task declarations contribute their exact literal required
 group union and set `sandbox.required`; catalog composition preserves that
-union; the composition-owned configured groups infer only from `groups` as a
-const tuple; every required group must be configured; and
-`defaultPolicy.group` accepts only a configured group. Missing required groups,
-unknown default or child-task groups, duplicate groups, and malformed group ids
-fail deterministically. Negative cases cover both an unknown default with no
-`groups` field and a typo beside a valid configured tuple;
+union; required groups derive only from immutable definition policies and
+child-task declarations; every graph with required groups needs
+`sandbox.policy.sharing: 'declared'`; and `policy.default.group` accepts only a
+compiled group. Missing sharing consent, unknown default or child-task groups,
+and malformed group ids fail deterministically. Negative cases cover an omitted
+policy and a default-group typo beside valid declared sharing;
 and negative type tests forbid `sandbox`, `sandboxBinding`, and session
 `sandboxOwner` for a sandbox-free graph while requiring the exact sandbox
 binding for every sandbox-required graph.
@@ -7112,13 +7078,13 @@ operations against in-memory and SQLite implementations.
 
 H4-008 also proves the spec 36 `ACC-SOWN-OWNER` and `ACC-SOWN-DURABLE` behavior
 at the v4 runtime boundary: session owner registration allocates no compute;
-partition selection uses the explicitly configured group set, definition or
-child-task override, and default policy with spec 36 precedence; a missing
-`authorizeOwner`, tenant or principal scope mismatch,
+partition selection uses graph-declared groups, the definition or child-task
+override, and `sandbox.policy.default` with spec 36 precedence; a missing
+`authorizeBorrowedOwner`, tenant or principal scope mismatch,
 callback denial, and callback throw all fail before admission or effects;
 authorization is repeated for every top-level invocation, child launch, and
 resumed execution; terminal replay performs no sandbox compute open; and
-independently changing the required group set, configured group set, default
+independently changing the required group set, effective runtime default
 policy, agent/workflow sandbox policy, or child-task override changes the
 durable partition-policy digest. Erased-type attempts to
 supply a sandbox owner to a sandbox-free graph fail before a session write.

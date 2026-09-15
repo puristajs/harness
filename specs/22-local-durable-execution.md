@@ -17,7 +17,7 @@ const definition = defineHarness({ name: 'localDurable' })
 
 const runtime = await definition.getInstance({
   storage: local.storage,
-  sandbox: local.sandbox,
+  sandbox: { adapter: local.sandbox },
   workspace: local.workspace,
 })
 ```

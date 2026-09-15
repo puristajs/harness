@@ -113,8 +113,8 @@ export function assertHarnessHostToolOwner<
 }
 
 /** Runtime adapters required by a compiled graph; logger and telemetry remain host owned. */
-export type HostedHarnessInstanceConfig<Requirements extends RuntimeRequirements, ConfiguredGroups extends readonly string[] = readonly []> = Readonly<
-	HarnessRuntimeBindingFields<Requirements, ConfiguredGroups> & { readonly logger?: never; readonly telemetry?: never }
+export type HostedHarnessInstanceConfig<Requirements extends RuntimeRequirements> = Readonly<
+	HarnessRuntimeBindingFields<Requirements> & { readonly logger?: never; readonly telemetry?: never }
 >
 
 type HostedInvokeBaseOptions<Target extends AnyHarnessTargetContract> = Readonly<
@@ -222,10 +222,9 @@ export async function instantiateHostedHarness<
 	Graph extends HarnessGraphView,
 	HostInvocation,
 	HostContext,
-	const ConfiguredGroups extends readonly string[] = readonly [],
 >(
 	definition: HarnessDefinition<Catalog, Name, Graph>,
-	config: HostedHarnessInstanceConfig<Graph['requirements'], ConfiguredGroups>,
+	config: HostedHarnessInstanceConfig<Graph['requirements']>,
 	hostBindings: HarnessHostBindings<HostInvocation, HostContext>,
 ): Promise<HostedHarnessInstance<Catalog['contracts'], Graph, HostInvocation>> {
 	const blueprint = getHarnessRuntimeBlueprint(definition)

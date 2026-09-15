@@ -1,0 +1,42 @@
+findings:
+  - id: REVIEW-002-008
+    severity: blocking
+    category: ROBUSTNESS
+    root_cause: implementation_drift
+    status: open
+    owner_ticket: TICKET-002
+    route: implementation
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/02-administration.md#offboarding-and-purge
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#ACC-SOWN-ADMIN
+    impacted_path: "Two clients retry the same purge while its first callback is in flight"
+    location: "ai-harness/packages/harness/src/sandbox/catalog.ts:165-200"
+    expected: "Exact same-key retries resume one durable purge operation without performing concurrent duplicate deleteResource side effects for the same retained resource."
+    actual: "The first call commits cleanup_pending then releases the catalog lock for deleteResource. A second same-key call re-stages the same cleanup_pending resource and invokes deleteResource concurrently."
+    evidence: "pending at lines 177-184 selects every non-deleted resource, including an already cleanup_pending record; no private claim, generation, or in-flight exclusion is stored before the callback loop. The existing race test has no resources."
+    fix_boundary: "ai-harness/packages/harness/src/sandbox/catalog.ts and ai-harness/packages/harness/src/sandbox/catalog.test.ts only"
+    required_verification:
+      - "npm --prefix ai-harness exec --workspace @purista/harness vitest run src/sandbox/catalog.test.ts"
+      - "npm --prefix ai-harness run test:unit --workspace @purista/harness"
+    agent_instruction: "Use a bounded private durable claim/attempt marker or equivalent serialized cleanup protocol so only one caller owns a resource deletion attempt at a time. Preserve retry after failure/crash, do not expose a public lease, and add a two-client same-key purge test that blocks the first callback and proves the callback runs once."
+  - id: REVIEW-002-009
+    severity: blocking
+    category: TEST
+    root_cause: implementation_drift
+    status: open
+    owner_ticket: TICKET-002
+    route: implementation
+    spec_refs:
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#ACC-SOWN-ADMIN
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#ACC-SOWN-BOUNDS
+      - ai-harness/specs/36-sandbox-ownership-and-administration/04-verification.md#ACC-SOWN-SAFETY
+    impacted_path: "Required local catalog recovery, quota, and cancellation failure paths"
+    location: "ai-harness/packages/harness/src/sandbox/catalog.test.ts:94-118; ai-harness/packages/harness/src/local/local-sandbox-catalog.test.ts:30-42"
+    expected: "The remediation adds deterministic coverage for normal-catalog saturation then purge, process-equivalent lock serialization, cancellation during a multi-resource sweep, and failed snapshot deletion/retry."
+    actual: "The capacity test reaches maxActiveSandboxes rather than catalog capacity; the lock test uses two same-process objects; no sweep-cancellation fixture exists; and snapshot cleanup tests callback success only."
+    evidence: "The prior review's required-verification and agent instructions named these cases. Focused tests pass 11 cases without exercising any of the four required failure paths."
+    fix_boundary: "ai-harness/packages/harness/src/sandbox/catalog.test.ts and ai-harness/packages/harness/src/local/local-sandbox-catalog.test.ts only"
+    required_verification:
+      - "npm --prefix ai-harness exec --workspace @purista/harness vitest run src/sandbox/catalog.test.ts src/local/local-sandbox-catalog.test.ts"
+      - "npm --prefix ai-harness run typecheck --workspace @purista/harness"
+    agent_instruction: "Add the four deterministic regression fixtures without changing production scope: saturation followed by purge, independent-process or genuine process-equivalent lock contention, mid-sweep abort preserving remaining work, and snapshot callback failure followed by retryable cleanup."

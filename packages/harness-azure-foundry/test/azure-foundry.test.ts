@@ -1,20 +1,95 @@
+import { Readable } from 'node:stream'
 import { describe, expect, it } from 'vitest'
-import { ModelError } from '@purista/harness'
+import { ModelCapabilityError, ModelError, type ObjectStreamChunk } from '@purista/harness'
 import { azureFoundry } from '../src/index.js'
 
 function mockSignal(): AbortSignal {
   return new AbortController().signal
 }
 
+// This is the already-compiled Standard JSON Schema cache value supplied by
+// the Harness core. Provider adapters must carry it to the SDK untouched.
+const distinctiveCompiledSchema = {
+  $schema: 'https://json-schema.org/draft/2020-12/schema',
+  type: 'object',
+  $defs: { tag: { type: 'string', pattern: '^[a-z]+$' } },
+  properties: { filter: { anyOf: [{ $ref: '#/$defs/tag' }, { type: 'null' }] } },
+  required: ['filter'],
+  unevaluatedProperties: false,
+}
+
 function client(handler: (path: string, options: any) => Promise<any>) {
   return {
     path: (path: '/chat/completions' | '/embeddings') => ({
-      post: (options: any) => handler(path, options)
-    })
+      post: (options: any) => handler(path, options),
+    }),
   }
 }
 
+type StreamingChatRequest = Readonly<{
+  path: '/chat/completions'
+  stream: true
+  includeUsage: true
+}>
+
+function validateStreamingChatRequest(path: string, options: unknown): StreamingChatRequest {
+  if (path !== '/chat/completions') throw new TypeError(`Unexpected streaming path: ${path}`)
+  const body = readField(options, 'body')
+  if (readField(body, 'stream') !== true) throw new TypeError('Expected a streaming chat request.')
+  const streamOptions = readField(body, 'stream_options')
+  if (readField(streamOptions, 'include_usage') !== true) throw new TypeError('Expected streaming usage.')
+  return Object.freeze({ path, stream: true, includeUsage: true })
+}
+
+function readField(value: unknown, key: string): unknown {
+  return typeof value === 'object' && value !== null ? Reflect.get(value, key) : undefined
+}
+
 describe('azureFoundry provider factory', () => {
+  it.each([
+    [{ kind: 'file', mimeType: 'application/pdf', dataBase64: 'AA==' }, 'file_input'],
+    [{ kind: 'file_url', url: 'https://example.test/report.pdf' }, 'file_input'],
+    [{ kind: 'video', mimeType: 'video/mp4', dataBase64: 'AA==' }, 'video_input'],
+  ])('rejects unsupported $kind input before provider I/O', async (part, capability) => {
+    let calls = 0
+    const provider = azureFoundry({ client: client(async () => { calls += 1 }) })
+
+    await expect(provider.text!({
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: [part] as any }],
+      defaults: { retry: false },
+      signal: mockSignal(),
+    })).rejects.toMatchObject({
+      constructor: ModelCapabilityError,
+      meta: { alias: 'azure-foundry', method: capability, reason: 'missing_capability' },
+    })
+    expect(calls).toBe(0)
+  })
+
+  it('preserves supported image and audio inputs', async () => {
+    const calls: any[] = []
+    const provider = azureFoundry({ client: client(async (_path, options) => {
+      calls.push(options)
+      return { status: '200', body: { choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] } }
+    }) })
+
+    await provider.text!({
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: [
+        { kind: 'image', mimeType: 'image/png', dataBase64: 'AA==' },
+        { kind: 'image_url', url: 'https://example.test/image.png' },
+        { kind: 'audio', mimeType: 'audio/wav', dataBase64: 'AQ==' },
+      ] }],
+      signal: mockSignal(),
+    })
+
+    expect(calls[0].body.messages[0].content).toEqual([
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } },
+      { type: 'image_url', image_url: { url: 'https://example.test/image.png' } },
+      { type: 'input_audio', input_audio: { data: 'AQ==', format: 'wav' } },
+    ])
+  })
+
   it('returns provider metadata and maps text response', async () => {
     const provider = azureFoundry({
       client: client(async () => ({
@@ -26,10 +101,10 @@ describe('azureFoundry provider factory', () => {
             completion_tokens: 2,
             total_tokens: 6,
             prompt_tokens_details: { cached_tokens: 3 },
-            completion_tokens_details: { reasoning_tokens: 1 }
-          }
-        }
-      }))
+            completion_tokens_details: { reasoning_tokens: 1 },
+          },
+        },
+      })),
     })
 
     expect(provider.id).toBe('azure-foundry')
@@ -38,7 +113,7 @@ describe('azureFoundry provider factory', () => {
     const response = await provider.text!({
       model: 'gpt-4.1-mini',
       messages: [{ role: 'user', content: 'hi' }],
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(response.content).toBe('hello')
@@ -47,7 +122,7 @@ describe('azureFoundry provider factory', () => {
       outputTokens: 2,
       totalTokens: 6,
       cachedInputTokens: 3,
-      reasoningTokens: 1
+      reasoningTokens: 1,
     })
     expect(response.finishReason).toBe('stop')
   })
@@ -61,10 +136,10 @@ describe('azureFoundry provider factory', () => {
           status: '200',
           body: {
             choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'stop' }],
-            usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 }
-          }
+            usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+          },
         }
-      })
+      }),
     })
 
     const schema = { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } }
@@ -72,7 +147,7 @@ describe('azureFoundry provider factory', () => {
       model: 'gpt-4.1-mini',
       messages: [{ role: 'user', content: 'object please' }],
       schema,
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(response.object).toEqual({ ok: true })
@@ -82,9 +157,94 @@ describe('azureFoundry provider factory', () => {
       json_schema: {
         name: 'harness_response',
         strict: false,
-        schema
-      }
+        schema,
+      },
     })
+  })
+
+  it('forwards compiled JSON Schema unchanged for object and tool requests', async () => {
+    const calls: Array<{ options: any }> = []
+    const provider = azureFoundry({
+      client: client(async (_path, options) => {
+        calls.push({ options })
+        return {
+          status: '200',
+          body: {
+            choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          },
+        }
+      }),
+    })
+
+    await provider.object!({
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: 'object please' }],
+      schema: distinctiveCompiledSchema,
+      tools: [{ name: 'lookup', description: 'Lookup.', parameters: distinctiveCompiledSchema }],
+      signal: mockSignal(),
+    })
+
+    expect(calls[0]?.options.body.response_format.json_schema.schema).toBe(distinctiveCompiledSchema)
+    expect(calls[0]?.options.body.tools[0]?.function.parameters).toBe(distinctiveCompiledSchema)
+  })
+
+  it('maps a provider schema rejection without retrying and accepts a later compatible schema', async () => {
+    let calls = 0
+    const provider = azureFoundry({
+      client: client(async (_path, options) => {
+        calls += 1
+        if (options.body.response_format?.json_schema?.schema === distinctiveCompiledSchema) {
+          return {
+            status: '400',
+            body: {
+              error: {
+                code: 'unsupported_schema',
+                type: 'invalid_request_error',
+                message: 'Unsupported schema keyword.',
+              },
+            },
+          }
+        }
+        return {
+          status: '200',
+          body: {
+            choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          },
+        }
+      }),
+    })
+
+    await expect(
+      provider.object!({
+        model: 'gpt-4.1-mini',
+        messages: [{ role: 'user', content: 'object please' }],
+        schema: distinctiveCompiledSchema,
+        signal: mockSignal(),
+      }),
+    ).rejects.toMatchObject({
+      constructor: ModelError,
+      retriable: false,
+      meta: {
+        provider: 'azure-foundry',
+        method: 'object',
+        status: 400,
+        reason: 'http_error',
+        providerCode: 'unsupported_schema',
+      },
+    })
+    expect(calls).toBe(1)
+
+    await expect(
+      provider.object!({
+        model: 'gpt-4.1-mini',
+        messages: [{ role: 'user', content: 'object please' }],
+        schema: { type: 'object' },
+        signal: mockSignal(),
+      }),
+    ).resolves.toMatchObject({ object: { ok: true } })
+    expect(calls).toBe(2)
   })
 
   it('preserves multiple application tool calls from object responses', async () => {
@@ -97,16 +257,20 @@ describe('azureFoundry provider factory', () => {
               message: {
                 content: '{}',
                 tool_calls: [
-                  { id: 'call_1', type: 'function', function: { name: 'search_docs', arguments: '{"query":"harness"}' } },
-                  { id: 'call_2', type: 'function', function: { name: 'read_doc', arguments: '{"id":"intro"}' } }
-                ]
+                  {
+                    id: 'call_1',
+                    type: 'function',
+                    function: { name: 'search_docs', arguments: '{"query":"harness"}' },
+                  },
+                  { id: 'call_2', type: 'function', function: { name: 'read_doc', arguments: '{"id":"intro"}' } },
+                ],
               },
-              finish_reason: 'tool_calls'
-            }
+              finish_reason: 'tool_calls',
+            },
           ],
-          usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 }
-        }
-      }))
+          usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+        },
+      })),
     })
 
     const response = await provider.object!({
@@ -115,14 +279,14 @@ describe('azureFoundry provider factory', () => {
       schema: { type: 'object' },
       tools: [
         { name: 'search_docs', description: 'Search docs.', parameters: { type: 'object' } },
-        { name: 'read_doc', description: 'Read one doc.', parameters: { type: 'object' } }
+        { name: 'read_doc', description: 'Read one doc.', parameters: { type: 'object' } },
       ],
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(response.toolCalls).toEqual([
       { id: 'call_1', name: 'search_docs', arguments: { query: 'harness' } },
-      { id: 'call_2', name: 'read_doc', arguments: { id: 'intro' } }
+      { id: 'call_2', name: 'read_doc', arguments: { id: 'intro' } },
     ])
   })
 
@@ -135,10 +299,10 @@ describe('azureFoundry provider factory', () => {
           status: '200',
           body: {
             choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
-            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
-          }
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          },
         }
-      })
+      }),
     })
 
     await provider.text!({
@@ -147,31 +311,57 @@ describe('azureFoundry provider factory', () => {
       defaults: { parallelToolCalls: true },
       call: { parallelToolCalls: false },
       tools: [{ name: 'lookup', description: 'Lookup.', parameters: { type: 'object' } }],
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(calls[0]?.options.body.parallel_tool_calls).toBe(false)
   })
 
   it('maps embeddings response', async () => {
+    const calls: any[] = []
+    const requestSignal = mockSignal()
     const provider = azureFoundry({
-      client: client(async () => ({
+      client: client(async (_path, options) => {
+        calls.push(options)
+        return {
         status: '200',
         body: {
-          data: [{ index: 0, embedding: [0.1, 0.2] }],
-          usage: { prompt_tokens: 3, total_tokens: 3 }
-        }
-      }))
+          data: [
+            { index: 0, embedding: [0.1, 0.2] },
+            { index: 1, embedding: [0.3, 0.4] },
+          ],
+          usage: { prompt_tokens: 3, total_tokens: 3 },
+        },
+      }
+      }),
     })
 
     const response = await provider.embed!({
       model: 'text-embedding-3-small',
-      input: 'hello',
-      signal: mockSignal()
+      input: ['hello', 'world'],
+      dimensions: 2,
+      signal: requestSignal,
     })
 
-    expect(response.embeddings).toEqual([{ index: 0, vector: [0.1, 0.2] }])
+    expect(response.embeddings).toEqual([
+      { index: 0, vector: [0.1, 0.2] },
+      { index: 1, vector: [0.3, 0.4] },
+    ])
     expect(response.usage.totalTokens).toBe(3)
+    expect(calls[0].body).toMatchObject({ input: ['hello', 'world'], dimensions: 2 })
+    expect(calls[0].abortSignal).toBe(requestSignal)
+  })
+
+  it('rejects a cancelled embedding request before provider I/O', async () => {
+    let calls = 0
+    const controller = new AbortController()
+    controller.abort()
+    const provider = azureFoundry({ client: client(async () => { calls += 1 }) })
+
+    await expect(provider.embed!({ model: 'embedding', input: 'one', signal: controller.signal })).rejects.toSatisfy(
+      (error: unknown) => error instanceof Error && error.name === 'AbortError',
+    )
+    expect(calls).toBe(0)
   })
 
   it('passes provider options through to body and request options', async () => {
@@ -183,10 +373,10 @@ describe('azureFoundry provider factory', () => {
           status: '200',
           body: {
             choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
-            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
-          }
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          },
         }
-      })
+      }),
     })
 
     await provider.text!({
@@ -195,21 +385,21 @@ describe('azureFoundry provider factory', () => {
       defaults: {
         temperature: 0.1,
         providerOptions: {
-          seed: 123
-        }
+          seed: 123,
+        },
       },
       call: {
         providerOptions: {
-          requestOptions: { headers: { 'extra-parameters': 'pass-through' } }
-        }
+          requestOptions: { headers: { 'extra-parameters': 'pass-through' } },
+        },
       },
-      signal: mockSignal()
+      signal: mockSignal(),
     })
 
     expect(calls[0]?.options.body).toMatchObject({
       model: 'gpt-4.1-mini',
       temperature: 0.1,
-      seed: 123
+      seed: 123,
     })
     expect(calls[0]?.options.headers).toEqual({ 'extra-parameters': 'pass-through' })
     expect(calls[0]?.options.abortSignal).toBeInstanceOf(AbortSignal)
@@ -221,9 +411,9 @@ describe('azureFoundry provider factory', () => {
         status: '200',
         body: {
           choices: [{ message: { content: '{"ok":' }, finish_reason: 'stop' }],
-          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
-        }
-      }))
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        },
+      })),
     })
 
     await expect(
@@ -231,8 +421,8 @@ describe('azureFoundry provider factory', () => {
         model: 'gpt-4.1-mini',
         messages: [{ role: 'user', content: 'object please' }],
         schema: { type: 'object' },
-        signal: mockSignal()
-      })
+        signal: mockSignal(),
+      }),
     ).rejects.toMatchObject({
       constructor: ModelError,
       meta: {
@@ -240,8 +430,8 @@ describe('azureFoundry provider factory', () => {
         method: 'object',
         reason: 'malformed_response',
         // Raw model output never leaks into error metadata (POR-07).
-        providerBody: { redacted: true, contentLength: '{"ok":'.length }
-      }
+        providerBody: { redacted: true, contentLength: '{"ok":'.length },
+      },
     })
   })
 
@@ -250,15 +440,15 @@ describe('azureFoundry provider factory', () => {
       client: client(async () => ({
         status: 200,
         // A plain array takes the non-SSE event path in streamChat.
-        body: [{ choices: [{ delta: { content: 'hello' } }] }]
-      }))
+        body: [{ choices: [{ delta: { content: 'hello' } }] }],
+      })),
     })
 
     const received: any[] = []
     for await (const chunk of provider.textStream!({
       model: 'gpt-4.1-mini',
       messages: [{ role: 'user', content: 'hi' }],
-      signal: mockSignal()
+      signal: mockSignal(),
     })) {
       received.push(chunk)
     }
@@ -269,12 +459,53 @@ describe('azureFoundry provider factory', () => {
     expect(finish.outcome.providerFinishReason).toBeUndefined()
   })
 
+  it('streams structured object snapshots and terminal usage from SSE', async () => {
+    const requests: StreamingChatRequest[] = []
+    const provider = azureFoundry({
+      client: client(async (path, options) => {
+        requests.push(validateStreamingChatRequest(path, options))
+        return {
+          status: '200',
+          body: Readable.from([
+            Buffer.from('data: {"choices":[{"delta":{"content":"{\\"answer\\":"}}]}\n\n'),
+            Buffer.from('data: {"choices":[{"delta":{"content":"\\"azure\\"}"},"finish_reason":"stop"}]}\n\n'),
+            Buffer.from('data: {"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}\n\n'),
+            Buffer.from('data: [DONE]\n\n'),
+          ]),
+        }
+      }),
+    })
+
+    const chunks: ObjectStreamChunk<{ answer: string }>[] = []
+    for await (const chunk of provider.objectStream!<{ answer: string }>({
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: 'object please' }],
+      schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } },
+      signal: mockSignal(),
+    })) {
+      chunks.push(chunk)
+    }
+
+    expect(chunks).toEqual([
+      { kind: 'partial', partial: { _partial: '{"answer":' } },
+      { kind: 'partial', partial: { answer: 'azure' } },
+      {
+        kind: 'finish',
+        object: { answer: 'azure' },
+        usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+        finishReason: 'stop',
+        outcome: { finishReason: 'stop', providerFinishReason: 'stop' },
+      },
+    ])
+    expect(requests).toEqual([{ path: '/chat/completions', stream: true, includeUsage: true }])
+  })
+
   it('preserves HTTP status so 429 is classified as a retriable rate-limit error', async () => {
     const provider = azureFoundry({
       client: client(async () => ({
         status: 429,
-        body: { error: { message: 'rate limited', code: 'TooManyRequests' } }
-      }))
+        body: { error: { message: 'rate limited', code: 'TooManyRequests' } },
+      })),
     })
 
     await expect(
@@ -282,12 +513,12 @@ describe('azureFoundry provider factory', () => {
         model: 'gpt-4.1-mini',
         messages: [{ role: 'user', content: 'hi' }],
         defaults: { retry: false },
-        signal: mockSignal()
-      })
+        signal: mockSignal(),
+      }),
     ).rejects.toMatchObject({
       constructor: ModelError,
       retriable: true,
-      meta: { status: 429, reason: 'rate_limited', providerCode: 'TooManyRequests' }
+      meta: { status: 429, reason: 'rate_limited', providerCode: 'TooManyRequests' },
     })
   })
 
@@ -297,7 +528,7 @@ describe('azureFoundry provider factory', () => {
       client: client(async (_path, options) => {
         body = options.body
         return { status: 200, body: { choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }], usage: {} } }
-      })
+      }),
     })
     await provider.text!({ model: 'm', messages: [{ role: 'user', content: 'hi' }], signal: mockSignal() })
     expect(body.stream).toBe(false)

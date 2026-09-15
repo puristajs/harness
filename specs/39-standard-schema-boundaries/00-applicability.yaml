@@ -1,0 +1,66 @@
+applicability_version: 1
+concerns:
+  - concern_id: representation_reuse
+    status: applicable
+    scope_refs: [CAP-SS-TYPES, CAP-SS-VALIDATION, CAP-SS-PROJECTION, CAP-SS-PROVIDERS, CAP-SS-CONSUMERS, CAP-SS-CLEANUP]
+  - concern_id: sdk_contracts
+    status: applicable
+    scope_refs: [CAP-SS-TYPES, CAP-SS-PROJECTION, CAP-SS-PROVIDERS]
+  - concern_id: security_privacy
+    status: applicable
+    scope_refs: [CAP-SS-VALIDATION, CAP-SS-PROJECTION, CAP-SS-PROVIDERS]
+  - concern_id: async_cancellation
+    status: applicable
+    scope_refs: [CAP-SS-VALIDATION]
+  - concern_id: observability
+    status: applicable
+    scope_refs: [CAP-SS-VALIDATION, CAP-SS-PROJECTION]
+  - concern_id: testing
+    status: applicable
+    scope_refs: [CAP-SS-TYPES, CAP-SS-VALIDATION, CAP-SS-PROJECTION, CAP-SS-PROVIDERS, CAP-SS-CONSUMERS, CAP-SS-CLEANUP]
+  - concern_id: dependency_research
+    status: applicable
+    scope_refs: [CAP-SS-TYPES, CAP-SS-PROJECTION, CAP-SS-PROVIDERS]
+  - concern_id: file_structure
+    status: applicable
+    scope_refs: [CAP-SS-TYPES, CAP-SS-VALIDATION, CAP-SS-PROJECTION, CAP-SS-PROVIDERS, CAP-SS-CONSUMERS, CAP-SS-CLEANUP]
+  - concern_id: documentation
+    status: applicable
+    scope_refs: [CAP-SS-CONSUMERS]
+  - concern_id: release_cleanup
+    status: applicable
+    scope_refs: [CAP-SS-CONSUMERS, CAP-SS-CLEANUP]
+  - concern_id: data_integrity
+    status: applicable
+    scope_refs: [CAP-SS-VALIDATION, CAP-SS-PROJECTION]
+  - concern_id: performance
+    status: applicable
+    scope_refs: [CAP-SS-VALIDATION, CAP-SS-PROJECTION]
+  - concern_id: frontend_ux
+    status: not_applicable
+    scope_refs: [CAP-SS-CONSUMERS]
+    rationale: Existing documentation content and navigation only; no application UI or interaction contract changes.
+  - concern_id: voyage_application
+    status: not_applicable
+    scope_refs: [CAP-SS-CONSUMERS]
+    rationale: Owner scope and repository guidance exclude Voyage from this refactor.
+  - concern_id: new_infrastructure
+    status: not_applicable
+    scope_refs: [CAP-SS-TYPES, CAP-SS-VALIDATION, CAP-SS-PROJECTION, CAP-SS-PROVIDERS]
+    rationale: No endpoint, service, database, queue, worker, deployment or runtime process is introduced.
+  - concern_id: migrations
+    status: not_applicable
+    scope_refs: [CAP-SS-CLEANUP]
+    rationale: Owner requires a clean breaking replacement with no migration or backward-compatibility code and no persistent-data transformation.
+  - concern_id: live_external_checks
+    status: not_applicable
+    scope_refs: [CAP-SS-PROVIDERS]
+    rationale: Adapter seams and fake providers prove pass-through locally; no secrets or live calls are needed.
+  - concern_id: business_compliance
+    status: not_applicable
+    scope_refs: [CAP-SS-TYPES, CAP-SS-VALIDATION, CAP-SS-PROJECTION, CAP-SS-PROVIDERS, CAP-SS-CONSUMERS, CAP-SS-CLEANUP]
+    rationale: No business, legal, payment, identity or approval semantics change.
+  - concern_id: data_persistence_schema
+    status: not_applicable
+    scope_refs: [CAP-SS-VALIDATION]
+    rationale: Existing run/session storage shapes remain unchanged; the refactor only enforces the pre-existing JsonValue invariant before persistence.

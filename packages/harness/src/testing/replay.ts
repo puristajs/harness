@@ -1,4 +1,4 @@
-import type { JsonValue } from '../models/json.js'
+import { isJsonValue, type JsonValue } from '../models/json.js'
 import type { ModelCapability, ModelProvider, ObjectRequest, ObjectResponse, ObjectStreamChunk, TextRequest, TextResponse, TextStreamChunk } from '../ports/model-provider.js'
 
 export type ReplayMethod = 'text' | 'object' | 'textStream' | 'objectStream'
@@ -89,13 +89,6 @@ async function* recordStream<T>(source: AsyncIterable<T>, finish: (chunks: reado
 }
 
 const replayStates = new WeakMap<ModelProvider, { fixture: SanitizedReplayFixture; cursor: number }>()
-
-function isJsonValue(value: unknown): value is JsonValue {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true
-  if (typeof value === 'number') return Number.isFinite(value)
-  if (Array.isArray(value)) return value.every(isJsonValue)
-  return typeof value === 'object' && value !== null && Object.values(value).every(isJsonValue)
-}
 
 function isReplayMethod(value: unknown): value is ReplayMethod {
   return value === 'text' || value === 'object' || value === 'textStream' || value === 'objectStream'

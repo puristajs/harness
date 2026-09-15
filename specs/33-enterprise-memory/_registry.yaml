@@ -1,0 +1,37 @@
+registry_version: 1
+contracts:
+  - contract_id: CTR-MEM-IDENTITY
+    source: 03-contracts/contracts.yaml
+  - contract_id: CTR-MEM-MODEL-REF
+    source: 03-contracts/contracts.yaml
+  - contract_id: CTR-MEM-CONFIG
+    source: 03-contracts/contracts.yaml
+  - contract_id: CTR-MEM-ENGINE
+    source: 03-contracts/contracts.yaml
+  - contract_id: CTR-MEM-RECORD
+    source: 03-contracts/contracts.yaml
+  - contract_id: CTR-MEM-SEARCH
+    source: 03-contracts/contracts.yaml
+  - contract_id: CTR-MEM-SUMMARY
+    source: 03-contracts/contracts.yaml
+  - contract_id: CTR-MEM-SESSION
+    source: 03-contracts/contracts.yaml
+  - contract_id: CTR-MEM-TELEMETRY
+    source: 03-contracts/contracts.yaml
+  - contract_id: CTR-MEM-SQLITE
+    source: 03-contracts/contracts.yaml
+  - contract_id: CTR-MEM-NATS
+    source: 03-contracts/contracts.yaml
+  - contract_id: CTR-MEM-PURISTA
+    source: 03-contracts/contracts.yaml
+verification:
+  - VERIFY-HARNESS-TYPES
+  - VERIFY-HARNESS-TESTS
+  - VERIFY-SQLITE
+  - VERIFY-POSTGRES
+  - VERIFY-REDIS
+  - VERIFY-NATS
+  - VERIFY-BUN
+  - VERIFY-PURISTA
+  - VERIFY-DOCS
+  - VERIFY-AUDITS

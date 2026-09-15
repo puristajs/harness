@@ -111,7 +111,8 @@ Adapters MUST NOT implement independent retry loops.
 Retry policies are runtime-validated because applications may load harness
 configuration from JavaScript, JSON, generated code, or environment-derived
 objects. Invalid alias-level or `defaults.retry` policies MUST throw
-`HarnessConfigError{reason:'invalid_model_retry_policy'}` during `.models(...)`.
+`HarnessConfigError{reason:'invalid_model_retry_policy'}` during Harness
+instance configuration validation.
 Invalid per-call `call.retry` policies MUST throw the same error before any
 provider operation starts. Numeric budgets MUST be finite integers; `maxAttempts`
 MUST be `>= 1`; delay and elapsed budgets MUST be `>= 0`; `longRetry` MUST be

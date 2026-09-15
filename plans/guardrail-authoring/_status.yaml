@@ -1,0 +1,75 @@
+tickets:
+  TICKET-001:
+    lifecycle: accepted
+    current_proof: implementation verified; independent review accepted after callback, runtime, transform, schema-direction, and type-surface regressions passed
+    resume_notes: accepted 2026-08-26; evidence/TICKET-001.md records commands and review findings
+    affected_spec_refs:
+      - ai-harness/specs/38-guardrail-authoring/03-contracts/callbacks.md#CTR-GA-CALLBACKS
+      - ai-harness/specs/38-guardrail-authoring/03-flows/e2e-coverage.md#REQ-GA-CALLBACKS
+      - ai-harness/specs/38-guardrail-authoring/00-conventions.md#CONV-GA-STYLE
+  TICKET-002:
+    lifecycle: accepted
+    current_proof: inline-only clean cut accepted after complete removal of the alternate configuration surface and its dependent artifacts
+    resume_notes: accepted 2026-08-26; evidence/TICKET-002.md records the supersession boundary and fresh acceptance replaces the prior slice
+    affected_spec_refs:
+      - ai-harness/specs/38-guardrail-authoring/03-contracts/configuration.md#CTR-GA-CONFIG
+      - ai-harness/specs/38-guardrail-authoring/03-contracts/configuration.md#CTR-GA-GENERATION
+      - ai-harness/specs/38-guardrail-authoring/03-contracts/actions-and-binding.md#CTR-GA-ERRORS
+      - ai-harness/specs/38-guardrail-authoring/03-flows/e2e-coverage.md#REQ-GA-CONFIG
+      - ai-harness/specs/38-guardrail-authoring/00-conventions.md#CONV-GA-STYLE
+  TICKET-003:
+    lifecycle: accepted
+    current_proof: provider-neutral interceptor requirements and build preflight accepted
+    resume_notes: accepted 2026-08-26; evidence/TICKET-003.md records implementation and independent review
+    affected_spec_refs:
+      - ai-harness/specs/38-guardrail-authoring/03-contracts/actions-and-binding.md#CTR-GA-BINDING
+      - ai-harness/specs/38-guardrail-authoring/03-contracts/actions-and-binding.md#CTR-GA-ERRORS
+      - ai-harness/specs/38-guardrail-authoring/03-flows/e2e-coverage.md#REQ-GA-REQUIREMENTS
+      - ai-harness/specs/38-guardrail-authoring/00-conventions.md#CONV-GA-STYLE
+  TICKET-004:
+    lifecycle: accepted
+    current_proof: sound action tokens and schema-bound sensitive codecs accepted
+    resume_notes: accepted 2026-08-26; evidence/TICKET-004.md records implementation and independent review
+    affected_spec_refs:
+      - ai-harness/specs/38-guardrail-authoring/03-contracts/actions-and-binding.md#CTR-GA-ACTIONS
+      - ai-harness/specs/38-guardrail-authoring/03-contracts/configuration.md#CTR-GA-CONFIG
+      - ai-harness/specs/38-guardrail-authoring/03-contracts/actions-and-binding.md#CTR-GA-ERRORS
+      - ai-harness/specs/38-guardrail-authoring/03-flows/e2e-coverage.md#REQ-GA-ACTIONS
+      - ai-harness/specs/38-guardrail-authoring/00-conventions.md#CONV-GA-STYLE
+  TICKET-005:
+    lifecycle: accepted
+    current_proof: guardrail action attachment and composition preflight accepted
+    resume_notes: accepted 2026-08-26; evidence/TICKET-005.md records implementation and independent review
+    affected_spec_refs:
+      - ai-harness/specs/38-guardrail-authoring/03-contracts/actions-and-binding.md#CTR-GA-BINDING
+      - ai-harness/specs/38-guardrail-authoring/03-contracts/actions-and-binding.md#CTR-GA-ACTIONS
+      - ai-harness/specs/38-guardrail-authoring/04-delivery/consumers.md#CTR-GA-DOCS
+      - ai-harness/specs/38-guardrail-authoring/03-flows/e2e-coverage.md#REQ-GA-BINDING
+      - ai-harness/specs/38-guardrail-authoring/00-conventions.md#CONV-GA-STYLE
+  TICKET-006:
+    lifecycle: accepted
+    current_proof: Harness documentation, examples and canonical skill cleanup accepted
+    resume_notes: accepted 2026-08-26; evidence/TICKET-006.md records implementation and independent review
+    affected_spec_refs:
+      - ai-harness/specs/38-guardrail-authoring/04-delivery/consumers.md#CTR-GA-DOCS
+      - ai-harness/specs/38-guardrail-authoring/04-delivery/consumers.md#CTR-GA-CLEANUP
+      - ai-harness/specs/38-guardrail-authoring/03-flows/e2e-coverage.md#REQ-GA-DOCS
+      - ai-harness/specs/38-guardrail-authoring/00-conventions.md#CONV-GA-STYLE
+  TICKET-007:
+    lifecycle: accepted
+    current_proof: PURISTA handbook, website projections and skill cleanup accepted after shared-content re-review
+    resume_notes: accepted 2026-08-26; evidence/TICKET-007.md records implementation and re-review acceptance
+    affected_spec_refs:
+      - ai-harness/specs/38-guardrail-authoring/04-delivery/consumers.md#CTR-GA-DOCS
+      - ai-harness/specs/38-guardrail-authoring/04-delivery/consumers.md#CTR-GA-CLEANUP
+      - ai-harness/specs/38-guardrail-authoring/03-flows/e2e-coverage.md#REQ-GA-WEBSITE
+      - ai-harness/specs/38-guardrail-authoring/00-conventions.md#CONV-GA-STYLE
+  TICKET-008:
+    lifecycle: accepted
+    current_proof: final consumer cut, CI removal gates and full acceptance passed after implemented and review_pending lifecycle stages
+    resume_notes: accepted 2026-08-26; evidence/TICKET-008.md records implementation, independent review and final verification
+    affected_spec_refs:
+      - ai-harness/specs/38-guardrail-authoring/04-delivery/consumers.md#CTR-GA-CLEANUP
+      - ai-harness/specs/38-guardrail-authoring/03-contracts/configuration.md#CTR-GA-GENERATION
+      - ai-harness/specs/38-guardrail-authoring/03-flows/e2e-coverage.md#REQ-GA-CLEANUP
+      - ai-harness/specs/38-guardrail-authoring/00-conventions.md#CONV-GA-STYLE

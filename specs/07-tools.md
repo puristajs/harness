@@ -1,253 +1,237 @@
-# Tools
+# Tools and MCP
 
-**Purpose.** Defines the built-in tools (which ship with the harness and operate against the Sandbox), TypeScript custom tools, and executable MCP stdio/HTTP tools. Custom tools are registered via `defineHarness().tools({...})`. There is no standalone `defineTool` factory; only inline-in-builder objects achieve cross-key type safety. Portable Agent Plugins bind selected servers through these same definitions; see [29-agent-plugins](./29-agent-plugins.md).
+**Status:** active v4 topic contract.
+
+[Spec 42 §3](./42-composable-definitions-and-catalogs.md) owns exact definition,
+inference, binding, and lifecycle types. The prepared-tool contract in
+[spec 37](./37-decision-boundaries/03-contracts/decisions.md) owns execution
+ordering.
+
+## Portable native tools
+
+```ts
+const calculateRisk = defineTool('calculateRisk', {
+  description: 'Calculate a risk score from transaction facts.',
+  input: calculateRiskInputSchema,
+  output: calculateRiskOutputSchema,
+  async handler(context, input) {
+    return calculateRiskScore(input, context.signal)
+  },
+})
+```
+
+`defineTool` returns a frozen definition with exact `$infer.input`,
+`$infer.validatedInput`, and `$infer.output` types. The input must implement
+Standard JSON Schema V1 because it is presented to a model. Input and output
+validation follows the Standard Schema boundary in [spec 39](./39-standard-schema-boundaries/00-vision.md).
+
+A tool can declare memory or sandbox requirements. Only declared capabilities
+appear as non-optional typed handler context and contribute to graph runtime
+requirements. The handler also receives cancellation, identity, correlation,
+idempotency, logger, metrics, and telemetry values owned by the current call.
+
+Portable tool definitions contain no service resources or framework message
+context. A host framework provides those capabilities through its own
+host-aware tool factory.
+
+## Host-aware tools
+
+A host-aware tool has the same model-facing id, description, input, output, and
+inference contract as a portable tool. Its handler context and authentic owner
+brand come from the host integrator. An agent lists portable and host-aware
+definitions in the same `tools` array and cannot branch on their
+implementation kind.
+
+The ordinary standalone entry point rejects a graph containing host-aware
+tools. The matching host integrator creates a fresh call-scoped handler
+binding, projects authenticated identity and trace data, and executes it
+through the common tool pipeline. Host context is never stored in a Harness
+definition, instance index, checkpoint, event, or inspection.
 
 ## Built-in tools
 
-The harness ships seven built-in tools that operate directly against the `SandboxSession`. They are available to every agent by default — the user opts out, not in.
+Harness exports immutable built-in definitions through `builtInTools`:
 
-### Inventory
+| Tool | Capability | Default permission |
+| --- | --- | --- |
+| `read` | `sandbox.fs` | `allow` |
+| `glob` | `sandbox.fs` | `allow` |
+| `grep` | `sandbox.text_search` | `allow` |
+| `list` | `sandbox.fs` | `allow` |
+| `write` | `sandbox.fs` | `require_approval` |
+| `edit` | `sandbox.fs` | `require_approval` |
+| `bash` | `sandbox.exec` | `require_approval` |
 
-Locked canonical names (lowercase) and PascalCase aliases:
-
-| Canonical | Aliases       | Backed by                              | Description |
-|-----------|---------------|----------------------------------------|-------------|
-| `bash`    | `Bash`        | `SandboxSession.exec`                  | Run a shell command in the sandbox |
-| `read`    | `Read`        | `SandboxSession.readText`              | Read a file from the sandbox |
-| `write`   | `Write`       | `SandboxSession.write`                 | Write a file to the sandbox |
-| `edit`    | `Edit`        | `read+write`                           | String replacement edit (find old_string → new_string) |
-| `glob`    | `Glob`        | `SandboxSession.list` (recursive + glob) | Pattern-match files |
-| `grep`    | `Grep`        | `bash` (`grep -rn`) when executor available, else `read+match` fallback | Search file contents |
-| `list`    | `LS`, `List`  | `SandboxSession.list`                  | List directory entries |
-
-### Schemas (Zod, locked)
+Agents select built-ins through direct references:
 
 ```ts
-const builtinTools = {
-  bash: {
-    description: 'Run a shell command in the sandbox. Returns stdout, stderr, exitCode.',
-    input: z.object({ command: z.string().min(1), cwd: z.string().optional(), timeoutMs: z.number().int().positive().optional() }),
-    output: z.object({ stdout: z.string(), stderr: z.string(), exitCode: z.number().int() }),
-  },
-  read: {
-    description: 'Read a text file from the sandbox.',
-    input: z.object({ path: z.string().min(1), encoding: z.literal('utf-8').default('utf-8') }),
-    output: z.object({ content: z.string() }),
-  },
-  write: {
-    description: 'Write or overwrite a text file in the sandbox.',
-    input: z.object({ path: z.string().min(1), content: z.string() }),
-    output: z.object({ bytesWritten: z.number().int().nonnegative() }),
-  },
-  edit: {
-    description: 'Replace exactly one occurrence of old_string with new_string in the given file.',
-    input: z.object({ path: z.string().min(1), old_string: z.string().min(1), new_string: z.string() }),
-    output: z.object({ replaced: z.literal(1) }),
-  },
-  glob: {
-    description: 'List files matching a glob pattern under root (recursive).',
-    input: z.object({ pattern: z.string().min(1), root: z.string().default('/') }),
-    output: z.object({ paths: z.array(z.string()) }),
-  },
-  grep: {
-    description: 'Search file contents for a regex pattern. Returns matching lines with paths and line numbers.',
-    input: z.object({ pattern: z.string().min(1), path: z.string().default('/'), maxResults: z.number().int().positive().default(100) }),
-    output: z.object({ matches: z.array(z.object({ path: z.string(), line: z.number().int(), text: z.string() })) }),
-  },
-  list: {
-    description: 'List directory entries (non-recursive).',
-    input: z.object({ path: z.string().min(1) }),
-    output: z.object({ entries: z.array(z.object({ name: z.string(), kind: z.enum(['file','directory']), size: z.number().int().optional() })) }),
-  },
-}
+const analyst = defineAgent('analyst', {
+  model: 'chat',
+  instructions: 'Inspect the supplied workspace and report evidence.',
+  tools: [builtInTools.read, builtInTools.glob, builtInTools.grep],
+})
 ```
 
-### Alias dispatch
+Selection contributes the exact sandbox capability. Permission can further
+restrict or require approval for a selected tool; it cannot select the tool or
+grant the sandbox capability. Legacy alias spellings are not accepted.
 
-Locked: when the model emits a tool call with a PascalCase alias, the harness dispatches to the canonical implementation transparently. The OTel `gen_ai.tool.name` attribute always uses the canonical lowercase name regardless of which alias the model used.
+The file tools enforce normalized POSIX paths, sandbox-root containment, byte
+limits, cancellation, and content-free errors. `grep` uses the Sandbox
+bounded text-search contract. `bash` is exposed only through an exec-capable
+sandbox. No built-in falls back to direct host filesystem or process access.
 
-### Availability and gating
+## MCP definitions
 
-Locked rules:
-
-- Built-in tools are available to every agent by default — the user opts out, not in.
-- If `SandboxSession.executor === 'unavailable'`: `bash` and grep's exec-backed path are auto-disabled. `grep` falls back to a read+match implementation (slower; warned once per session via log).
-- Per-agent `builtinTools` field controls inclusion:
-  - `builtinTools: undefined` (default) — all built-ins enabled (subject to executor availability).
-  - `builtinTools: false` — none.
-  - `builtinTools: ['bash','read','grep']` — explicit subset (canonical names only; aliases are not allowed in config to avoid ambiguity).
-
-### Tool definitions are model-facing
-
-When the harness translates the agent's tool set for the model API, built-in tools are listed alongside custom tools as ordinary `ModelToolSpec` entries (name + description + JSON Schema). The model treats them no differently.
-
-## Custom tools — discriminated union
+`defineMcpServer` declares one server and an explicit typed remote-tool
+surface:
 
 ```ts
-type ToolDefinition = TsToolDefinition | McpStdioToolDefinition | McpHttpToolDefinition
+const knowledgeMcp = defineMcpServer('knowledge', {
+  tools: {
+    searchKnowledge: {
+      remoteName: 'search_knowledge',
+      description: 'Search approved knowledge.',
+      input: searchKnowledgeInputSchema,
+      output: searchKnowledgeOutputSchema,
+    },
+  },
+})
+
+const assistant = defineAgent('assistant', {
+  model: 'chat',
+  instructions: 'Answer with evidence from approved knowledge.',
+  tools: [knowledgeMcp.tools.searchKnowledge],
+})
 ```
 
-All three carry `description` (and optionally `kind`). Tool ids (the keys of `.tools({...})`) match `/^[a-z][a-z0-9_]*$/` (≤64 chars), enforced at the builder call.
+The local object key is the model-facing tool id. `remoteName` is the exact
+upstream name. Runtime discovery verifies that each declared tool exists and
+that its provider-facing input schema equals the declared normalized schema.
+Undeclared remote tools are ignored and never become callable.
 
-## TS tool
+Definitions contain no transport or secret. `getInstance` binds each required
+server through exactly one of:
 
 ```ts
-interface TsToolDefinition<I extends z.ZodTypeAny = z.ZodTypeAny, O extends z.ZodTypeAny = z.ZodTypeAny> {
-  kind?: 'ts'                                // default 'ts' if omitted
-  description: string
-  input: I
-  output: O
-  handler: (ctx: ToolHandlerContext, input: z.infer<I>) => Promise<z.infer<O>>
-  configureHarnessContext?: (context: HarnessAdapterContext) => void
-}
-
-interface ToolHandlerContext {
-  logger: Logger
-  telemetry: TelemetryShim
-  metrics: Metrics
-  memory: MemoryFacade
-  signal: AbortSignal
-  sandbox: SandboxSession                   // the open session for this run
-  runId: string
-  sessionId: string
-  agentId: string
-  toolId: string
-}
+type McpBinding =
+  | {
+      transport: 'http'
+      url: string
+      headers?: Readonly<Record<string, string>>
+      resolveHeaders?: (
+        context: McpRequestHeaderContext,
+      ) =>
+        | Readonly<Record<string, string>>
+        | Promise<Readonly<Record<string, string>>>
+    }
+  | {
+      transport: 'stdio'
+      command: string
+      args?: readonly string[]
+      env?: Readonly<Record<string, string>>
+      sandbox: SpawnCapableSandbox
+    }
 ```
 
-Behavior:
+HTTP credential projection runs after approval and immediately before the
+request. It receives bounded identity and correlation data. Headers and
+callbacks never enter inspection, events, logs, metrics, telemetry, or
+persistence. HTTP redirects are disabled so credentials cannot be forwarded to
+another origin. Every first-party HTTP transport MUST support per-call
+`resolveHeaders`. A configured callback against a transport that cannot apply
+it fails atomic instance validation as
+`HarnessConfigError{reason:'invalid_runtime_binding',path:
+'mcp.<id>.resolveHeaders'}`; it is never ignored.
 
-- Input is validated with `input.parse` before the handler runs. Failure throws [`ValidationError`](./15-error-catalog.md) (`category: 'validation'`, `retriable: false`).
-- If `.governance(...).exposure` is configured, exposure rules can hide tools before the model call. If execution `policies` are configured, policy evaluation runs after input validation and before the handler runs. Policy denial or rejected approval returns a recoverable `PolicyDeniedError` tool result to the model.
-- Output is validated with `output.parse` after the handler returns. Failure throws `ValidationError`.
-- The `sandbox` exposed to the handler is the same `SandboxSession` the agent loop opened. Backend-internal policy (network deny lists, etc.) applies.
-- Per-call timeout: `defaults.toolTimeoutMs`. On timeout: `OperationTimeoutError`.
-- On `signal.abort`: `OperationCancelledError`.
+Stdio execution requires an explicitly spawn-capable sandbox and a minimal
+environment. One client, transport, and process bundle is initialized per
+declared server, shared by that server's selected tools, and closed
+idempotently by the Harness instance. There is no install command, shell
+interpolation, working-directory shortcut, or host-process fallback.
 
-## MCP stdio tool
+Core supports the current MCP Streamable HTTP and stdio transports selected by
+the runtime binding. It does not expose the legacy HTTP+SSE transport or
+stateful fallback behavior. MCP SDK loading is isolated to the MCP runtime so
+applications without MCP definitions do not initialize it.
 
-```ts
-interface McpStdioToolDefinition {
-  kind: 'mcp_stdio'
-  description: string
-  command: string
-  args?: readonly string[]
-  env?: Record<string, string>
-  install?: {
-    command: string
-    cwd?: string
-    env?: Record<string, string>
-    timeoutMs?: number
-  }
-  tool: string                              // upstream MCP tool name
-  provenance?: McpPluginProvenance          // content-free Agent Plugin telemetry origin
-  inputAdapter?: (input: unknown) => unknown
-  outputAdapter?: (output: unknown) => unknown
-}
-```
+## Agent-selected tool pipeline
 
-Behavior:
+Every agent-selected native, built-in, MCP, subagent, and host-aware tool
+occurrence follows the same ordered boundary:
 
-- Implementation lives inside `@purista/harness` under `src/tools/mcp/`. The runners dynamically load `@modelcontextprotocol/client` v2 so harnesses with only TS tools do not load MCP code at runtime.
-- Stdio MCP runs only through a spawn-capable `SandboxSession` (see [05-sandbox](./05-sandbox.md) §"Optional long-lived process capability"). The server is spawned once via `session.spawn(...)`, owned by the SDK's modern transport lifecycle, and killed on `runner.close()` or `session.close()`. There is no exec-only/one-shot transport. A sandbox without `spawn` fails with `SandboxNoExecutorError`.
-- `install.command`, when provided, runs inside the same sandbox executor before first use. Use it to install or bootstrap the MCP server inside the sandbox, for example `npm install`/`npx` setup in a sandbox workspace.
-- The MCP server's `tools/list` is queried before model tool exposure; the declared input/output JSON Schemas are validated by an embedded JSON Schema validator (see "MCP JSON Schema validator" below).
-- `mcp_stdio` adapter input/output flow ordering is locked: `input → inputAdapter → JSON-Schema validate → MCP call → response → JSON-Schema validate → outputAdapter → return`.
-- Per-call timeout from `defaults.toolTimeoutMs`.
+1. resolve the selected definition from the current agent's immutable
+   allowlist;
+2. apply input Guardrails and validate the effective wire and parsed inputs;
+3. evaluate permissions and governance;
+4. return a typed approval interruption when approval is required;
+5. invoke once with the shared timeout, cancellation, identity, and
+   idempotency context;
+6. validate the output and apply output Guardrails;
+7. checkpoint and emit content-safe lifecycle events.
 
-### Current MCP protocol support
+Direct workflow tool calls use the same authentic binding, input/output
+validation, host overlay, timeout, cancellation, event, telemetry, and managed
+checkpoint machinery. They do not borrow any agent's exposure, permissions,
+governance, approval, or Guardrails. The workflow handler already selected the
+exact imported capability. For a PURISTA host tool, every command, stream,
+queue, event, agent, or workflow operation invoked by its handler retains that
+operation's ordinary business guard. Authorization for the mounted workflow
+root may additionally be enforced by its own PURISTA before guard.
 
-The MCP runtime pins a current Tier-1 SDK release implementing MCP
-`2026-07-28`. Streamable HTTP uses only the stateless core, method/name routing
-headers, cacheable list results, and task-augmented `tools/call` after mutual
-capability negotiation. This is a clean breaking major cut: no stateful
-protocol, HTTP+SSE transport, compatibility shim, or transport fallback is
-retained. A task remains inside one normal tool invocation: timeout/abort also
-cancel it where the server supports cancellation, and only its final normalized
-result reaches the model. Unsupported server-to-client requests, task
-`input_required`, and task failures do not create a user prompt or credential
-flow; they fail as the existing safe MCP/tool errors.
+Tool calls from an agent carry
+`{kind:'agent',agentId,workflowId?}`; direct calls from a workflow carry
+`{kind:'workflow',workflowId}`. Both use the same stable `callId` and exactly
+one caller identity. A workflow tool call never invents an agent identity.
 
-Generic prepared stdio launch support lets an addon stage validated immutable
-assets and a per-plugin writable data directory into the current sandbox. It is
-not a second MCP runner and cannot bypass command/args separation, sandbox
-execution, permissions, governance, validation, telemetry, or shutdown.
+A definition being present in a catalog or dependency closure does not grant
+access. Only a direct reference in the current agent or workflow definition
+creates a callable scoped invoker.
 
-### Reconnect / process death
+## Skills are not tools
 
-- If the stdio server exits during a call, the harness surfaces the failure as `McpProtocolError{meta.phase:'call'}`. In persistent mode the dead process is discarded and the next call re-spawns and re-initializes a fresh server (server-side state from before the crash is lost); in one-shot mode the next call simply starts a fresh exchange.
-- `mcp_http` is a per-call HTTP request and has no persistent connection; reconnect semantics do not apply.
+A Skill is guidance and resources. Harness synthesizes the reserved
+`read_skill` tool only for an agent that declares Skills. It exposes only
+those Skills through an exact scoped reader and defaults to `allow`. The
+synthesized tool is private to that agent and is absent from catalogs and
+public definition maps.
 
-## MCP HTTP tool
+A script becomes a typed, model-callable operation only when an application
+wraps it in `defineTool` or a host-aware tool. Skill metadata alone never
+creates a tool.
 
-```ts
-interface McpHttpToolDefinition {
-  kind: 'mcp_http'
-  description: string
-  url: string
-  tool: string
-  auth?: McpAuth
-  headers?: Record<string, string>
-  provenance?: McpPluginProvenance          // content-free Agent Plugin telemetry origin
-  inputAdapter?: (input: unknown) => unknown
-  outputAdapter?: (output: unknown) => unknown
-}
+## Failure and privacy
 
-interface McpPluginProvenance {
-  name: string
-  version?: string
-  digest: string
-  component: 'mcp'
-}
+Unknown or unselected model tool names fail before execution. Invalid input or
+output uses `ValidationError`; denied decisions use the decision errors;
+unexpected handler failures use `ToolError`; MCP transport/protocol failures
+use the MCP error family; cancellation and deadlines use their canonical
+operation errors.
 
-type McpAuth =
-  | { kind: 'none' }
-  | { kind: 'bearer'; token: string }
-  | { kind: 'oauth2'; accessToken: string }
-  | { kind: 'api_key'; header: string; value: string }
-  | { kind: 'basic'; username: string; password: string }
-```
+Errors and observation data may include stable ids, phases, status, duration,
+and bounded provider metadata. They never include credentials, headers,
+commands with secret environment values, raw Skill content, raw tool input, or
+raw tool output under content-free telemetry.
 
-Behavior:
+## Required verification
 
-- Same validation/adapter flow as `mcp_stdio`.
-- Auth failures throw [`McpAuthError`](./15-error-catalog.md) (`category: 'tool'`, `retriable: false` for 401, `true` for 5xx).
-- Protocol-level failures (connection failure, list failure, malformed response) throw `McpProtocolError`.
+- definition inference and foreign-definition rejection;
+- direct-reference allowlists and collision checks;
+- one validation/decision/approval/invocation/output pipeline for every
+  implementation kind;
+- safe built-in defaults and exact sandbox capabilities;
+- workflow-versus-agent caller correlation;
+- MCP discovery/schema equality, redirects, credential projection,
+  cancellation, process death, startup rollback, and shutdown;
+- no secret or content leakage in errors, events, logs, metrics, inspection, or
+  persisted records.
 
-## MCP JSON Schema validator
+## References
 
-The harness ships an embedded JSON Schema validator (used by the MCP tool runners). Locked behavior:
-
-- Draft: 2020-12.
-- Supported keywords: `type`, `properties`, `required`, `items`, `enum`, `const`, `oneOf`, `anyOf`, `allOf`, `not`, `minimum`, `maximum`, `minLength`, `maxLength`, `pattern`, `minItems`, `maxItems`, `format` (only `'uri'`, `'email'`, `'date-time'`, `'uuid'`).
-- Any unsupported keyword: log `warn` once per `(toolId, keyword)` pair, then accept the value as-is (no validation against the unsupported keyword).
-- Validation failure throws `ValidationError{where:'mcp_input'|'mcp_output'}`.
-
-## Tool lookup inside agents
-
-The agent context exposes `tools` typed by the agent's declared tool ids (only the entries listed in the agent's `tools` array). Calling a tool id not in the agent's allowlist is a static type error and throws [`ToolNotFoundError`](./15-error-catalog.md) at harness.
-
-## Errors
-
-| Class                  | Thrown when                                              | Retriable |
-|------------------------|----------------------------------------------------------|-----------|
-| `ToolNotFoundError`    | tool id not in registry / not allowed for the agent      | no        |
-| `ValidationError`      | input or output schema mismatch                          | no        |
-| `PermissionDeniedError`| permission policy denied the call (per-call; recoverable)| no        |
-| `PolicyDeniedError`    | governance policy or approval denied the call (recoverable)| no      |
-| `PolicyEvaluationError`| governance adapter or predicate failed                   | no        |
-| `ToolError`            | handler threw a non-harness error                        | as cause  |
-| `SandboxNoExecutorError`| `bash` invoked when sandbox executor is unavailable     | no        |
-| `McpProtocolError`     | MCP connection/list/call protocol failure                | yes       |
-| `McpAuthError`         | MCP auth failure                                         | yes for 5xx |
-| `OperationTimeoutError`| tool call exceeded `toolTimeoutMs`                       | yes       |
-| `OperationCancelledError` | agent run aborted                                     | no        |
-
-## Cross-references
-
-- [24-governance-policy](./24-governance-policy.md) — optional policy, approval, shadow mode, and external adapter governance for tool calls.
-
-- [05-sandbox](./05-sandbox.md) — sandbox port and the FS+exec surface that built-in tools layer on.
-- [09-agents](./09-agents.md) — agent context `tools`, default loop, permissions.
-- [15-error-catalog](./15-error-catalog.md).
-- [14-otel-conventions](./14-otel-conventions.md) — `execute_tool {tool.name}` span (GenAI conv).
+- [05 — Sandbox](./05-sandbox.md)
+- [08 — Skills](./08-skills.md)
+- [09 — agents](./09-agents.md)
+- [15 — error catalog](./15-error-catalog.md)
+- [37 — decision boundary](./37-decision-boundaries/03-contracts/decisions.md)
+- [39 — Standard Schema boundaries](./39-standard-schema-boundaries/00-vision.md)
+- [42 — exact tool and MCP contracts](./42-composable-definitions-and-catalogs.md)

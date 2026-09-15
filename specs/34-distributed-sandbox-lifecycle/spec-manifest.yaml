@@ -1,0 +1,53 @@
+spec_manifest_version: 1
+content_digest: sha256:d5cf72b589728648eefb39a78cd393d80c14c4c382dc0a234fccc1a16a9af30f
+artifacts:
+  - path: 00-applicability.yaml
+    sha256: sha256:3e197ebe63f0d10db24957d1ee5e3a5541a17c7276ef945630df9a601d923f80
+  - path: 00-architecture-overview.md
+    sha256: sha256:8b86fd6d8a367350ef85e5f2badfbdef8d614f64e2d59630741b2e5dc1800495
+  - path: 00-conventions.md
+    sha256: sha256:634a5ead3679022e3e1cbb9306b8dd3161dd8cee883705a26bf686aaa48ae273
+  - path: 00-decision-authority.yaml
+    sha256: sha256:591bd4f20de1a943b0ae769d21d9eddfde5e939484df49fb53cc6d415e7d6824
+  - path: 00-file-structure.md
+    sha256: sha256:d2866edafee60e4dc10f7f71d895b457ae2d2fc7378cc83145467d6f0f0e2b29
+  - path: 00-module-boundaries.yaml
+    sha256: sha256:ccbe41943565a5f137f6bc9a80c99a2e1c758b933f7ae0cd0163cd70cd8d83a3
+  - path: 00-policy-profile.yaml
+    sha256: sha256:61e653604b758b533715b63697c2034476440ec3feb52f506a2c9004ab962165
+  - path: 00-reuse-inventory.yaml
+    sha256: sha256:4444811152bed68fc922f284484dac044564b8aa6e3dbeb047cd1ab4b7f03659
+  - path: 00-stack.md
+    sha256: sha256:9964c9b63c235d45bceb1f56a576f31aa87973029c344f736462e42f3be43141
+  - path: 00-traceability.yaml
+    sha256: sha256:cb020f0ddc52c62a3f02ef85674aa0e823856f3e5768d6d4163dd63e8558322f
+  - path: 00-vision.md
+    sha256: sha256:2d564f52f017a738692678673a26c824af573863a39a66345b8cfcfabf567c55
+  - path: 02-capabilities/capability-inventory.md
+    sha256: sha256:bbf2236603a59b60216eb8bcbae0bae093a3239df95dda78c7e9daa2f53dff69
+  - path: 03-contracts/contracts.yaml
+    sha256: sha256:70b8c6208c0c39422ae9f165a400fa05c9c035da84d6fa0d7c33f71ea9bfee2c
+  - path: 03-contracts/generation-map.yaml
+    sha256: sha256:0c418921e9afdd9f0c6dc5a768157ebc31c9b544f498c975f3f84e3105ba6340
+  - path: 03-contracts/representation-catalog.yaml
+    sha256: sha256:8235447d50314620ad41fa402af166f3a2aee2499788a733e91f7d0e3606ab38
+  - path: 03-flows/e2e-coverage.md
+    sha256: sha256:5807f837dac8f47f2fe985aba9d7d53e1c75dc8feeca5d1cf989bfd9dd413203
+  - path: 04-delivery/migration-requirements.md
+    sha256: sha256:8acc8fe9d19c52e96dad48a74d06d8299b2cbe7d9829ecf1fc02d68a07c2ccfc
+  - path: 04-nfr/requirements.md
+    sha256: sha256:2ac6a7b264d22b36228cfb639b04942cdd02277d06863f07b7804b2a54c0fb94
+  - path: 04-operations/runbook-requirements.md
+    sha256: sha256:21158923f309d43b2971c11a76cdafd0b6d8d60930cc91c2b4b879fc3540dcfa
+  - path: 05-integration/local-docker.md
+    sha256: sha256:b10b9c4e1cc827770113e35e192efcbd51be8a96073470079c77cac91e968cba
+  - path: 05-integration/purista-boundary.md
+    sha256: sha256:ea78f952b26124be874b2fd4c4c20646bb513e57d8aa9e2b77836898b20beffa
+  - path: _registry.yaml
+    sha256: sha256:8831052f2cd390236d682dcb257903b3a464efa06206edb40f4e4218dcc5b331
+  - path: glossary.md
+    sha256: sha256:9155a8384a88f00e7389b57b5cee126c0d420269ca4209da344d2376f0b7d4dd
+provenance:
+  source_revision: c378607de9e7
+  generated_at: 2026-08-26T09:10:06.084Z
+  generator: spec-manifest/v1

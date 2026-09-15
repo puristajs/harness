@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "ticket_id": "TICKET-001",
+  "status": "accepted",
+  "spec_manifest_digest": "sha256:9578b59d21602ef020997d76a876d99df6e98728ea41834c8fd981c0d38e0acb",
+  "plan_manifest_digest": "sha256:8b3ec5699102a59c7f6f3a9119723f260bd51c2a9a508440a25f9ce74b07e728",
+  "changed_artifacts": [
+    {
+      "path": "packages/harness/src/sandbox/ownership.ts",
+      "kind": "schema",
+      "spec_refs": ["03-contracts/api.md#CTR-SOWN-POLICY", "03-contracts/api.md#CTR-SOWN-OWNER"],
+      "asset_refs": ["sown.owner", "sown.scope", "sown.policy"],
+      "module_refs": ["packages/harness/src/sandbox"],
+      "public_symbols": ["SandboxOwner", "SandboxPartition", "SandboxPolicy", "SandboxBindingOptions", "SessionOptions", "sessionOptionsSchema", "SessionSandboxBinding"]
+    },
+    {
+      "path": "packages/harness/src/sandbox/administration.ts",
+      "kind": "schema",
+      "spec_refs": ["03-contracts/api.md#CTR-SOWN-ADMIN", "03-contracts/api.md#CTR-SOWN-OPTIONS"],
+      "asset_refs": ["sown.administration", "sown.options"],
+      "module_refs": ["packages/harness/src/sandbox"],
+      "public_symbols": ["SandboxAdministration", "SandboxSelector", "SandboxAdministrationOptions", "WorkspaceAdministrationOptions", "SandboxSnapshotPolicy"]
+    },
+    {
+      "path": "packages/harness/src/errors/catalog.ts",
+      "kind": "public_type",
+      "spec_refs": ["03-contracts/api.md#CTR-SOWN-ERRORS"],
+      "asset_refs": ["sown.safe-error"],
+      "module_refs": ["packages/harness/src/errors"],
+      "public_symbols": ["SandboxPermissionDeniedError", "SandboxConflictError", "SandboxQuotaExceededError", "SandboxStateLostError"]
+    },
+    {
+      "path": "packages/harness/src/index.ts",
+      "kind": "module",
+      "spec_refs": ["03-contracts/api.md#CTR-SOWN-OWNER", "03-contracts/api.md#CTR-SOWN-ADMIN", "03-contracts/api.md#CTR-SOWN-ERRORS"],
+      "asset_refs": ["sown.owner", "sown.administration", "sown.safe-error"],
+      "module_refs": ["packages/harness/src/index.ts"],
+      "public_symbols": ["SandboxOwner", "SandboxAdministration", "SandboxPermissionDeniedError", "SandboxConflictError", "SandboxQuotaExceededError"]
+    },
+    {
+      "path": "packages/harness/src/sandbox/ownership.test.ts",
+      "kind": "contract",
+      "spec_refs": ["00-vision.md#REQ-SOWN-OWNER", "03-contracts/api.md#CTR-SOWN-OWNER", "03-contracts/api.md#CTR-SOWN-POLICY"],
+      "asset_refs": ["sown.owner", "sown.scope", "sown.policy"],
+      "module_refs": ["packages/harness/src/sandbox"]
+    },
+    {
+      "path": "packages/harness/src/sandbox/administration.test.ts",
+      "kind": "contract",
+      "spec_refs": ["00-vision.md#REQ-SOWN-SAFETY", "03-contracts/api.md#CTR-SOWN-ADMIN", "03-contracts/api.md#CTR-SOWN-OPTIONS"],
+      "asset_refs": ["sown.administration", "sown.options"],
+      "module_refs": ["packages/harness/src/sandbox"]
+    },
+    {
+      "path": "packages/harness/src/errors/catalog.test.ts",
+      "kind": "contract",
+      "spec_refs": ["03-contracts/api.md#CTR-SOWN-ERRORS"],
+      "asset_refs": ["sown.safe-error"],
+      "module_refs": ["packages/harness/src/errors"]
+    },
+    {
+      "path": "packages/harness/test/public-api.test.ts",
+      "kind": "contract",
+      "spec_refs": ["03-contracts/api.md#CTR-SOWN-ERRORS"],
+      "asset_refs": ["sown.safe-error"],
+      "module_refs": ["packages/harness/src/index.ts"]
+    },
+    {
+      "path": "packages/harness/type-tests/sandbox-ownership.ts",
+      "kind": "contract",
+      "spec_refs": ["03-contracts/api.md#CTR-SOWN-POLICY", "03-contracts/api.md#CTR-SOWN-OWNER"],
+      "asset_refs": ["sown.owner", "sown.scope", "sown.policy"],
+      "module_refs": ["packages/harness/type-tests"]
+    },
+    {
+      "path": "packages/harness/tsconfig.type-tests.json",
+      "kind": "configuration",
+      "spec_refs": ["03-contracts/api.md#CTR-SOWN-OWNER"],
+      "module_refs": ["packages/harness/type-tests"]
+    },
+    {
+      "path": "packages/harness/vitest.config.ts",
+      "kind": "configuration",
+      "spec_refs": ["04-verification.md#ACC-SOWN-OWNER", "04-verification.md#ACC-SOWN-SAFETY"],
+      "module_refs": ["packages/harness/vitest.config.ts"]
+    }
+  ],
+  "commands": [
+    { "id": "CMD-SPEC", "command": "node /Users/sebastianwessel/.agents/skills/spec-readiness-review/scripts/check_specs.mjs ai-harness/specs/36-sandbox-ownership-and-administration", "effect": "read_only", "expected_result": "exit 0" },
+    { "id": "CMD-PLAN", "command": "node /Users/sebastianwessel/.agents/skills/spec-implementation-planner/references/check_plan.mjs . ai-harness/plans/sandbox-ownership ai-harness/specs/36-sandbox-ownership-and-administration", "effect": "read_only", "expected_result": "exit 0" },
+    { "id": "CMD-HARNESS_TYPES", "command": "npm --prefix ai-harness run typecheck --workspace @purista/harness", "effect": "local_write", "expected_result": "exit 0" },
+    { "id": "CMD-HARNESS_UNIT", "command": "npm --prefix ai-harness run test:unit --workspace @purista/harness", "effect": "local_write", "expected_result": "exit 0; 23 files and 284 tests passed" },
+    { "id": "CMD-HARNESS_BUILD", "command": "npm --prefix ai-harness run build --workspace @purista/harness", "effect": "local_write", "expected_result": "exit 0" },
+    { "id": "CMD-HARNESS_PUBLIC_TYPES", "command": "npm --prefix ai-harness run test:types", "effect": "local_write", "expected_result": "exit 0" }
+  ],
+  "consumer_impact": [
+    {
+      "asset_or_symbol": "sown.safe-error#SandboxPermissionDeniedError",
+      "consumers": ["packages/harness/test/public-api.test.ts", "packages/harness/type-tests/sandbox-ownership.ts"],
+      "disposition": "tested",
+      "evidence": ["packages/harness/test/public-api.test.ts", "packages/harness/src/errors/catalog.test.ts", "packages/harness/type-tests/sandbox-ownership.ts"]
+    },
+    {
+      "asset_or_symbol": "sown.owner|sown.scope|sown.policy|sown.administration|sown.options",
+      "consumers": ["wave_03_port_cutover/TICKET-004", "wave_05_durable_partitions/TICKET-006", "wave_08_purista/TICKET-009"],
+      "disposition": "migration_owned",
+      "evidence": ["plans/sandbox-ownership/wave_03_port_cutover/tickets/TICKET-004-port_cutover.md", "plans/sandbox-ownership/wave_05_durable_partitions/tickets/TICKET-006-durable_partitions.md", "plans/sandbox-ownership/wave_08_purista/tickets/TICKET-009-purista.md"]
+    }
+  ],
+  "architecture_checks": [
+    { "command": "git -C ai-harness diff --check", "status": "passed" },
+    { "command": "No generator exists for this local port; strict Zod schemas and compiler-generated declarations are the approved source boundary.", "status": "not_applicable" }
+  ]
+}

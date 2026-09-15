@@ -14,7 +14,8 @@ The harness gives PURISTA applications a typed runtime boundary for:
 - state, sandboxing, durable workspace replay, logs, traces, and run events;
 - provider-neutral eval helpers for deterministic scorer tests and prompt
   candidate comparison;
-- provider adapters for OpenAI, Anthropic, Amazon Bedrock, and Azure AI Foundry.
+- provider adapters for OpenAI and OpenAI-compatible endpoints, Google Gemini,
+  Anthropic, Amazon Bedrock, and Azure AI Foundry.
 
 This repository is not a SaaS product. It is lower-level infrastructure that
 application teams embed in services, workers, CLIs, or local tools.
@@ -27,9 +28,18 @@ validates the final output, and emits run events.
 
 A **workflow** is application orchestration around one or more agent
 invocations. Workflows sequence or parallelize agents, add deterministic logic,
-request human approval, write durable state, and create artifacts.
+request human approval, persist durable workflow data, and create artifacts.
 
 ## Quick Start
+
+For content safety and tool authority, start with the
+[decision table and lifecycle](docs/guides/decisions-and-approval.md). The
+[guardrails composition](examples/guardrails/README.md) runs without credentials
+and combines input/tool/output rails with durable tool approval interruption and
+resume.
+[Durable review](examples/durable-human-review/README.md) keeps wait/claim/receipt
+state at the application boundary. See the
+[decision boundary reference](docs/releases/decision-boundaries.md).
 
 ```bash
 npm install
@@ -44,18 +54,21 @@ The `examples/quickstart` workspace is the recommended starting point.
 `examples/showcase` demonstrates mounted skills, custom TypeScript tools, and
 multiple workflows with the OpenAI adapter. `examples/living-wiki-jaeger`
 demonstrates a local file-backed research workspace with direct typed agent
-invocation, optional typed workflows, SSE run observation, review gates,
-artifacts, MCP, and Jaeger tracing. `examples/delm-shared-context` uses the
+invocation, optional typed workflows, AI SDK UI Message Stream v1, resumable
+tool approval, a separate operator view, artifacts, MCP, and Jaeger tracing.
+`examples/delm-shared-context` uses the
 OpenAI adapter by default to demonstrate a DeLM-inspired decentralized
 shared-context pattern with task claiming, admission-gated compact entries,
 evidence unfolding, and durable checkpoints.
-`examples/modular-support-harness` demonstrates static, typed reusable modules
+`examples/catalog-support-harness` demonstrates immutable, typed reusable catalogs
 with application-owned workflows, retry-only context projection, and sanitized
 test replay. `examples/workflow-child-tasks` demonstrates credential-free
 bounded fan-out, isolated background task lookup, and short continuable task
 conversations.
 
 See [docs/getting-started/quickstart.md](docs/getting-started/quickstart.md) for the full walkthrough.
+The [Harness 4 definition and runtime API](docs/releases/definition-and-runtime-api.md)
+describes the current composition and invocation surface.
 
 ## Verification
 
@@ -86,7 +99,9 @@ npm run test:failure
   - [Evaluating prompts](docs/guides/evaluating-prompts.md)
   - [MCP tools](docs/guides/mcp-tools.md)
   - [Agent Plugins](docs/guides/agent-plugins.md)
-  - [Migrating to AI Harness 2.0](docs/guides/migrating-to-v2.md)
+  - [Guardrails](docs/guides/guardrails.md)
+  - [Decisions and approval](docs/guides/decisions-and-approval.md)
+  - [Decision boundary release notes](docs/releases/decision-boundaries.md)
   - [Extending and customizing](docs/guides/extending-and-customizing.md)
   - [Testing](docs/guides/testing.md)
 - Operate and review
@@ -96,19 +111,29 @@ npm run test:failure
 
 ## Project Structure
 
-- `packages/harness/` — Core runtime, contracts, ports, builder, sessions, tools, sandbox, telemetry, and test helpers.
+- `packages/harness/` — Core definitions, runtime, contracts, ports, sessions, tools, sandbox, telemetry, and test helpers.
+- `packages/harness-ai-sdk-ui/` — AI SDK UI Message Stream v1 adapter for standard chat streaming and resumable tool approvals.
 - `packages/harness-openai/` — OpenAI model provider adapter.
 - `packages/harness-anthropic/` — Anthropic model provider adapter.
 - `packages/harness-bedrock/` — Amazon Bedrock model provider adapter.
 - `packages/harness-azure-foundry/` — Azure AI Foundry model provider adapter.
+- `packages/harness-google/` — Google Gemini API model provider adapter.
+- `packages/harness-policy-opa/` — Typed, fail-closed Open Policy Agent Data API governance adapter and strict test fake.
+- `packages/harness-storage-postgres/` — Distributed PostgreSQL Harness state, lease, checkpoint, and external-wait adapter.
+- `packages/harness-sandbox-kubernetes/` — Self-hosted Kubernetes sandbox with optional PVC/VolumeSnapshot durable workspaces.
 - `packages/harness-agent-plugins/` — Agent Plugins v1 inspector and explicit Skills/MCP binding addon.
+- `packages/harness-guardrails/` — Optional inline, typed input/output/tool/retrieval guardrails addon and provider-neutral sensitive-data detector port.
+- `packages/harness-guardrails-presidio/` — Optional original Presidio Analyzer internal-sidecar adapter and deterministic protocol testing helper.
+- `packages/harness-guardrails-native-privacy/` — Optional local Rust/Node-API sensitive-data subset for Node.js and Bun.
 - `examples/quickstart/` — Smallest runnable PURISTA harness example.
 - `examples/showcase/` — Skills, TypeScript tools, and multiple workflow examples.
-- `examples/living-wiki-jaeger/` — Local research workspace with Hono, React/Vite, SSE, artifacts, MCP, and Jaeger.
+- `examples/living-wiki-jaeger/` — Local research workspace with Hono, React/Vite, AI SDK UI streaming, artifacts, MCP, and Jaeger.
 - `examples/delm-shared-context/` — DeLM-inspired shared-context coordination example for parallel worker workflows.
-- `examples/modular-support-harness/` — Static module composition, support workflow ownership, and hermetic replay testing.
+- `examples/catalog-support-harness/` — Reusable catalog composition, support workflow ownership, and hermetic replay testing.
 - `examples/workflow-child-tasks/` — Bounded fan-out, isolated background tasks, session-owner lookup, and in-process continuables.
 - `examples/agent-plugins/` — Inspect, review, digest-pin, and explicitly bind an installed Agent Plugins package.
+- `examples/guardrails/` — Deterministic inline guardrails and local sensitive-data example using the Harness test adapter.
+- `examples/opa-governance/` — Consumer-shaped real-OPA governance example with deterministic handler-suppression tests.
 - `packages/harness-agent-plugins/README.md` — Agent Plugins inspection, review digest, and explicit Skills/MCP binding example.
 - `docs/` — End-user and operator documentation.
 - `specs/` — Requirements and design contracts for implementation work.

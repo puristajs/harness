@@ -5,16 +5,74 @@ import os from 'node:os'
 import path from 'node:path'
 import { parseDocument } from 'yaml'
 import { SkillManifestError, SkillNotFoundError } from '../errors/index.js'
-import type {
-  DiscoveredSkills,
-  DiscoverSkillsOptions,
-  ResolvedSkill,
-  SkillDefinition,
-  SkillDiagnostic,
-  SkillFrontmatter,
-  SkillValidationMode
-} from '../harness/defineHarness.js'
-import type { SandboxSession } from '../sandbox/index.js'
+import type { SandboxSessionBase } from '../sandbox/index.js'
+
+export { createReadSkillBinding, loadSkillSnapshots } from './runtime.js'
+export type { LoadedSkillSnapshot, SkillManifest } from './runtime.js'
+
+/** Skill frontmatter parsed from `SKILL.md`. */
+export interface SkillFrontmatter {
+  readonly name: string
+  readonly description: string
+  readonly license?: string
+  readonly compatibility?: string
+  readonly metadata?: Record<string, string>
+  readonly 'allowed-tools'?: string
+}
+/** Validation mode for `SKILL.md` frontmatter. */
+export type SkillValidationMode = 'strict' | 'lenient'
+/** Diagnostic produced while parsing or discovering local skills. */
+export interface SkillDiagnostic {
+  readonly level: 'warn' | 'error'
+  readonly code: 'missing_skill_md' | 'invalid_frontmatter' | 'missing_description' | 'invalid_name' | 'name_mismatch' | 'directory_missing' | 'collision_shadowed' | 'untrusted_project_skill' | 'scan_limit_reached'
+  readonly message: string
+  readonly skillName?: string
+  readonly directory?: string
+  readonly source?: string
+}
+/** Mounted local skill metadata after frontmatter parsing. */
+export interface ResolvedSkill {
+  readonly name: string
+  readonly description: string
+  readonly directory: string
+  readonly skillPath: string
+  readonly location: string
+  readonly mountPath: `/skills/${string}`
+  readonly license?: string
+  readonly compatibility?: string
+  readonly metadata?: Record<string, string>
+  readonly allowedTools?: string
+  readonly trust: 'trusted' | 'project' | 'user'
+  readonly source?: string
+  readonly diagnostics: readonly SkillDiagnostic[]
+}
+/** Local filesystem source returned by skill discovery. */
+export interface DiscoveredSkillSource {
+  readonly directory: string
+  readonly validationMode?: SkillValidationMode
+  readonly trust?: 'trusted' | 'project' | 'user'
+  readonly source?: string
+}
+/** Options for local Agent Skills discovery. */
+export interface DiscoverSkillsOptions {
+  readonly projectRoot?: string
+  readonly clientName?: string
+  readonly includeProjectAgentsDir?: boolean
+  readonly includeProjectClientDir?: boolean
+  readonly includeUserAgentsDir?: boolean
+  readonly includeUserClientDir?: boolean
+  readonly includeClaudeCompatDir?: boolean
+  readonly includeAncestorProjectDirs?: boolean
+  readonly trustedProjectRoots?: readonly string[]
+  readonly validationMode?: SkillValidationMode
+  readonly maxDepth?: number
+  readonly maxDirectories?: number
+}
+/** Result of local Agent Skills discovery. */
+export interface DiscoveredSkills {
+  readonly skills: Readonly<Record<string, DiscoveredSkillSource>>
+  readonly diagnostics: readonly SkillDiagnostic[]
+}
 
 const skillNamePattern = /^(?!-)(?!.*--)[a-z0-9-]{1,64}(?<!-)$/
 const skippedDirectories = new Set(['.git', 'node_modules', 'dist', 'build', '.next', '.astro'])
@@ -40,11 +98,14 @@ function diagnostic(
 }
 
 function throwManifest(diag: SkillDiagnostic, skillId?: string, cause?: unknown): never {
+  const reason = [
+    'directory_missing', 'invalid_frontmatter', 'invalid_name', 'missing_description',
+    'missing_skill_md', 'name_mismatch', 'scan_limit_reached',
+  ].includes(diag.code) ? diag.code as ConstructorParameters<typeof SkillManifestError>[1]['reason'] : 'invalid_frontmatter'
   throw new SkillManifestError(diag.message, {
-    reason: diag.code,
+    reason,
     directory: diag.directory ?? '',
     ...(skillId ? { skill_id: skillId } : {}),
-    ...(diag.source ? { source: diag.source } : {})
   }, cause)
 }
 
@@ -186,7 +247,7 @@ function readSkill(directory: string, mode: SkillValidationMode, expectedName?: 
   }
 }
 
-export function loadSkillsSync(skills: Record<string, SkillDefinition>): Record<string, ResolvedSkill> {
+export function loadSkillsSync(skills: Record<string, DiscoveredSkillSource>): Record<string, ResolvedSkill> {
   const resolved: Record<string, ResolvedSkill> = {}
   for (const [key, def] of Object.entries(skills)) {
     const skill = readSkill(path.resolve(def.directory), def.validationMode ?? 'strict', key, def.source)
@@ -200,7 +261,7 @@ export function loadSkillsSync(skills: Record<string, SkillDefinition>): Record<
   return resolved
 }
 
-export async function loadSkills(skills: Record<string, SkillDefinition>): Promise<Record<string, ResolvedSkill>> {
+export async function loadSkills(skills: Record<string, DiscoveredSkillSource>): Promise<Record<string, ResolvedSkill>> {
   return loadSkillsSync(skills)
 }
 
@@ -234,13 +295,13 @@ async function readDirRecursive(root: string, skillId: string): Promise<Map<stri
 }
 
 export async function mountSkillsOnce(
-  session: SandboxSession,
+  session: SandboxSessionBase,
   mounted: Set<string>,
   skills: Record<string, ResolvedSkill>,
   skillIds: readonly string[]
 ): Promise<void> {
   if (skillIds.length > 0 && typeof session.mount !== 'function') {
-    throw new SkillManifestError('Sandbox does not support skill mounting.', { reason: 'skill_sandbox_unsupported' })
+    throw new SkillManifestError('Sandbox does not support skill mounting.', { reason: 'readonly_mount_unsupported' })
   }
   for (const skillId of skillIds) {
     if (mounted.has(skillId)) continue
@@ -302,7 +363,7 @@ async function findSkillDirectories(root: string, opts: { maxDepth: number; maxD
   return out
 }
 
-function addSkillConfig(target: SkillsConfigBuilder, name: string, def: SkillDefinition, diagnostics: SkillDiagnostic[]): void {
+function addSkillConfig(target: SkillsConfigBuilder, name: string, def: DiscoveredSkillSource, diagnostics: SkillDiagnostic[]): void {
   if (target[name]) {
     diagnostics.push(diagnostic('collision_shadowed', `Skill "${name}" was shadowed by a higher-precedence binding.`, { level: 'warn', skillName: name, directory: def.directory, source: def.source }))
     return
@@ -310,7 +371,7 @@ function addSkillConfig(target: SkillsConfigBuilder, name: string, def: SkillDef
   target[name] = def
 }
 
-type SkillsConfigBuilder = Record<string, SkillDefinition>
+type SkillsConfigBuilder = Record<string, DiscoveredSkillSource>
 
 export async function discoverSkills(options: DiscoverSkillsOptions = {}): Promise<DiscoveredSkills> {
   const diagnostics: SkillDiagnostic[] = []

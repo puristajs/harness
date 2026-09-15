@@ -1,0 +1,58 @@
+module_boundary_version: 1
+modules:
+  - module_id: sandbox_contract
+    owner: harness_core
+    path: packages/harness/src/sandbox
+    public_entrypoint: "@purista/harness"
+    owned_concepts: [logical scope, open result, detach semantics, termination, lifecycle errors, capability projection]
+    owns: [provider-neutral contract and validation]
+    allowed_dependencies: [harness_errors, harness_identity, adapter_capabilities, harness_context]
+    forbidden_dependencies: [provider_sdk, purista_core, concrete_storage_adapter, provider_control_plane]
+  - module_id: sandbox_orchestration
+    owner: harness_core
+    path: existing session and durable runtime modules
+    public_entrypoint: existing Harness and Session facades
+    owned_concepts: [scope construction, recovery authorization, call ordering, standard telemetry]
+    owns: [session and run integration only]
+    allowed_dependencies: [sandbox_contract, storage_contract, durable_workspace, telemetry, logger]
+    forbidden_dependencies: [provider_sdk, lease_algorithm, cleanup_queue, product_retention_policy]
+  - module_id: storage_contract
+    owner: harness_core
+    path: packages/harness/src/storage
+    public_entrypoint: "@purista/harness HarnessStorage"
+    owned_concepts: [sessions, messages, runs, checkpoints, waits, events]
+    owns: [existing structured persistence contract]
+    allowed_dependencies: [storage_shapes, harness_errors]
+    forbidden_dependencies: [sandbox_lifecycle_record, sandbox_lease, fencing_token, provider_reference]
+  - module_id: testing_contract
+    owner: harness_testing
+    path: packages/harness/src/testing
+    public_entrypoint: "@purista/harness/testing"
+    owned_concepts: [base lifecycle conformance, distributed multi-client adapter conformance]
+    owns: [base adapter contract, shared two-client contract, deterministic fake backend]
+    allowed_dependencies: [sandbox_contract, vitest]
+    forbidden_dependencies: [network, credential, provider_sdk]
+  - module_id: docker_adapter
+    owner: harness_docker_addon
+    path: packages/harness-sandbox-docker
+    public_entrypoint: "@purista/harness-sandbox-docker"
+    owned_concepts: [Docker configuration, local engine lifecycle, private ownership state, container and volume cleanup]
+    allowed_dependencies: [sandbox_contract, harness_public_errors, harness_public_context, node_builtins, docker_cli]
+    forbidden_dependencies: [harness_internal, purista_core, local_workspace_coordinator, provider_control_plane, other_adapter]
+  - module_id: provider_adapter
+    owner: future_addon
+    path: packages/harness-sandbox-provider
+    public_entrypoint: "@purista/harness-sandbox-<approved-provider>"
+    owned_concepts: [provider mapping, coordination, generations, leases, fencing, provider refs, retention, cleanup]
+    owns: [all provider lifecycle implementation and policy]
+    allowed_dependencies: [sandbox_contract, provider_sdk, provider_control_plane]
+    forbidden_dependencies: [harness_internal, other_adapter, purista_core]
+  - module_id: purista_integration
+    owner: purista_core
+    path: ../purista/packages/core
+    public_entrypoint: PURISTA AI runtime composition
+    owned_concepts: [framework identity mapping, startup policy, error projection]
+    owns: [mapping PURISTA runtime context to public Harness APIs]
+    allowed_dependencies: [sandbox_contract]
+    forbidden_dependencies: [harness_internal, provider_sdk, provider_reference, sandbox_lease, fencing_token]
+architecture_check: Dependency and public export checks enforce the one-way PURISTA to Harness boundary and prohibit provider SDKs in Harness core.

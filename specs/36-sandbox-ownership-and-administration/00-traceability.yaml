@@ -1,0 +1,149 @@
+traceability_version: 1
+requirements:
+  - requirement_id: REQ-SOWN-POLICY
+    statement: Implement the exact REQ-SOWN-POLICY contract in 00-vision.md and its acceptance in 04-verification.md.
+    capability_ids: [CAP-SOWN-POLICY]
+    path_ids: [PATH-SOWN-POLICY]
+    acceptance_ids: [ACC-SOWN-POLICY]
+  - requirement_id: REQ-SOWN-OWNER
+    statement: Implement the exact REQ-SOWN-OWNER contract in 00-vision.md and its acceptance in 04-verification.md.
+    capability_ids: [CAP-SOWN-OWNER]
+    path_ids: [PATH-SOWN-OWNER]
+    acceptance_ids: [ACC-SOWN-OWNER]
+  - requirement_id: REQ-SOWN-DURABLE
+    statement: Implement the exact REQ-SOWN-DURABLE contract in 00-vision.md and its acceptance in 04-verification.md.
+    capability_ids: [CAP-SOWN-DURABLE]
+    path_ids: [PATH-SOWN-DURABLE]
+    acceptance_ids: [ACC-SOWN-DURABLE]
+  - requirement_id: REQ-SOWN-ADMIN
+    statement: Implement the exact REQ-SOWN-ADMIN contract in 00-vision.md and its acceptance in 04-verification.md.
+    capability_ids: [CAP-SOWN-ADMIN]
+    path_ids: [PATH-SOWN-ADMIN]
+    acceptance_ids: [ACC-SOWN-ADMIN]
+  - requirement_id: REQ-SOWN-BOUNDS
+    statement: Implement the exact REQ-SOWN-BOUNDS contract in 00-vision.md and its acceptance in 04-verification.md.
+    capability_ids: [CAP-SOWN-BOUNDS]
+    path_ids: [PATH-SOWN-BOUNDS]
+    acceptance_ids: [ACC-SOWN-BOUNDS]
+  - requirement_id: REQ-SOWN-PURISTA
+    statement: Implement the exact REQ-SOWN-PURISTA contract in 00-vision.md and its acceptance in 04-verification.md.
+    capability_ids: [CAP-SOWN-PURISTA]
+    path_ids: [PATH-SOWN-PURISTA]
+    acceptance_ids: [ACC-SOWN-PURISTA]
+  - requirement_id: REQ-SOWN-SAFETY
+    statement: Implement the exact REQ-SOWN-SAFETY contract in 00-vision.md and its acceptance in 04-verification.md.
+    capability_ids: [CAP-SOWN-SAFETY]
+    path_ids: [PATH-SOWN-SAFETY]
+    acceptance_ids: [ACC-SOWN-SAFETY]
+  - requirement_id: REQ-SOWN-DELIVERY
+    statement: Implement the exact REQ-SOWN-DELIVERY contract in 00-vision.md and its acceptance in 04-verification.md.
+    capability_ids: [CAP-SOWN-DELIVERY]
+    path_ids: [PATH-SOWN-DELIVERY]
+    acceptance_ids: [ACC-SOWN-DELIVERY]
+capabilities:
+  - capability_id: CAP-SOWN-POLICY
+    requirement_ids: [REQ-SOWN-POLICY]
+    path_ids: [PATH-SOWN-POLICY]
+  - capability_id: CAP-SOWN-OWNER
+    requirement_ids: [REQ-SOWN-OWNER]
+    path_ids: [PATH-SOWN-OWNER]
+  - capability_id: CAP-SOWN-DURABLE
+    requirement_ids: [REQ-SOWN-DURABLE]
+    path_ids: [PATH-SOWN-DURABLE]
+  - capability_id: CAP-SOWN-ADMIN
+    requirement_ids: [REQ-SOWN-ADMIN]
+    path_ids: [PATH-SOWN-ADMIN]
+  - capability_id: CAP-SOWN-BOUNDS
+    requirement_ids: [REQ-SOWN-BOUNDS]
+    path_ids: [PATH-SOWN-BOUNDS]
+  - capability_id: CAP-SOWN-PURISTA
+    requirement_ids: [REQ-SOWN-PURISTA]
+    path_ids: [PATH-SOWN-PURISTA]
+  - capability_id: CAP-SOWN-SAFETY
+    requirement_ids: [REQ-SOWN-SAFETY]
+    path_ids: [PATH-SOWN-SAFETY]
+  - capability_id: CAP-SOWN-DELIVERY
+    requirement_ids: [REQ-SOWN-DELIVERY]
+    path_ids: [PATH-SOWN-DELIVERY]
+paths:
+  - path_id: PATH-SOWN-POLICY
+    kind: success
+    requirement_ids: [REQ-SOWN-POLICY]
+    capability_ids: [CAP-SOWN-POLICY]
+    acceptance_ids: [ACC-SOWN-POLICY]
+    contract_refs: [CTR-SOWN-POLICY]
+  - path_id: PATH-SOWN-OWNER
+    kind: success
+    requirement_ids: [REQ-SOWN-OWNER]
+    capability_ids: [CAP-SOWN-OWNER]
+    acceptance_ids: [ACC-SOWN-OWNER]
+    contract_refs: [CTR-SOWN-OWNER, CTR-SOWN-OPEN]
+  - path_id: PATH-SOWN-DURABLE
+    kind: recovery
+    requirement_ids: [REQ-SOWN-DURABLE]
+    capability_ids: [CAP-SOWN-DURABLE]
+    acceptance_ids: [ACC-SOWN-DURABLE]
+    contract_refs: [CTR-SOWN-WORKSPACE]
+  - path_id: PATH-SOWN-ADMIN
+    kind: cancellation
+    requirement_ids: [REQ-SOWN-ADMIN]
+    capability_ids: [CAP-SOWN-ADMIN]
+    acceptance_ids: [ACC-SOWN-ADMIN]
+    contract_refs: [CTR-SOWN-ADMIN]
+  - path_id: PATH-SOWN-BOUNDS
+    kind: success
+    requirement_ids: [REQ-SOWN-BOUNDS]
+    capability_ids: [CAP-SOWN-BOUNDS]
+    acceptance_ids: [ACC-SOWN-BOUNDS]
+    contract_refs: [CTR-SOWN-ADMIN, CTR-SOWN-WORKSPACE]
+  - path_id: PATH-SOWN-PURISTA
+    kind: success
+    requirement_ids: [REQ-SOWN-PURISTA]
+    capability_ids: [CAP-SOWN-PURISTA]
+    acceptance_ids: [ACC-SOWN-PURISTA]
+    contract_refs: [CTR-SOWN-PURISTA]
+  - path_id: PATH-SOWN-SAFETY
+    kind: authorization_denial
+    requirement_ids: [REQ-SOWN-SAFETY]
+    capability_ids: [CAP-SOWN-SAFETY]
+    acceptance_ids: [ACC-SOWN-SAFETY]
+    contract_refs: [CTR-SOWN-ERRORS]
+  - path_id: PATH-SOWN-DELIVERY
+    kind: success
+    requirement_ids: [REQ-SOWN-DELIVERY]
+    capability_ids: [CAP-SOWN-DELIVERY]
+    acceptance_ids: [ACC-SOWN-DELIVERY]
+    contract_refs: [CTR-SOWN-POLICY, CTR-SOWN-OPEN]
+acceptance:
+  - acceptance_id: ACC-SOWN-POLICY
+    requirement_ids: [REQ-SOWN-POLICY]
+    path_ids: [PATH-SOWN-POLICY]
+    verification_refs: [VERIFY-SOWN-POLICY]
+  - acceptance_id: ACC-SOWN-OWNER
+    requirement_ids: [REQ-SOWN-OWNER]
+    path_ids: [PATH-SOWN-OWNER]
+    verification_refs: [VERIFY-SOWN-OWNER]
+  - acceptance_id: ACC-SOWN-DURABLE
+    requirement_ids: [REQ-SOWN-DURABLE]
+    path_ids: [PATH-SOWN-DURABLE]
+    verification_refs: [VERIFY-SOWN-DURABLE]
+  - acceptance_id: ACC-SOWN-ADMIN
+    requirement_ids: [REQ-SOWN-ADMIN]
+    path_ids: [PATH-SOWN-ADMIN]
+    verification_refs: [VERIFY-SOWN-ADMIN]
+  - acceptance_id: ACC-SOWN-BOUNDS
+    requirement_ids: [REQ-SOWN-BOUNDS]
+    path_ids: [PATH-SOWN-BOUNDS]
+    verification_refs: [VERIFY-SOWN-BOUNDS]
+  - acceptance_id: ACC-SOWN-PURISTA
+    requirement_ids: [REQ-SOWN-PURISTA]
+    path_ids: [PATH-SOWN-PURISTA]
+    verification_refs: [VERIFY-SOWN-PURISTA]
+  - acceptance_id: ACC-SOWN-SAFETY
+    requirement_ids: [REQ-SOWN-SAFETY]
+    path_ids: [PATH-SOWN-SAFETY]
+    verification_refs: [VERIFY-SOWN-SAFETY]
+  - acceptance_id: ACC-SOWN-DELIVERY
+    requirement_ids: [REQ-SOWN-DELIVERY]
+    path_ids: [PATH-SOWN-DELIVERY]
+    verification_refs: [VERIFY-SOWN-DELIVERY]

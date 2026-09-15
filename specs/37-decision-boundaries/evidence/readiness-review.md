@@ -1,0 +1,11 @@
+# Readiness review — 2026-08-26
+
+Read-only governance/guardrail/provider reviewer and durable-review/storage reviewer independently traced the current source and reviewed the proposed contracts. Initial blockers concerned helper ABI, deadline ownership, protected protocol replay, phase typing, model-accounting ownership, continuation edge mappings, disabled governance, occurrence IDs, immutable review actions and retry admission. Repairs are incorporated in the normative contracts.
+
+Second review verified retry/receipt/checkpoint binding, exact wait states, injected time, local consumer resolution, error categories and bounded durable IDs. Durable reviewer confirmed zero remaining blockers. Governance reviewer confirmed the substantive repairs and requested two final wording corrections: generative call counting versus embedding/rerank token totals, and requested versus finished approval fields. The author applied and inspected those exact corrections; no contract choice remains open.
+
+Final targeted reviews also confirmed strict function-property policy typing with selector-only inference, normalized full-context storage and negative mismatch assertions; no public method bivariance remains. Ticket reviews corrected actual MCP/replay/test paths, fresh-build ordering, missing adapter/example typechecks, explicit skill sync targets and local consumer resolution. Both reviewers confirmed zero remaining blockers in their scopes.
+
+Root semantic walk verified capability/flow/acceptance traceability, strict shapes, schema inference, module/reuse boundaries, no compatibility/migrations, consumer scope, documentation, hermetic test ownership and release exclusion. This records specification readiness only. It does not claim implementation tests for unimplemented behavior.
+
+Checklist topics: core, end-to-end, architecture, contracts, backend async/auth/data, security/privacy, performance, recovery, dependencies, operations and documentation. Frontend UI and new infrastructure are explicitly not applicable. The installed checklist reference to a separate secrets/privacy file is unavailable; available security checklist and explicit data-projection requirements supply the scoped review.

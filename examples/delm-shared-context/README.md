@@ -52,13 +52,14 @@ contains the local incident records each worker receives:
 
 ## Run It
 
-From the repository root:
+From this example directory:
 
 ```bash
+npm install
 cp .env.example .env
 # set OPENAI_API_KEY in .env; OPENAI_MODEL defaults to gpt-5-mini
-npm run build --workspace @purista/delm-shared-context-example
-npm run start --workspace @purista/delm-shared-context-example
+npm run build
+npm run start
 ```
 
 Expected output is similar to:
@@ -76,7 +77,7 @@ Admitted shared context:
 Rejected reports:
 - rejected rollback-proposal from worker-1: patch_summary_requires_verified_evidence
 
-Durable context checkpoints written: 1
+Durable workflow checkpoints written: 1
 ```
 
 The runnable CLI uses the real OpenAI provider by default:
@@ -93,7 +94,7 @@ network access or an API key.
   formatter.
 - `src/incident-data.ts` contains the concrete log, metric, runbook, and
   reproduction records used by the workers.
-- `src/harness.ts` shows how the scenario is wired into `defineHarness()`.
+- `src/harness.ts` shows how the scenario is wired into `defineHarness({ name })`.
 - `src/shared-context.ts` is the reusable admission/digest/unfolding layer.
 - `src/task-queue.ts` is the dependency-aware claim/complete queue.
 - `src/scripted-provider.ts` makes tests deterministic; `npm start` uses
@@ -109,7 +110,7 @@ network access or an API key.
 - Selective unfolding when a caller needs the detailed evidence behind one
   shared entry.
 - A harness workflow that runs worker agents in parallel rounds and writes a
-  durable context checkpoint.
+  durable workflow checkpoint.
 
 The implementation is split so the reusable pieces can later move into a
 package such as `@purista/harness-shared-context`:
@@ -122,7 +123,7 @@ src/
   task-queue.ts        Dependency-aware claim/complete queue
   shared-context.ts    Admission, digest rendering, evidence unfolding
   scripted-provider.ts Hermetic deterministic provider used by tests
-  harness.ts           defineHarness() composition and workflow
+  harness.ts           defineHarness({ name }) composition and workflow
   index.ts             Public exports and runnable demo
   index.test.ts        Primitive and workflow tests
 ```
@@ -130,9 +131,9 @@ src/
 ## Verification
 
 ```bash
-npm test --workspace @purista/delm-shared-context-example
-npm run typecheck --workspace @purista/delm-shared-context-example
-npm run build --workspace @purista/delm-shared-context-example
+npm test
+npm run typecheck
+npm run build
 ```
 
 ## Design Notes

@@ -11,21 +11,19 @@ import type {
   MemorySearchQuery,
   MemoryWriteOptions
 } from './types.js'
-import { scopeCapability } from './validation.js'
 
 export const CONTENT_ATTR_LIMIT = 8192
 
 export function baseAttrs(opts: CreateMemoryFacadeOptions, scope: MemoryScope, operation: MemoryOperation): SpanAttrs {
   return {
     'harness.name': opts.harnessName,
-    'harness.memory.provider': opts.adapter.info.id,
+    'harness.memory.provider': opts.engine.info.id,
     'harness.memory.operation': operation,
     'harness.memory.scope': scope.kind,
-    'harness.memory.capability': operation === 'search' ? 'memory.search' : scopeCapability[scope.kind],
+    'harness.memory.capability': operation === 'search' ? searchCapability(opts.engine.capabilities) : 'memory.kv',
     'harness.session.id': scope.sessionId,
     'harness.run.id': scope.runId,
     'harness.agent.id': scope.agentId,
-    'harness.workflow.id': scope.workflowId
   }
 }
 
@@ -64,14 +62,20 @@ export function attachContent(
 }
 
 export function normalizeMemoryError(
-  adapter: CreateMemoryFacadeOptions['adapter'],
+  engine: CreateMemoryFacadeOptions['engine'],
   operation: MemoryOperation,
   error: unknown
 ): unknown {
   if (error instanceof OperationCancelledError) return error
   if (isAbortError(error)) return new OperationCancelledError('Memory operation was cancelled.', { scope: 'memory' }, error)
   if (isHarnessError(error)) return error
-  return new StateError('Memory adapter operation failed.', { op: `memory.${operation}`, adapter: 'memory', memory_provider: adapter.info.id }, error)
+  return new StateError('Memory engine operation failed.', { op: `memory.${operation}`, adapter: 'memory', memory_provider: engine.info.id }, error)
+}
+
+function searchCapability(capabilities: readonly string[]): string {
+  if (capabilities.includes('memory.hybrid_search')) return 'memory.hybrid_search'
+  if (capabilities.includes('memory.text_search')) return 'memory.text_search'
+  return 'memory.vector_search'
 }
 
 export function errorType(error: unknown): string {

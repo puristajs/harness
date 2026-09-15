@@ -1,0 +1,43 @@
+decision_authority_version: 1
+default_allowed_classes: [D0, D1]
+decisions:
+  - decision_id: DEC-SS-PUBLIC
+    class: D2
+    authority: repository-owner explicit auto-approval request
+    scope_refs: [CAP-SS-TYPES]
+    source_refs: [00-vision.md#Decisions]
+  - decision_id: DEC-SS-JSON
+    class: D2
+    authority: repository-owner explicit auto-approval request
+    scope_refs: [CAP-SS-TYPES, CAP-SS-VALIDATION]
+    source_refs: [00-vision.md#Decisions]
+  - decision_id: DEC-SS-MODEL
+    class: D2
+    authority: repository-owner explicit auto-approval request
+    scope_refs: [CAP-SS-TYPES, CAP-SS-PROJECTION]
+    source_refs: [00-vision.md#Decisions]
+  - decision_id: DEC-SS-PROJECTION
+    class: D2
+    authority: repository-owner explicit auto-approval request
+    scope_refs: [CAP-SS-PROJECTION, CAP-SS-PROVIDERS]
+    source_refs: [00-vision.md#Decisions]
+  - decision_id: DEC-SS-VALIDATION
+    class: D2
+    authority: repository-owner explicit auto-approval request
+    scope_refs: [CAP-SS-VALIDATION]
+    source_refs: [00-vision.md#Decisions]
+  - decision_id: DEC-SS-PROVIDERS
+    class: D2
+    authority: repository-owner explicit auto-approval request
+    scope_refs: [CAP-SS-PROVIDERS]
+    source_refs: [00-vision.md#Decisions]
+  - decision_id: DEC-SS-CLEAN
+    class: D2
+    authority: repository-owner explicit auto-approval request
+    scope_refs: [CAP-SS-CLEANUP]
+    source_refs: [00-vision.md#Decisions]
+  - decision_id: DEC-SS-CONSUMERS
+    class: D2
+    authority: repository-owner explicit auto-approval request
+    scope_refs: [CAP-SS-CONSUMERS]
+    source_refs: [00-vision.md#Decisions]

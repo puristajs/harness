@@ -1,0 +1,103 @@
+decision_authority_version: 1
+default_allowed_classes:
+  - D0
+  - D1
+decisions:
+  - decision_id: DEC-GA-CONFIG
+    class: D2
+    authority: repository-owner delegated approval in initiating task
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    source_refs:
+      - 00-vision.md#Decisions
+  - decision_id: DEC-GA-PREFLIGHT
+    class: D2
+    authority: repository-owner delegated approval in initiating task
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    source_refs:
+      - 00-vision.md#Decisions
+  - decision_id: DEC-GA-TOKENS
+    class: D2
+    authority: repository-owner delegated approval in initiating task
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    source_refs:
+      - 00-vision.md#Decisions
+  - decision_id: DEC-GA-BINDING
+    class: D2
+    authority: repository-owner delegated approval in initiating task
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    source_refs:
+      - 00-vision.md#Decisions
+  - decision_id: DEC-GA-CALLBACKS
+    class: D2
+    authority: repository-owner delegated approval in initiating task
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    source_refs:
+      - 00-vision.md#Decisions
+  - decision_id: DEC-GA-GENERATION
+    class: D2
+    authority: repository-owner delegated approval in initiating task
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    source_refs:
+      - 00-vision.md#Decisions
+  - decision_id: DEC-GA-CLEAN
+    class: D2
+    authority: repository-owner delegated approval in initiating task
+    scope_refs:
+      - CAP-GA-CALLBACKS
+      - CAP-GA-CONFIG
+      - CAP-GA-REQUIREMENTS
+      - CAP-GA-ACTIONS
+      - CAP-GA-BINDING
+      - CAP-GA-DOCS
+      - CAP-GA-WEBSITE
+      - CAP-GA-CLEANUP
+    source_refs:
+      - 00-vision.md#Decisions

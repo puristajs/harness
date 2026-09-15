@@ -34,9 +34,15 @@ describe('openai SDK client options', () => {
     const { openai } = await import('../src/index.js')
     constructorCalls.length = 0
 
-    openai({ apiKey: 'test-key', api: 'responses', harnessTimeoutMs: 1000 })
+    openai({
+      apiKey: 'test-key',
+      api: 'responses',
+      chatCompletionMaxTokensParameter: 'max_completion_tokens',
+      harnessTimeoutMs: 1000,
+    })
 
     expect(constructorCalls[0]).not.toHaveProperty('api')
+    expect(constructorCalls[0]).not.toHaveProperty('chatCompletionMaxTokensParameter')
     expect(constructorCalls[0]).not.toHaveProperty('harnessTimeoutMs')
   })
 })

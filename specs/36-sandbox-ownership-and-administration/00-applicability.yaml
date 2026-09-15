@@ -1,0 +1,42 @@
+applicability_version: 1
+concerns:
+  - concern_id: architecture
+    status: applicable
+    scope_refs: [REQ-SOWN-OWNER, REQ-SOWN-ADMIN, REQ-SOWN-DELIVERY]
+  - concern_id: contracts
+    status: applicable
+    scope_refs: [REQ-SOWN-OWNER, REQ-SOWN-ADMIN, REQ-SOWN-DELIVERY]
+  - concern_id: representation_reuse
+    status: applicable
+    scope_refs: [REQ-SOWN-OWNER, REQ-SOWN-ADMIN, REQ-SOWN-DELIVERY]
+  - concern_id: persistence_recovery
+    status: applicable
+    scope_refs: [REQ-SOWN-OWNER, REQ-SOWN-ADMIN, REQ-SOWN-DELIVERY]
+  - concern_id: identity_authorization
+    status: applicable
+    scope_refs: [REQ-SOWN-OWNER, REQ-SOWN-ADMIN, REQ-SOWN-DELIVERY]
+  - concern_id: async_concurrency
+    status: applicable
+    scope_refs: [REQ-SOWN-OWNER, REQ-SOWN-ADMIN, REQ-SOWN-DELIVERY]
+  - concern_id: security_privacy
+    status: applicable
+    scope_refs: [REQ-SOWN-OWNER, REQ-SOWN-ADMIN, REQ-SOWN-DELIVERY]
+  - concern_id: retention_quotas
+    status: applicable
+    scope_refs: [REQ-SOWN-OWNER, REQ-SOWN-ADMIN, REQ-SOWN-DELIVERY]
+  - concern_id: operations
+    status: applicable
+    scope_refs: [REQ-SOWN-OWNER, REQ-SOWN-ADMIN, REQ-SOWN-DELIVERY]
+  - concern_id: testing
+    status: applicable
+    scope_refs: [REQ-SOWN-OWNER, REQ-SOWN-ADMIN, REQ-SOWN-DELIVERY]
+  - concern_id: supply_chain
+    status: applicable
+    scope_refs: [REQ-SOWN-OWNER, REQ-SOWN-ADMIN, REQ-SOWN-DELIVERY]
+  - concern_id: clean_break
+    status: applicable
+    scope_refs: [REQ-SOWN-OWNER, REQ-SOWN-ADMIN, REQ-SOWN-DELIVERY]
+  - concern_id: frontend_ux
+    status: not_applicable
+    scope_refs: [REQ-SOWN-DELIVERY]
+    rationale: Library and framework configuration only; no new frontend or hosted operator endpoint.

@@ -1,0 +1,36 @@
+registry_version: 1
+contracts:
+  - contract_id: CTR-GA-CONFIG
+    source_ref: 03-contracts/configuration.md#CTR-GA-CONFIG
+  - contract_id: CTR-GA-GENERATION
+    source_ref: 03-contracts/configuration.md#CTR-GA-GENERATION
+  - contract_id: CTR-GA-ACTIONS
+    source_ref: 03-contracts/actions-and-binding.md#CTR-GA-ACTIONS
+  - contract_id: CTR-GA-BINDING
+    source_ref: 03-contracts/actions-and-binding.md#CTR-GA-BINDING
+  - contract_id: CTR-GA-ERRORS
+    source_ref: 03-contracts/actions-and-binding.md#CTR-GA-ERRORS
+  - contract_id: CTR-GA-CALLBACKS
+    source_ref: 03-contracts/callbacks.md#CTR-GA-CALLBACKS
+  - contract_id: CTR-GA-DOCS
+    source_ref: 04-delivery/consumers.md#CTR-GA-DOCS
+  - contract_id: CTR-GA-CLEANUP
+    source_ref: 04-delivery/consumers.md#CTR-GA-CLEANUP
+requirements:
+  - REQ-GA-CALLBACKS
+  - REQ-GA-CONFIG
+  - REQ-GA-REQUIREMENTS
+  - REQ-GA-ACTIONS
+  - REQ-GA-BINDING
+  - REQ-GA-DOCS
+  - REQ-GA-WEBSITE
+  - REQ-GA-CLEANUP
+capabilities:
+  - CAP-GA-CALLBACKS
+  - CAP-GA-CONFIG
+  - CAP-GA-REQUIREMENTS
+  - CAP-GA-ACTIONS
+  - CAP-GA-BINDING
+  - CAP-GA-DOCS
+  - CAP-GA-WEBSITE
+  - CAP-GA-CLEANUP

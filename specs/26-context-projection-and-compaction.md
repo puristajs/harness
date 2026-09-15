@@ -33,11 +33,12 @@ typed harness defaults or per-call API only.
 
 ## Policy and deterministic algorithm
 
-`HarnessDefaults.contextProjection`, `ModelAlias.contextProjection`, and
+`HarnessExecutionDefaults.contextProjection`, model-alias
+`contextProjection`, and
 `InvokeOptions.contextProjection` expose the same optional policy. The
 effective policy is full replacement with this precedence: explicit invocation,
 then selected model alias, then harness default. `undefined` means disabled;
-there is no field-by-field merge or implicit narrowing. Builder/model-alias
+there is no field-by-field merge or implicit narrowing. Definition/model-alias
 invalid values throw `HarnessConfigError{reason:'invalid_context_projection'}`;
 invalid invocation values throw `ValidationError{where:'invoke_options'}` before
 provider I/O. Numeric values are finite non-negative integers measured in UTF-8

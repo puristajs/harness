@@ -1,0 +1,17 @@
+policy_profile_version: 1
+allowed_default_refs:
+  - POLICY-HARNESS-CONVENTIONS
+  - POLICY-PURISTA-CONVENTIONS
+profiles:
+  - policy_ref: POLICY-HARNESS-CONVENTIONS
+    name: Existing AI Harness package and definition conventions
+    source_ref: ../../packages/harness/src/harness/defineHarness.ts
+    allowed_classes:
+      - D0
+      - D1
+  - policy_ref: POLICY-PURISTA-CONVENTIONS
+    name: Approved PURISTA Harness mount conventions
+    source_ref: ../../../purista/specs/20-agents/88-harness-first-service-integration.md
+    allowed_classes:
+      - D0
+      - D1

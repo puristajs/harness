@@ -1,0 +1,93 @@
+status: approved
+language: en
+open_decisions: []
+human_approval:
+  status: approved
+approval_evidence:
+  status: approved
+  approver_id: repository-owner
+  approved_at: 2026-08-26
+  approval_ref: codex-task-01a038ca-2438-7573-b474-3a3b3319bf34#owner-clean-break-tightening-and-standing-auto-approval
+  manifest_digest: sha256:d5cf72b589728648eefb39a78cd393d80c14c4c382dc0a234fccc1a16a9af30f
+  scope_refs: [CAP-SBX-IDENTITY, CAP-SBX-OPEN, CAP-SBX-FENCE, CAP-SBX-RECOVER, CAP-SBX-CLEANUP, CAP-SBX-OBSERVE, CAP-SBX-CONTRACT, CAP-SBX-PURISTA, CAP-SBX-BAKEOFF, CAP-SBX-DOCKER]
+gates:
+  no_drift_gate: {status: passed}
+  ambiguity_gate: {status: passed}
+  semantic_alignment_gate: {status: passed}
+  spec_structure_gate: {status: passed}
+  visualization_gate: {status: passed}
+  requirements_quality_gate: {status: passed}
+  end_to_end_definition_gate: {status: passed}
+  file_structure_gate: {status: passed}
+  current_dependency_research_gate: {status: passed}
+  concise_spec_gate: {status: passed}
+  client_consumer_coverage_gate: {status: passed}
+  frontend_ux_integration_gate: {status: passed}
+  standards_first_gate: {status: passed}
+  machine_readable_contract_gate: {status: passed}
+  async_semantics_gate: {status: passed}
+  clean_rebuild_boundary_gate: {status: passed}
+  generation_map_gate: {status: passed}
+  strong_boundary_type_gate: {status: passed}
+  representation_reuse_gate: {status: passed}
+  interface_gate: {status: passed}
+  e2e_gate: {status: passed}
+  unhappy_path_gate: {status: passed}
+  security_privacy_gate: {status: passed}
+  observability_gate: {status: passed}
+  performance_resilience_gate: {status: passed}
+  data_integrity_recovery_gate: {status: passed}
+  production_readiness_gate: {status: passed}
+  supply_chain_gate: {status: passed}
+  wave_readiness: {status: passed}
+  migration_gate: {status: passed}
+  checklist_walk_gate: {status: passed}
+  contradiction_check: {status: passed}
+  spec_judge_loop: {status: passed}
+  semantic_judge_gate: {status: passed}
+  self_audit_gate: {status: passed}
+  gate_simulation: {status: passed}
+spec_judge_loop:
+  run_timing: approval_only
+  reviewed_flows: [FLOW-SBX-01, FLOW-SBX-02, FLOW-SBX-03, FLOW-SBX-04, FLOW-SBX-05, FLOW-SBX-06, FLOW-SBX-07, FLOW-SBX-08, FLOW-SBX-09, FLOW-SBX-10, FLOW-SBX-11]
+  blocking_findings_count: 0
+checklist_walk:
+  topics:
+    architecture_and_boundaries: covered
+    identity_and_tenancy: covered
+    async_concurrency_and_fencing: covered
+    persistence_and_recovery: covered
+    security_and_privacy: covered
+    operations_and_cleanup: covered
+    testing_and_contracts: covered
+    existing_adapter_clean_break: covered_by_delivery_inventory_and_ACC_SBX_CLEAN_BREAK
+    purista_integration: covered
+    provider_selection: covered_and_deferred_by_gate
+    local_docker: covered_by_CTR_SBX_DOCKER_and_local_docker_spec
+    docker_privacy: covered_by_repository_NFR_and_available_security_checklist_missing_skill_privacy_file
+    frontend_ux: not_applicable_library_contract
+  blocking_findings_count: 0
+semantic_judge_evidence:
+  status: passed
+  judge: Codex scoped implementation audit with independent core Docker and completion reviews
+  reviewed_at: 2026-08-26
+  evidence_ref: ../../plans/2026-08-26-sandbox-completion-audit.md
+planning_format_check:
+  status: failed_existing_compact_layout
+  evidence: The planner checker cannot consume the existing dated compact plan, flow-mapped readiness gates, and legacy indexes; it also reports stale unrelated plan hashes. Those artifacts were not migrated or rehashed in this sandbox-only change.
+  impact: All unexecuted tickets remain planned or provider-blocked; machine-executable ticket promotion requires the planner format gate, separately from spec approval and runtime prerequisite gates.
+review_notes:
+  - Fresh approval is bound to this manifest under the owner's standing auto-approval and subsequently expanded implementation authorization; it is not carried forward from the earlier planning digest.
+  - The review converged local and distributed behavior on one topology-transparent Sandbox lifecycle interface; multi-client coordination is adapter-private conformance, not a runtime capability, subtype, or method family.
+  - The review removed HarnessStorage lifecycle extensions, public leases/fences/provider refs, core lifecycle defaults, cleanup scheduling, and a standalone lifecycle subsystem.
+  - Production provider implementation remains outside the approved scope until DEC-SBX-PROVIDER is separately approved from bake-off evidence.
+  - The owner requested the local Docker addon as its own package; one Docker CLI/context implementation serves OrbStack without PURISTA or core-internal imports.
+  - Local Docker is separately approved and contract-gated, not provider-selection-gated. Its first slice retains files but deliberately fails unsupported checkpoint restore without mutation.
+  - Current Docker and OrbStack primary docs were checked on 2026-08-26. No engine, image, package, or runtime implementation was installed or exercised during planning.
+  - The owner requested an explicit clean break across existing adapters. The source inventory now includes both local-directory variants, localDurableExecution binding, shared fakes/snapshot suites, inline test doubles, all session/run/child-task callers, and active guidance.
+  - ACC-SBX-CLEAN-BREAK requires one green integration with negative old-API tests and no compatibility paths; existing local durable recovery and user files must not be lost during the rewrite.
+  - Implementation review strengthened session incarnation and explicit storage write/delete intent without putting sandbox coordination into storage.
+  - Local workspace ownership, process admission and cleanup, missing-checkpoint recovery, and terminal-result preservation are now explicit requirements with regression evidence.
+  - Optional snapshot resume reuses full target scope and base sessions; it participates in target lifecycle without conflating snapshots with committed workspace recovery or adding a compatibility API.
+  - Coverage and architecture gates and isolated packed Harness/Docker runtime/declaration checks pass. Packed PURISTA runtime and consumer-code checking pass; pre-existing external declaration dependency failures remain explicit in the completion audit.
+  - Spec approval does not claim npm publication, verified Docker Desktop/Linux support, or generic AFK ticket-format readiness; see the completion evidence for those limits.

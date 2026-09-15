@@ -1,0 +1,9 @@
+policy_profile_version: 1
+status: approved
+allowed_default_refs: [POL-SOWN-MECHANICAL]
+profiles:
+  - policy_ref: POL-SOWN-MECHANICAL
+    name: existing-purista-harness-conventions
+    source_ref: 00-conventions.md#CONV-SOWN-AUTONOMY
+    allowed_classes: [D0, D1]
+    scope: Private reversible helpers and test placement only.

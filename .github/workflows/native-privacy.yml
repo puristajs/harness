@@ -1,0 +1,112 @@
+name: Native privacy
+
+on:
+  push:
+    paths:
+      - 'packages/harness-guardrails/**'
+      - 'packages/harness-guardrails-native-privacy/**'
+      - 'packages/harness-guardrails-local-ner/**'
+      - '.github/workflows/native-privacy.yml'
+      - 'package.json'
+      - 'package-lock.json'
+  pull_request:
+    paths:
+      - 'packages/harness-guardrails/**'
+      - 'packages/harness-guardrails-native-privacy/**'
+      - 'packages/harness-guardrails-local-ner/**'
+      - '.github/workflows/native-privacy.yml'
+      - 'package.json'
+      - 'package-lock.json'
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke:
+    name: ${{ matrix.target }} / Node and Bun
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-26
+            target: darwin-arm64
+          - os: macos-26-intel
+            target: darwin-x64
+          - os: ubuntu-24.04
+            target: linux-x64-gnu
+          - os: ubuntu-24.04-arm
+            target: linux-arm64-gnu
+          - os: windows-latest
+            target: win32-x64-msvc
+          - os: windows-11-arm
+            target: win32-arm64-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: '1.4.0'
+      - name: Install
+        run: npm ci
+      - name: Typecheck and unit tests
+        run: npm run build --workspace @purista/harness && npm run build --workspace @purista/harness-guardrails && npm run typecheck --workspace @purista/harness-guardrails-native-privacy && npm run test --workspace @purista/harness-guardrails-native-privacy && npm run typecheck --workspace @purista/harness-guardrails-local-ner && npm run test --workspace @purista/harness-guardrails-local-ner
+      - name: Build native artifact
+        run: npm run build --workspace @purista/harness-guardrails-native-privacy
+      - name: Node smoke test
+        run: npm run test:node --workspace @purista/harness-guardrails-native-privacy
+      - name: Bun smoke test
+        run: npm run test:bun --workspace @purista/harness-guardrails-native-privacy
+      - name: Build and smoke optional local NER adapter
+        run: npm run build --workspace @purista/harness-guardrails-local-ner && npm run test:node --workspace @purista/harness-guardrails-local-ner && npm run test:bun --workspace @purista/harness-guardrails-local-ner && npm pack --workspace @purista/harness-guardrails-local-ner --dry-run
+      - name: Verify root package contents
+        run: npm pack --workspace @purista/harness-guardrails-native-privacy --dry-run
+      - name: Upload prebuild
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-privacy-${{ matrix.target }}
+          path: packages/harness-guardrails-native-privacy/harness_guardrails_native_privacy.${{ matrix.target }}.node
+          if-no-files-found: error
+
+  publish-native:
+    name: Publish native privacy prebuilds
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'puristajs/harness'
+    needs: build-and-smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+          scope: '@purista'
+      - name: Install
+        run: npm ci
+      - name: Build TypeScript prerequisites and loader
+        run: npm run build --workspace @purista/harness && npm run build --workspace @purista/harness-guardrails && npm run build:ts --workspace @purista/harness-guardrails-native-privacy
+      - name: Download prebuilds
+        uses: actions/download-artifact@v8
+        with:
+          pattern: native-privacy-*
+          merge-multiple: true
+          path: packages/harness-guardrails-native-privacy
+      - name: Assemble and verify platform packages
+        run: |
+          npx napi pre-publish --cwd packages/harness-guardrails-native-privacy --npm-dir npm
+          for package in packages/harness-guardrails-native-privacy/npm/*; do
+            npm pack --dry-run "$package"
+          done
+          npm pack --workspace @purista/harness-guardrails-native-privacy --dry-run
+      - name: Publish platform packages before the loader
+        run: |
+          for package in packages/harness-guardrails-native-privacy/npm/*; do
+            npm publish "$package" --access public
+          done
+          npm publish --workspace @purista/harness-guardrails-native-privacy --access public

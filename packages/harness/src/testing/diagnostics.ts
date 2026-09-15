@@ -1,4 +1,4 @@
-import type { HarnessInspection } from '../ports/capabilities.js'
+import type { HarnessInspection } from '../definitions/harness.js'
 
 /** Content-free diagnostic finding returned by an explicit test invariant. */
 export interface HarnessDiagnosticFinding { readonly path: string; readonly message: string }

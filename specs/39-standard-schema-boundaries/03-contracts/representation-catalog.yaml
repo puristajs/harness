@@ -1,0 +1,93 @@
+catalog_version: 1
+applicability:
+  status: applicable
+  scope_refs: [CAP-SS-TYPES, CAP-SS-VALIDATION, CAP-SS-PROJECTION, CAP-SS-PROVIDERS, CAP-SS-CONSUMERS, CAP-SS-CLEANUP]
+shapes:
+  - shape_id: schema.user
+    representation_class: boundary
+    canonical_source: 03-contracts/schema-types.md#CTR-SS-SCHEMA
+    owner: harness_schema
+    stability: versioned
+    open_policy: closed
+    allowed_consumers: [CAP-SS-TYPES, CAP-SS-VALIDATION, CAP-SS-PROJECTION]
+    source_contract_refs: [CTR-SS-SCHEMA]
+    mapping_refs: [MAP-SS-VALIDATE, MAP-SS-PROJECT]
+  - shape_id: value.validated-json
+    representation_class: domain
+    canonical_source: 03-contracts/runtime-validation.md#CTR-SS-VALIDATION
+    owner: harness_schema
+    stability: versioned
+    open_policy: closed
+    allowed_consumers: [CAP-SS-VALIDATION, CAP-SS-PROVIDERS]
+    source_contract_refs: [CTR-SS-VALIDATION]
+    mapping_refs: [MAP-SS-VALIDATE]
+  - shape_id: model.json-schema
+    representation_class: projection
+    canonical_source: 03-contracts/model-projection.md#CTR-SS-PROJECTION
+    owner: harness_schema
+    stability: versioned
+    open_policy: open_json_leaf
+    allowed_consumers: [CAP-SS-PROJECTION, CAP-SS-PROVIDERS]
+    source_contract_refs: [CTR-SS-PROJECTION, CTR-SS-PROVIDERS]
+    mapping_refs: [MAP-SS-PROJECT, MAP-SS-PROVIDER]
+  - shape_id: schema.error-meta
+    representation_class: boundary
+    canonical_source: 03-contracts/runtime-validation.md#CTR-SS-ERRORS
+    owner: harness_schema
+    stability: versioned
+    open_policy: closed
+    allowed_consumers: [CAP-SS-VALIDATION, CAP-SS-PROJECTION]
+    source_contract_refs: [CTR-SS-ERRORS]
+    mapping_refs: [MAP-SS-ERROR]
+  - shape_id: runtime.serialized-error
+    representation_class: projection
+    canonical_source: 03-contracts/runtime-validation.md#CTR-SS-ERRORS
+    owner: harness_core
+    stability: versioned
+    open_policy: closed
+    allowed_consumers: [CAP-SS-VALIDATION, CAP-SS-PROJECTION]
+    source_contract_refs: [CTR-SS-ERRORS]
+    mapping_refs: [MAP-SS-ERROR]
+    reuse_provenance: Existing SerializedError and serializeError remain canonical.
+  - shape_id: provider.sdk-request-schema
+    representation_class: boundary
+    canonical_source: 03-contracts/model-projection.md#CTR-SS-PROVIDERS
+    owner: provider_adapters
+    stability: versioned
+    open_policy: open_json_leaf
+    allowed_consumers: [CAP-SS-PROVIDERS]
+    source_contract_refs: [CTR-SS-PROVIDERS]
+    mapping_refs: [MAP-SS-PROVIDER]
+mappings:
+  - mapping_id: MAP-SS-VALIDATE
+    from_shape: schema.user
+    to_shape: value.validated-json
+    direction: custom
+    allowed_differences: [standard_validate_output, json_assertion]
+    redaction_or_loss_policy: Validation transforms are schema-owned; non-JSON output is rejected and no input content is emitted.
+    field_operations: [await_validate_once, select_result_value, assert_JsonValue]
+    verification: [03-flows/e2e-coverage.md]
+  - mapping_id: MAP-SS-PROJECT
+    from_shape: schema.user
+    to_shape: model.json-schema
+    direction: custom
+    allowed_differences: [input_projection, owned_json_clone, recursive_freeze]
+    redaction_or_loss_policy: No keyword rewrite or loss is permitted after the standard converter returns.
+    field_operations: [jsonSchema_input_draft_2020_12, assert_JsonValue, deep_freeze]
+    verification: [03-flows/e2e-coverage.md]
+  - mapping_id: MAP-SS-PROVIDER
+    from_shape: model.json-schema
+    to_shape: provider.sdk-request-schema
+    direction: domain_to_boundary
+    allowed_differences: [container_location_only]
+    redaction_or_loss_policy: Exact deep-equal pass-through; provider rejection is explicit.
+    field_operations: [copy_exact]
+    verification: [03-flows/e2e-coverage.md]
+  - mapping_id: MAP-SS-ERROR
+    from_shape: schema.error-meta
+    to_shape: runtime.serialized-error
+    direction: custom
+    allowed_differences: [fixed_code_category_message, safe_meta_copy, cause_omit]
+    redaction_or_loss_policy: Vendor messages, issue paths, values, schema content and causes are omitted.
+    field_operations: [copy_allowlisted_meta, cap_issue_count_100, omit_cause]
+    verification: [03-flows/e2e-coverage.md]

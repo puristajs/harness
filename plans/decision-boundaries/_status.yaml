@@ -1,0 +1,86 @@
+tickets:
+  TICKET-001:
+    lifecycle: "accepted"
+    current_proof: "Focused decisions/replay/public API tests (13 passed), core typecheck, type tests, and independent contract review passed."
+    resume_notes: "Foundation is accepted; preserve shared decision API as the boundary for dependent tickets."
+    affected_spec_refs:
+      - "ai-harness/specs/37-decision-boundaries/03-contracts/decisions.md#CTR-DB-EVIDENCE"
+      - "ai-harness/specs/37-decision-boundaries/03-contracts/decisions.md#CTR-DB-LIFECYCLE"
+      - "ai-harness/specs/37-decision-boundaries/03-contracts/decisions.md#CTR-DB-IDENTITY"
+      - "ai-harness/specs/37-decision-boundaries/03-flows/e2e-coverage.md#REQ-DB-FOUNDATION"
+      - "ai-harness/specs/37-decision-boundaries/00-conventions.md#CONV-DB-STYLE"
+  TICKET-002:
+    lifecycle: "accepted"
+    current_proof: "Inline approval inference repaired with one contravariant provider contract; root independently reviewed source and reran core type tests. Core governance/interceptor132 tests and core build/typecheck passed."
+    resume_notes: "Preserve inline correlated subject inference and safe standalone provider variance; all reviewed runtime governance repairs remain accepted."
+    affected_spec_refs:
+      - "ai-harness/specs/37-decision-boundaries/03-contracts/decisions.md#CTR-DB-GOVERNANCE"
+      - "ai-harness/specs/37-decision-boundaries/03-contracts/decisions.md#CTR-DB-IDENTITY"
+      - "ai-harness/specs/37-decision-boundaries/03-flows/e2e-coverage.md#REQ-DB-GOVERNANCE"
+      - "ai-harness/specs/37-decision-boundaries/00-conventions.md#CONV-DB-STYLE"
+  TICKET-003:
+    lifecycle: "accepted"
+    current_proof: "Core build/typecheck/type tests, OpenAI 49 tests, Anthropic 23, Bedrock 26, Azure 20, focused core public API tests, clean-cut scan, and independent review passed."
+    resume_notes: "ProviderContinuation is the sole provider-state transport; malformed own templates fail before provider I/O."
+    affected_spec_refs:
+      - "ai-harness/specs/37-decision-boundaries/03-contracts/decisions.md#CTR-DB-CONTINUATION"
+      - "ai-harness/specs/37-decision-boundaries/03-flows/e2e-coverage.md#REQ-DB-PROVIDERS"
+      - "ai-harness/specs/37-decision-boundaries/00-conventions.md#CONV-DB-STYLE"
+  TICKET-004:
+    lifecycle: "accepted"
+    current_proof: "Shared-schema and result-integrity cleanup independently reviewed; complete-source offline build, full coverage including core918 tests, root lint and core type tests passed."
+    resume_notes: "Preserve canonical parsed-result consumption and safe getter/proxy failures, prepared batches, final-only output and once-only accounting. Removed concurrency helper has no production consumers."
+    affected_spec_refs:
+      - "ai-harness/specs/37-decision-boundaries/03-contracts/decisions.md#CTR-DB-TOOLS"
+      - "ai-harness/specs/37-decision-boundaries/03-contracts/decisions.md#CTR-DB-RAILS"
+      - "ai-harness/specs/37-decision-boundaries/03-flows/e2e-coverage.md#REQ-DB-TOOLS"
+      - "ai-harness/specs/37-decision-boundaries/00-conventions.md#CONV-DB-STYLE"
+  TICKET-005:
+    lifecycle: "accepted"
+    current_proof: "Shared schemas/public-only tests independently reviewed; complete-source build and coverage including addon38 tests, addon type tests and real cleanup scanner passed."
+    resume_notes: "Preserve raw/helper attach inference, parent timeout identity, one base schema/reason validator, phase-specific transforms and public-only addon imports."
+    affected_spec_refs:
+      - "ai-harness/specs/37-decision-boundaries/03-contracts/decisions.md#CTR-DB-RAILS"
+      - "ai-harness/specs/37-decision-boundaries/03-contracts/decisions.md#CTR-DB-EVIDENCE"
+      - "ai-harness/specs/37-decision-boundaries/03-flows/e2e-coverage.md#REQ-DB-RAILS"
+      - "ai-harness/specs/37-decision-boundaries/00-conventions.md#CONV-DB-STYLE"
+  TICKET-006:
+    lifecycle: "accepted"
+    current_proof: "Focused waits 119 tests, storage contracts 126 tests, core typecheck/type tests, clean diff, and independent review passed."
+    resume_notes: "Wait registration/readback correspondence must be verified before public wait events; preserve the strict snapshot union."
+    affected_spec_refs:
+      - "ai-harness/specs/37-decision-boundaries/03-contracts/decisions.md#CTR-DB-WAITS"
+      - "ai-harness/specs/37-decision-boundaries/03-flows/e2e-coverage.md#REQ-DB-WAITS"
+      - "ai-harness/specs/37-decision-boundaries/00-conventions.md#CONV-DB-STYLE"
+  TICKET-007:
+    lifecycle: "accepted"
+    current_proof: "Example 12 tests/typecheck, focused durable/storage 134 tests, core build, diff check, and independent review passed including cross-harness first-create race."
+    resume_notes: "Application review owns claim/receipt; durable run creation is atomic and losing invocations cannot finalize another lease owner."
+    affected_spec_refs:
+      - "ai-harness/specs/37-decision-boundaries/03-contracts/decisions.md#CTR-DB-REVIEW"
+      - "ai-harness/specs/37-decision-boundaries/03-flows/e2e-coverage.md#REQ-DB-REVIEW"
+      - "ai-harness/specs/37-decision-boundaries/00-conventions.md#CONV-DB-STYLE"
+  TICKET-008:
+    lifecycle: "accepted"
+    current_proof: "After the owner excluded Voyage, the real in-scope verifier passed: Core source/41 tests, strict declarations/runtime smoke and starter/create-purista removed-API scans."
+    resume_notes: "Voyage is excluded from all T008 inputs and gates. Preserve the hermetic Core/source/dist verification and explicit starter/create-purista scan."
+    affected_spec_refs:
+      - "ai-harness/specs/37-decision-boundaries/04-delivery/consumers.md#CTR-DB-CONSUMERS"
+      - "ai-harness/specs/37-decision-boundaries/03-flows/e2e-coverage.md#REQ-DB-CONSUMERS"
+      - "ai-harness/specs/37-decision-boundaries/00-conventions.md#CONV-DB-STYLE"
+  TICKET-009:
+    lifecycle: "accepted"
+    current_proof: "Accepted after independent rendered-site review, final source build/lint/tests, three strict fresh-declaration snippet checks, normal website build/link audit and all four PURISTA audits."
+    resume_notes: "Preserve final verified public usage, exact canonical skill mirrors and ownership boundaries. T009 evidence records accepted success/failure/recovery paths."
+    affected_spec_refs:
+      - "ai-harness/specs/37-decision-boundaries/04-delivery/consumers.md#CTR-DB-DOCS"
+      - "ai-harness/specs/37-decision-boundaries/03-flows/e2e-coverage.md#REQ-DB-DOCS"
+      - "ai-harness/specs/37-decision-boundaries/00-conventions.md#CONV-DB-STYLE"
+  TICKET-010:
+    lifecycle: "accepted"
+    current_proof: "All scoped gates pass: full build/lint/tests/coverage/types/contracts/integration/failure, architecture/static scan, in-scope consumer verifier, website and knowledge checks."
+    resume_notes: "Accepted clean-cut delivery. Preserve one shared decision schema/executor, public-only imports, strict consumer aliases and explicit in-scope verification."
+    affected_spec_refs:
+      - "ai-harness/specs/37-decision-boundaries/04-delivery/clean-cut.md#CTR-DB-CLEANUP"
+      - "ai-harness/specs/37-decision-boundaries/03-flows/e2e-coverage.md#REQ-DB-CLEANUP"
+      - "ai-harness/specs/37-decision-boundaries/00-conventions.md#CONV-DB-STYLE"

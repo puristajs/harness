@@ -1,145 +1,92 @@
 ---
 name: ai-harness
-description: Use when designing, implementing, configuring, testing, or extending applications built with @purista/harness and its provider adapters, including agents, workflows, tools, skills, models, state, sandbox, telemetry, and custom adapter packages.
+description: Use when designing, implementing, configuring, testing, or extending applications built with @purista/harness and its provider adapters, including agents, workflows, tools, skills, models, storage, sandbox, telemetry, and custom adapter packages.
 ---
 
 # AI Harness
 
-## Use This For
-Use this skill for work involving `@purista/harness`, `@purista/harness-openai`, or addon packages named `@purista/harness-*`.
+Use this skill for `@purista/harness` applications and first-party `@purista/harness-*` adapters. The Harness is a standalone ESM runtime for typed agents, workflows, tools, skills, model providers, memory, durable storage, sandboxing, governance, and portable execution streams.
 
-## Core Model
-`@purista/harness` is a standalone, ESM-only agent runtime. It composes typed model aliases, tools, skills, agents, workflows, state, memory, sandboxing, logging, telemetry, and streaming behind one session API.
+## Architecture
+
+Definitions describe behavior and requirements. Runtime bindings supply adapters and credentials:
+
+```ts
+const assistant = defineAgent('assistant', {
+  model: 'chat',
+  instructions: 'Answer the user clearly and concisely.',
+})
+const definition = defineHarness({ name: 'support' }).addAgent(assistant)
+const instance = await definition.getInstance({
+  models: {
+    chat: { provider: openai({ apiKey }), model: 'gpt-5-mini' },
+  },
+})
+const session = await instance.getSession('conversation-1')
+const outcome = await session.agents.assistant.run('How can I reset my PIN?')
+```
 
 Keep these layers separate:
-- configuration: `defineHarness()` registers adapters, defaults, models, tools, skills, agents, and workflows
-- execution: `harness.getSession(id)` returns typed `session.agents.*` and `session.workflows.*`
-- adapter code: provider, state, memory, sandbox, MCP, durable runtime, logger, and telemetry ports
-- application integration: HTTP/SSE, queues, persistence, auth, and business state stay outside the harness unless represented by a port or tool
-- optional governance: policy-as-code for tool decisions, approvals, audit, and
-  policy-pack adapters is configured only when needed; ordinary agents do not
-  require policy setup
 
-## Hard Rules
-- Use `defineHarness()` as the sole construction path. Do not invent standalone `defineAgent`, `defineWorkflow`, `defineTool`, `defineSkill`, or `defineModel` helpers.
-- Use `defineHarnessModule<Required>()('module.id', { register })` only for local static composition. Modules contribute normal definitions to the caller's builder; they are not remote plugins, manifests, loaders, or lifecycle owners. Module callbacks cannot build or recursively use a harness.
-- Use `@purista/harness-agent-plugins` only for data-only Agent Plugins v1 packages. Require application-owned source/digest/trust approval, inspect diagnostics, then bind selected skills and MCP tools explicitly. A selected stdio server also needs an existing caller-owned data directory and an isolating sandbox implementing both `spawn` and `mountReadOnly`; the local host-directory sandbox does not qualify. Never load package code, auto-install dependencies, auto-expose tools, or accept plugin-provided credentials.
-- MCP is a clean v2 integration pinned to `2026-07-28`: use `@modelcontextprotocol/client`, modern stateless Streamable HTTP, and a spawn-capable sandbox for stdio. Do not add legacy MCP, HTTP+SSE, one-shot exec, or compatibility fallbacks.
-- Module definition ids compose additively. Treat duplicate module/definition ids as configuration errors; inspect only `harness.inspect().modules` for content-free provenance.
-- Preserve builder inference by declaring models before agents and agents before workflows.
-- Use inline helper callbacks for agents and workflows: `.agents(({ agent }) => ({ ... }))` and `.workflows(({ workflow }) => ({ ... }))`.
-- Child-agent delegation is disabled by default. Any workflow that calls `ctx.agents.<id>(input)` must declare `workflow.delegation`; prefer `delegation.agents` allowlists and document budget/model overrides there.
-- Use `ctx.fanOut(...)` for ordered, bounded workflow batches. Use `ctx.childTasks.start(...)` only for workflow-owned isolated background work; task turns queue under the delegation parallel ceiling and never inherit parent history or widen agent permissions.
-- `mode: 'continuable'` keeps an isolated in-process task conversation open for explicit `send(...)` turns and `close()`. Do not use it for durable workflow execution or claim cross-process recovery; use an application queue/worker adapter when work must survive a restart.
-- Configure `defaults.historyRetention` for durable conversations that need a storage bound. It retains complete newest turns only and requires an atomic `StateStore.replaceMessages`; `maxBytes` is serialized UTF-8 storage size, never a token estimate. Use the model's context window/token tooling separately when selecting request context.
-- For at-least-once direct-agent delivery, pass the transport's stable message or delivery id as `InvokeOptions.idempotencyKey`. Replaying the same successful invocation returns its recorded output without a second provider call or transcript; never derive this key from prompt content.
-- Use `session.release()` at the end of an idle request to close live sandbox/MCP resources while preserving StateStore-backed history and runs. `session.close()` is destructive: it deletes the session record, history, runs, and persisted events.
-- Declare model capabilities truthfully. Capability arrays gate both TypeScript handles and runtime behavior.
-- Prefer `object` / `object_stream` for structured generation. Do not use legacy `json` capability names.
-- Keep RAG orchestration in application/workflow code. The harness provides embeddings and rerank operations, not vector storage.
-- Keep HTTP/SSE protocol mapping outside the harness. Harness streams are typed `RunEvent` values.
-- Do not import PURISTA framework packages from harness or harness addon packages.
-- Do not leak prompts, documents, tool inputs, or secrets through logs or telemetry. `telemetry({ contentCaptureMode: 'NO_CONTENT' })` is the production default.
-- Skills are mounted files, not prompt text. Register directories with `.skills(...)`, allowlist skill ids per agent, keep `read` available for skill-backed agents, and verify `SKILL.md` bodies are not inlined into prompts, logs, traces, or persisted events.
-- Prefer `ctx.metrics` for application-owned counters, histograms, and operation durations inside workflow handlers, custom agent handlers, and TypeScript tool handlers. Do not call the low-level `TelemetryShim` directly for app metrics.
-- Governance policy is optional and late-bound through `.governance(...)` after
-  agents/workflows are declared. Keep simple use cases on per-agent
-  permissions; use governance only for composable/audited policy, approval, or
-  external policy-pack interoperability.
+- `defineTool`, `defineSkill`, `defineMcpServer`, `defineAgent`, and `defineWorkflow` create immutable, reusable definitions.
+- `defineCatalog` optionally groups trusted definitions for reuse.
+- `defineHarness(...).addAgent(...)`, `.addWorkflow(...)`, or `.use(catalog)` composes executable roots. Leaf dependencies arrive through direct references from those roots.
+- `getInstance(...)` validates and binds the exact runtime resources projected by that graph.
+- `getSession(id)` exposes only the composed agents and workflows.
+- HTTP, queues, authentication, business data, and UI protocol handling remain application concerns.
 
-## Default Workflow
-1. Inspect implementation first when behavior matters: `packages/harness/src/harness/defineHarness.ts`, `models/registry.ts`, `agents/index.ts`, `skills/index.ts`, `ports/*`, and provider package source.
-2. Decide whether the task is one agent loop, a custom handler agent, or an orchestrating workflow.
-3. Define Zod schemas at every agent, workflow, and tool boundary.
-4. Configure model aliases with model-specific provider options, defaults, and the minimal required capabilities.
-5. Attach tools, skill directories, permissions, sandbox, memory, state, runtime requirements, logger, and telemetry explicitly.
-6. Decide which state is durable: session history/runs use `StateStore`, session memory uses `MemoryAdapter`, and provider context is transient. Bound durable history with whole-turn retention and bound request context with the model's context/token limits.
-7. Invoke through `harness.getSession(id)`, release idle sessions, and shut down the shared harness during process shutdown. Use destructive session close only for explicit conversation deletion.
-8. Test with `@purista/harness/testing` fakes/contracts before live-provider smoke tests.
-9. For provider-loop regression tests, use the explicit sanitizer recorder and offline replay provider; do not capture production interaction content. Use diagnostic invariants only as explicitly invoked test checks.
+## Hard rules
 
-## Quick Pattern
+- Use direct definition factories and exact definition references throughout the graph.
+- Put custom orchestration and application code in `defineWorkflow`. An agent is the configurable bounded model loop: instructions, prompt, tools, skills, guardrails, governance, subagents, memory, and sandbox policy.
+- Definition ids use lower camel case except Skill ids, which use their manifest-compatible kebab form.
+- Pass definition objects in definition arrays and maps. Runtime address APIs use their compiled ids, such as `session.agents.support` and `context.childTasks.start(agentId, input, options)`; do not replace definition references with strings while authoring the graph.
+- Keep providers, secrets, storage clients, memory engines, MCP transports, sandboxes, workspaces, logger, and telemetry in `getInstance(...)`.
+- Give every agent an explicit application-defined model alias. Harness reserves no alias. Bind every inferred alias through one exact `models` map; do not use a singular runtime `model` field.
+- A workflow calling an agent declares the direct reference in its `agents` array and invokes `context.agents.name.run(input, { callId })`. Keep every call id stable and unique in the workflow.
+- Use `context.step(id, operation)` for durable replay-safe steps. Use `context.externalWait.wait(...)` for persisted human or external decisions.
+- Use `HarnessStorage` for sessions, runs, events, checkpoints, and waits; `MemoryEngine` for scoped application memory; `DurableWorkspace` for resumable files. Never substitute a general application state store for these ports.
+- Use `run` for one final `RunOutcome`; use `stream` for portable lifecycle and output updates. Build authorized operational views from persisted run summaries, safe telemetry, and application-owned records.
+- Use `@purista/harness-ai-sdk-ui/v1` at the server boundary for AI SDK `useChat` or AI Elements. Do not expose raw Harness events as a browser protocol or ship a proprietary browser client.
+- Treat approval and external-wait interruptions as expected outcomes. Authenticate and authorize approval decisions in the application before resuming the same run.
+- Skills are reviewed mounted directories. A Skill never grants authorization. Scripts run only through explicitly available tools and sandbox capabilities.
+- Native TypeScript tools may use typed handler resources. Commands, queues, or framework calls belong behind application-supplied resources, keeping Harness independent of PURISTA Framework packages.
+- MCP server definitions contain schemas and remote tool names only. Supply HTTP or stdio transport bindings at instance creation. Stdio requires an isolating spawn-capable sandbox.
+- Guardrails inspect or transform model/tool boundaries. Governance decides whether a business operation is allowed, denied, or requires approval. Keep authentication outside both.
+- Capture no prompt, tool, document, model output, credential, or policy input in production logs or telemetry. Use `contentCaptureMode: 'NO_CONTENT'`.
+- Close the Harness instance during process shutdown. Release an idle session to detach live resources while preserving storage; destroy it only for explicit deletion.
+
+## Default workflow
+
+1. Define schemas with Zod or another Standard Schema implementation. Model-facing structured schemas must also expose JSON Schema.
+2. Define tools and skills first, then agents, then workflows.
+3. Compose agents and workflows directly. Introduce an immutable catalog only when definitions need reusable packaging.
+4. Inspect `definition.requirements` or TypeScript errors to learn the exact runtime bindings.
+5. Create one instance with production adapters and safe telemetry.
+6. Invoke through a stable session id and handle every terminal outcome.
+7. Unit test with `@purista/harness/testing`; add live-provider or infrastructure tests only behind explicit environment gates.
+8. Verify public imports, declaration output, cancellation, cleanup, privacy, and deterministic replay where relevant.
+
+## Minimal invocation
+
 ```ts
-import { z } from 'zod'
-import { defineHarness, JsonLogger, inMemorySandbox } from '@purista/harness'
-import { openai } from '@purista/harness-openai'
-
-const harness = defineHarness({ name: 'support-ai' })
-  .logger(new JsonLogger({ level: 'info' }))
-  .telemetry({ contentCaptureMode: 'NO_CONTENT' })
-  .sandbox(inMemorySandbox())
-  .defaults({
-    historyRetention: { maxTurns: 50, maxBytes: 256_000 }
-  })
-  .models({
-    assistant: {
-      provider: openai({ apiKey: process.env.OPENAI_API_KEY! }),
-      model: process.env.OPENAI_MODEL ?? 'gpt-5-mini',
-      capabilities: ['object', 'tool_use']
-    }
-  })
-  .tools({
-    lookup_ticket: {
-      description: 'Look up one support ticket by id.',
-      input: z.object({ id: z.string() }),
-      output: z.object({ status: z.string(), summary: z.string() }),
-      handler: async (_ctx, input) => ({ status: 'open', summary: `Ticket ${input.id}` })
-    }
-  })
-  .agents(({ agent }) => ({
-    triage: agent({
-      model: 'assistant',
-      input: z.object({ ticketId: z.string() }),
-      output: z.object({ priority: z.enum(['low', 'normal', 'high']), reason: z.string() }),
-      builtinTools: false,
-      tools: ['lookup_ticket'],
-      instructions: 'Use lookup_ticket, then return a validated triage object.'
-    })
-  }))
-  .workflows(({ workflow }) => ({
-    triage_ticket: workflow({
-      input: z.object({ ticketId: z.string() }),
-      output: z.object({ priority: z.string(), reason: z.string() }),
-      delegation: { agents: ['triage'] },
-      handler: (ctx) => {
-        ctx.metrics.counter('support.triage.started', 1)
-        return ctx.metrics.duration('support.triage.duration', undefined, () => ctx.agents.triage(ctx.input))
-      }
-    })
-  }))
-  .build()
-
-const session = await harness.getSession('tenant-a:user-42')
-const result = await session.workflows.triage_ticket.prompt({ ticketId: 'T-123' })
-await session.release()
-await harness.shutdown()
+const session = await instance.getSession(`tenant:${tenantId}:chat:${chatId}`, {
+  identity: { tenantId, principalId },
+})
+const result = await session.agents.assistant.run({ question })
+if (result.status === 'completed') return result.output
+return handleInterrupt(result.interrupt)
 ```
 
-The example's in-memory state store supports atomic history replacement for
-local use. Production history retention needs a durable StateStore adapter that
-implements `replaceMessages` atomically.
+## References
 
-## Read If Needed
-- `references/configuration.md` for package setup, builder order, sessions, state, sandbox, runtime capabilities, streaming, and shutdown.
-- `references/model-setup.md` for provider aliases, OpenAI setup, defaults, capability-gated model handles, multimodal content, embeddings, and rerank.
-- `references/agents-workflows-tools.md` for deciding between agents/workflows and wiring typed tools, permissions, MCP, and skill-mounted agents.
-- `references/agents-workflows-tools.md` also covers optional governance policy
-  and when to prefer it over simple permissions.
-- `references/skills.md` for creating harness skill folders and registering/mounting them correctly.
-- `references/sandbox.md` for in-memory/bash sandboxes, filesystem/exec APIs, snapshots, built-in tool risk, and custom sandbox adapters.
-- `references/state-sessions-streaming-errors.md` for `StateStore`, session lifecycle, memory/history, run events, error mapping, and replay.
-- `references/durable-feedback-operations.md` for durable runtime checkpoints, adapter capabilities, feedback records, readiness, and operational runbooks.
-- `references/telemetry-observability.md` for OpenTelemetry setup, `TelemetryShim`, span/metric names, logs, privacy, and adapter context propagation.
-- `references/adapters.md` for creating and using provider, state store, memory, sandbox, durable runtime, logger, telemetry, tool/MCP, and addon adapter packages.
-- `references/testing.md` for fake providers, type checks, contract tests, and live-provider boundaries.
-- `references/package-surface.md` for exports, package boundaries, source files, public docs, and known source-vs-doc checks.
-
-## Mirror Maintenance
-
-This directory is the canonical source for the AI Harness agent skill. Sync a
-runtime mirror explicitly after changing it, then verify byte-for-byte:
-
-```sh
-npm run skills:sync -- /path/to/installed/ai-harness
-npm run skills:sync -- --check /path/to/installed/ai-harness
-```
+- [Definitions and composition](references/agents-workflows-tools.md)
+- [Runtime configuration](references/configuration.md)
+- [Models](references/model-setup.md)
+- [Skills](references/skills.md)
+- [Storage, sessions, streams, and errors](references/storage-sessions-streaming-errors.md)
+- [Sandbox and workspace](references/sandbox.md)
+- [Adapters and package surface](references/adapters.md)
+- [Durable operations and approvals](references/durable-feedback-operations.md)
+- [Telemetry](references/telemetry-observability.md)
+- [Testing](references/testing.md)

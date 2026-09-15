@@ -1,6 +1,4 @@
 import type { Span } from '@opentelemetry/api'
-import { ModelCapabilityError, ValidationError } from '../../errors/index.js'
-import type { JsonValue } from '../../models/json.js'
 import { createMetrics, type SpanAttrs } from '../../telemetry/index.js'
 import {
   attachContent,
@@ -13,153 +11,169 @@ import {
 } from './telemetry.js'
 import type {
   CreateMemoryFacadeOptions,
+  MemoryEngine,
+  MemoryEngineContext,
   MemoryFacade,
   MemoryListOptions,
-  MemoryOperation,
-  MemoryOperationContext,
-  MemoryOpenContext,
+  MemoryListResult,
+  MemoryRecord,
   MemoryScope,
   MemoryScopeKind,
   MemorySearchQuery,
   MemorySearchResult,
-  MemoryStore,
   MemoryWriteOptions,
   SessionMemory
 } from './types.js'
-import {
-  assertCapability,
-  normalizeListOptions,
-  normalizeSearchQuery,
-  validateOperationInput
-} from './validation.js'
+import { assertCapability, normalizeListOptions, normalizeSearchQuery, validateJsonSerializable, validateMemoryKey, validateScope, validateWriteOptions } from './validation.js'
 
-/** Creates scoped memory helpers for a concrete session/run context. */
-export function createMemoryFacade(opts: CreateMemoryFacadeOptions): MemoryFacade {
-  const base = (scope: MemoryScope): SessionMemory => createSessionMemory(opts, normalizeScope(opts, scope))
-  return {
-    session: base({ kind: 'session', sessionId: opts.sessionId }),
-    run: base({ kind: 'run', sessionId: opts.sessionId, runId: requireRunId(opts) }),
-    ...(opts.agentId ? { agent: base(definedScope({ kind: 'agent', sessionId: opts.sessionId, runId: opts.runId, agentId: opts.agentId, workflowId: opts.workflowId })) } : {}),
-    user(userId?: string): SessionMemory {
-      return base(definedScope({ kind: 'user', sessionId: opts.sessionId, runId: opts.runId, agentId: opts.agentId, workflowId: opts.workflowId, userId: userId ?? metadataString(opts.metadata, 'userId') }))
+/** Creates the session-bound memory facade. Core owns scope construction and observability. */
+export function createMemoryFacade(options: CreateMemoryFacadeOptions): MemoryFacade {
+  const bind = (kind: MemoryScopeKind): SessionMemory => createSessionMemory(options, createScope(options, kind))
+  return Object.freeze({
+    application: bind('application'),
+    session: bind('session'),
+    run: bind('run'),
+    ...(options.agentId ? { agent: bind('agent') } : {}),
+    tenant: () => bind('tenant'),
+    principal: () => bind('principal'),
+    scope: (kind: MemoryScopeKind) => bind(kind)
+  })
+}
+
+/** Creates one safe public memory handle for a canonical scope. */
+export function createSessionMemory(options: CreateMemoryFacadeOptions, scope: MemoryScope): SessionMemory {
+  return Object.freeze({
+    read: async <T = MemoryRecord['value']>(key: string): Promise<T | undefined> => {
+      validateMemoryKey(key)
+      return runOperation(options, scope, 'get', key, undefined, async (engine, context) => {
+        const record = await engine.get(scope, key, context)
+        return record?.value as T | undefined
+      })
     },
-    tenant(tenantId?: string): SessionMemory {
-      return base(definedScope({ kind: 'tenant', sessionId: opts.sessionId, runId: opts.runId, agentId: opts.agentId, workflowId: opts.workflowId, tenantId: tenantId ?? metadataString(opts.metadata, 'tenantId') }))
+    write: async (key: string, value: MemoryRecord['value'], writeOptions?: MemoryWriteOptions) => {
+      validateMemoryKey(key)
+      validateJsonSerializable(value, 'memory_value')
+      validateWriteOptions(options.engine, writeOptions)
+      await runOperation(options, scope, 'set', key, { value, writeOptions }, async (engine, context) => {
+        const existing = await engine.get(scope, key, context)
+        const at = new Date().toISOString()
+        const text = indexText(value, writeOptions)
+        const embedding = text && options.embedding ? await options.embedding.embed(text, context.signal) : undefined
+        const vector = embedding?.embeddings.find((item) => item.index === 0)?.vector
+        if (text && options.embedding && (!vector || vector.length === 0 || vector.some((item) => !Number.isFinite(item)))) {
+          throw new Error('Embedding model returned no finite vector for memory indexing.')
+        }
+        const record: MemoryRecord = Object.freeze({
+          scopeKey: scope.scopeKey,
+          key,
+          value,
+          createdAt: existing?.createdAt ?? at,
+          updatedAt: at,
+          ...(writeOptions?.ttlMs ? { expiresAt: new Date(Date.now() + writeOptions.ttlMs).toISOString() } : {}),
+          ...(writeOptions?.tags ? { tags: Object.freeze([...writeOptions.tags]) } : {}),
+          ...(writeOptions?.metadata ? { metadata: Object.freeze({ ...writeOptions.metadata }) } : {}),
+          ...(text !== undefined ? { indexText: text } : {}),
+          ...(vector ? { vector: Object.freeze([...vector]) } : {}),
+          ...(vector && options.embedding ? { indexDescriptor: Object.freeze({ alias: options.embedding.alias, providerId: options.embedding.providerId, model: options.embedding.model, dimensions: vector.length, distance: 'cosine' as const, extractorRevision: 'harness.string-or-explicit-text.v1' }) } : {})
+        })
+        await engine.put(scope, record, context)
+      })
     },
-    scope(scope: MemoryScope): SessionMemory {
-      return base(scope)
+    delete: async (key: string) => {
+      validateMemoryKey(key)
+      await runOperation(options, scope, 'delete', key, undefined, (engine, context) => engine.delete(scope, key, context))
+    },
+    list: (listOptions?: MemoryListOptions) => runOperation(options, scope, 'list', undefined, listOptions, (engine, context) => engine.list(scope, normalizeListOptions(listOptions), context)),
+    search: (query: MemorySearchQuery) => search(options, scope, query)
+  })
+}
+
+async function search(options: CreateMemoryFacadeOptions, scope: MemoryScope, query: MemorySearchQuery): Promise<readonly MemorySearchResult[]> {
+  const normalized = normalizeSearchQuery(query)
+  const mode = normalized.mode ?? defaultSearchMode(options.engine)
+  return runOperation(options, scope, 'search', undefined, { query: normalized }, async (engine, context) => {
+    if (mode === 'text') {
+      assertCapability(engine, 'memory.text_search', 'search')
+      if (!engine.searchText) throw new Error('Memory engine declared text search without searchText().')
+      return engine.searchText(scope, normalized, context)
     }
-  }
+    if (mode === 'semantic') {
+      assertCapability(engine, 'memory.vector_search', 'search')
+      if (!options.embedding || !engine.searchVector) throw new Error('Semantic memory search requires an embedding model configuration and a vector search engine.')
+      const embedding = await options.embedding.embed(normalized.text, context.signal)
+      const vector = embedding.embeddings.find((item) => item.index === 0)?.vector
+      if (!vector || vector.length === 0 || vector.some((item) => !Number.isFinite(item))) throw new Error('Embedding model returned no finite vector for memory search.')
+      return engine.searchVector(scope, { ...normalized, vector }, context)
+    }
+    assertCapability(engine, 'memory.hybrid_search', 'search')
+    if (!engine.searchHybrid) throw new Error('Memory engine declared hybrid search without searchHybrid().')
+    return engine.searchHybrid(scope, normalized, context)
+  })
 }
 
-/** Creates a key/value memory facade bound to one normalized scope. */
-export function createSessionMemory(opts: CreateMemoryFacadeOptions, scope: MemoryScope): SessionMemory {
-  const normalized = normalizeScope(opts, scope)
-  return {
-    read: <T = JsonValue>(key: string) => runMemoryOperation<T | undefined>(opts, normalized, 'get', key, undefined, async (store, ctx) => store.get<T>(key, ctx)),
-    write: (key: string, value: JsonValue, writeOpts?: MemoryWriteOptions) => runMemoryOperation<void>(opts, normalized, 'set', key, { value, ...(writeOpts ? { writeOpts } : {}) }, async (store, ctx) => store.set(key, value, { ...ctx, ...(writeOpts ? { opts: writeOpts } : {}) })),
-    delete: (key: string) => runMemoryOperation<void>(opts, normalized, 'delete', key, undefined, async (store, ctx) => store.delete(key, ctx)),
-    list: async (listOpts?: MemoryListOptions) => {
-      const entries = await runMemoryOperation(opts, normalized, 'list', undefined, listOpts ? { listOpts } : undefined, async (store, ctx) => store.list({ ...ctx, opts: normalizeListOptions(listOpts) }))
-      return entries.map((entry) => entry.key).sort()
-    },
-    search: (query: MemorySearchQuery) => runMemoryOperation<MemorySearchResult[]>(opts, normalized, 'search', undefined, { query }, async (store, ctx) => {
-      assertCapability(opts.adapter, 'memory.search', 'search')
-      if (!store.search) {
-        throw new ModelCapabilityError('Memory search is not available for this adapter.', { alias: opts.adapter.info.id, method: 'memory.search', reason: 'method_missing' })
-      }
-      return store.search(normalizeSearchQuery(query), ctx)
-    })
-  }
-}
-
-async function runMemoryOperation<T>(
-  opts: CreateMemoryFacadeOptions,
+async function runOperation<T>(
+  options: CreateMemoryFacadeOptions,
   scope: MemoryScope,
-  operation: MemoryOperation,
+  operation: 'get' | 'set' | 'delete' | 'list' | 'search',
   key: string | undefined,
-  content: { value?: JsonValue; writeOpts?: MemoryWriteOptions; listOpts?: MemoryListOptions; query?: MemorySearchQuery } | undefined,
-  fn: (store: MemoryStore, ctx: MemoryOperationContext) => Promise<T>
+  content: unknown,
+  invoke: (engine: MemoryEngine, context: MemoryEngineContext) => Promise<T>
 ): Promise<T> {
-  validateOperationInput(opts.adapter, scope, operation, key, content)
-  const metrics = createMetrics(opts.telemetry, baseAttrs(opts, scope, operation))
+  validateScope(scope)
+  options.signal.throwIfAborted()
+  const metrics = createMetrics(options.telemetry, baseAttrs(options, scope, operation))
   const started = Date.now()
   let durationAttrs: SpanAttrs = {}
   const attrs = {
-    ...baseAttrs(opts, scope, operation),
+    ...baseAttrs(options, scope, operation),
     ...(key ? { 'harness.memory.key_hash': hashKey(key) } : {}),
-    'harness.memory.content_captured': shouldCaptureContent(opts.contentCaptureMode)
+    'harness.memory.content_captured': shouldCaptureContent(options.contentCaptureMode)
   }
-  const context: MemoryOpenContext = {
-    logger: opts.logger,
-    telemetry: opts.telemetry,
-    metrics,
-    contentCaptureMode: opts.contentCaptureMode,
-    signal: opts.signal,
-    ...(opts.sandbox ? { sandbox: opts.sandbox } : {})
-  }
-  const execute = async (span: Span): Promise<T> => {
-    if (shouldCaptureContent(opts.contentCaptureMode)) attachContent(span, opts.contentCaptureMode, operation, key, content)
+  return options.telemetry.span(`harness.memory.${operation}`, attrs, async (span: Span) => {
+    if (shouldCaptureContent(options.contentCaptureMode)) attachContent(span, options.contentCaptureMode, operation, key, content as never)
     try {
-      opts.signal.throwIfAborted()
-      const store = await opts.adapter.open(scope, context)
-      const result = await fn(store, { ...context, scope, operation })
-      const resultAttrs = resultAttributes(operation, result)
-      durationAttrs = resultAttrs
-      span.setAttributes(resultAttrs)
-      metrics.counter('harness.memory.operations', 1, resultAttrs)
-      if (operation === 'search' && Array.isArray(result)) {
-        metrics.histogram('harness.memory.search.results', result.length)
-      }
-      return result
+      const value = await invoke(options.engine, options)
+      durationAttrs = resultAttributes(operation, value)
+      span.setAttributes(durationAttrs)
+      metrics.counter('harness.memory.operations', 1, durationAttrs)
+      if (operation === 'search' && Array.isArray(value)) metrics.histogram('harness.memory.search.results', value.length)
+      return value
     } catch (error) {
-      const normalized = normalizeMemoryError(opts.adapter, operation, error)
-      const errorAttrs = { 'error.type': errorType(normalized) }
-      durationAttrs = errorAttrs
-      metrics.counter('harness.memory.operations', 1, errorAttrs)
+      const normalized = normalizeMemoryError(options.engine as never, operation, error)
+      durationAttrs = { 'error.type': errorType(normalized) }
+      metrics.counter('harness.memory.operations', 1, durationAttrs)
       throw normalized
     } finally {
       metrics.histogram('harness.memory.operation.duration', (Date.now() - started) / 1000, durationAttrs)
     }
-  }
-  return opts.telemetry.span(`harness.memory.${operation}`, attrs, execute)
+  })
 }
 
-function normalizeScope(opts: CreateMemoryFacadeOptions, scope: MemoryScope): MemoryScope {
-  return {
-    sessionId: opts.sessionId,
-    ...(opts.runId ? { runId: opts.runId } : {}),
-    ...(opts.workflowId ? { workflowId: opts.workflowId } : {}),
-    ...(opts.agentId ? { agentId: opts.agentId } : {}),
-    ...scope
-  }
+function createScope(options: CreateMemoryFacadeOptions, kind: MemoryScopeKind): MemoryScope {
+  const identity = options.identity
+  const parts = ['v1', kind]
+  if (identity?.tenantId !== undefined) parts.push(`tenant=${encodeURIComponent(identity.tenantId)}`)
+  if (identity?.principalId !== undefined) parts.push(`principal=${encodeURIComponent(identity.principalId)}`)
+  if (kind === 'session' || kind === 'run' || kind === 'agent') parts.push(`session=${encodeURIComponent(options.sessionId)}`)
+  if (kind === 'run' || kind === 'agent') parts.push(`run=${encodeURIComponent(options.runId ?? '')}`)
+  if (kind === 'agent') parts.push(`agent=${encodeURIComponent(options.agentId ?? '')}`)
+  return Object.freeze({
+    kind,
+    scopeKey: parts.join('/'),
+    ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+    ...(options.runId ? { runId: options.runId } : {}),
+    ...(options.agentId ? { agentId: options.agentId } : {}),
+    ...(identity ? { identity } : {})
+  })
 }
 
-function definedScope(scope: {
-  kind: MemoryScopeKind
-  sessionId?: string | undefined
-  runId?: string | undefined
-  agentId?: string | undefined
-  workflowId?: string | undefined
-  userId?: string | undefined
-  tenantId?: string | undefined
-}): MemoryScope {
-  const out: MemoryScope = { kind: scope.kind }
-  if (scope.sessionId !== undefined) out.sessionId = scope.sessionId
-  if (scope.runId !== undefined) out.runId = scope.runId
-  if (scope.agentId !== undefined) out.agentId = scope.agentId
-  if (scope.workflowId !== undefined) out.workflowId = scope.workflowId
-  if (scope.userId !== undefined) out.userId = scope.userId
-  if (scope.tenantId !== undefined) out.tenantId = scope.tenantId
-  return out
+function indexText(value: MemoryRecord['value'], options: MemoryWriteOptions | undefined): string | undefined {
+  if (options?.index?.text !== undefined) return options.index.text
+  return typeof value === 'string' ? value : undefined
 }
 
-function requireRunId(opts: CreateMemoryFacadeOptions): string {
-  if (opts.runId) return opts.runId
-  throw new ValidationError('Run memory is only available inside a run.', { where: 'memory_scope', issues: { reason: 'missing_scope_identifier', field: 'runId', scope: 'run' } })
-}
-
-function metadataString(metadata: Readonly<Record<string, JsonValue>> | undefined, key: 'userId' | 'tenantId'): string | undefined {
-  const value = metadata?.[key]
-  return typeof value === 'string' && value.length > 0 ? value : undefined
+function defaultSearchMode(engine: MemoryEngine): 'text' | 'semantic' | 'hybrid' {
+  if (engine.capabilities.includes('memory.hybrid_search')) return 'hybrid'
+  if (engine.capabilities.includes('memory.text_search')) return 'text'
+  return 'semantic'
 }

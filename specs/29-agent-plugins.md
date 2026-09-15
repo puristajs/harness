@@ -1,408 +1,827 @@
 # Agent Plugins integration
 
+> **V4 composition:** an Agent Plugin is inspected as untrusted package data and
+> explicitly projected into the immutable Skill and MCP definition contracts in
+> [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md).
+
 **Status:** approved implementation scope. This specification defines the
-first-party `@purista/harness-agent-plugins` package and the narrowly-scoped
-core MCP-runtime additions it requires. It implements the portable Agent
-Plugins 1.0.0 format as a client; it is not a TypeScript module system.
+first-party `@purista/harness-agent-plugins` package as a client for the
+portable Agent Plugins 1.0.0 format. It is a clean v4 API; a plugin is not a
+TypeScript module and cannot contribute executable application code.
 
-## Purpose and boundaries
+## 1. Scope and ownership
 
-Agent Plugins are external package directories containing a required
-`plugin.json` plus zero or more Agent Skills (`skills/*/SKILL.md`) and MCP
-servers (`mcp.json`). The format is currently a working draft, but version
-`1.0.0` and its canonical schema identifiers are the supported compatibility
-target. The package supports local, already-installed plugin roots only. It
-does not download, install, update, publish, sign, or discover marketplace
-plugins.
+Agent Plugins are already-installed local directories containing a required
+`plugin.json`, zero or more immediate `skills/*/SKILL.md` packages, and an
+optional root `mcp.json`.
 
 `@purista/harness-agent-plugins` SHALL:
 
-1. inspect, locally validate, and inventory a plugin without executing it;
-2. import approved skill directories through the existing harness skill loader;
-3. project explicitly selected MCP tools into ordinary typed harness tool
-   definitions;
-4. preserve existing sandbox, permission, governance, cancellation, timeout,
-   lifecycle, and telemetry behavior; and
-5. provide machine-readable, content-free diagnostics and provenance.
+1. inspect, validate, digest, and inventory a local plugin without executing it;
+2. load only application-trusted, digest-pinned plugin roots;
+3. project explicitly selected Skills through `defineSkill`;
+4. project explicitly selected Streamable HTTP MCP servers and tools through
+   `defineMcpServer` plus exact HTTP `McpBinding` records; and
+5. return content-free diagnostics and separate provenance records.
 
-It SHALL NOT load plugin JavaScript/TypeScript, invoke hooks, construct agents
-or workflows, read plugin-defined credentials, use plugin extensions, relax
-tool allowlists, auto-expose every server tool, or treat a manifest as a trust
-assertion. `HarnessModule` remains for trusted application imports only; it
-MUST NOT be used as the plugin loader or as a way to evaluate plugin code.
+It SHALL NOT download, install, update, publish, discover, or sign plugins;
+load plugin JavaScript or TypeScript; invoke hooks; construct agents,
+workflows, Harnesses, or runtime instances; discover credentials; interpret
+`extensions`; or grant capabilities from manifest contents. Applications that
+do not call this addon perform no plugin work and gain no plugin-provided
+behavior.
 
-The package is a maintained first-party addon, so users receive support by
-installing it alongside the core package. It remains opt-in: applications that
-do not use Agent Plugins do not parse plugin manifests, create plugin data, or
-gain third-party executable behavior.
+The addon depends only on the public `@purista/harness` API and local
+JSON/YAML/schema utilities. It MUST NOT import Harness internals or provider
+packages, and core MUST NOT depend on this addon. The addon owns portable-format
+parsing, path containment, trust/digest checks, selection validation, and the
+mapping to public v4 factories. Core owns definition identity, graph
+compilation, Skill loading and mounting, MCP clients and transports, runtime
+discovery, schema comparison, policy and approval, cancellation, telemetry,
+and shutdown. The MCP client dependency belongs to core; this addon does not
+instantiate or depend on an MCP client.
 
-## Package and dependency contract
+This addon's implementation ticket changes source, tests, examples, and public
+exports while package versions, Harness dependency ranges, and the workspace
+lockfile remain on the aligned 3.0.0 release. Spec 42 H4-020 performs the one
+atomic 4.0.0 version/range/lockfile flip for Core and every first-party addon.
+This package is not published as an independent v4 artifact before that gate.
 
-The workspace adds `packages/harness-agent-plugins/`, published as
-`@purista/harness-agent-plugins`. It is ESM-only and depends only on the public
-`@purista/harness` surface plus local JSON/YAML/schema utilities required for
-format validation. It MUST NOT import harness internals or a provider/addon
-package. The core package MUST NOT depend on this addon.
+## 2. Public API
 
-The Agent Plugins package owns format parsing, path containment, trust/lock
-evaluation, component diagnostics, and projection. Core owns tool execution,
-MCP protocol transport, sandbox lifecycle, governance, telemetry, and normal
-tool/skill registries. A core addition is permitted only when it is
-provider-neutral and independently useful to the existing MCP runtime; it MUST
-not mention Agent Plugins in its public name or behavior.
-
-The package uses the current supported `@modelcontextprotocol/client` v2 release and
-the core MCP runtime supports MCP `2026-07-28` Streamable HTTP semantics:
-
-- stateless request/response operation and header-based routing;
-- current protocol-version negotiation and server capability discovery;
-- cacheable list responses with their advertised TTL; and
-- task-augmented `tools/call` when negotiated, mapped to the existing tool
-  promise, timeout, abort, and shutdown contract (including `tasks/cancel`).
-
-This is a clean breaking major MCP cut: the harness pins a Tier-1 SDK release
-that implements MCP `2026-07-28`, supports neither the legacy stateful
-protocol nor legacy HTTP+SSE, and ships no compatibility transport, fallback,
-or migration shim. An Agent Plugins `sse` server is reported as unsupported and
-skipped. Migration guidance belongs in release notes and the AI Harness skill,
-not in runtime code. MCP Apps, sampling, roots, elicitation, and arbitrary
-extensions are not enabled by this package. A server-to-client request that the
-harness has not explicitly enabled fails that server call safely and does not
-grant the server access to prompts, local roots, or user interaction.
-
-## Public API
-
-The addon exports only data-oriented inspection/loading APIs and a binding
-factory. Names below are locked; optional fields use omission rather than
-`undefined` in returned records.
+The package exports the constants for the supported manifest and MCP schema
+identifiers, the types below, `inspectAgentPluginSync`,
+`inspectAgentPlugin`, `loadAgentPlugins`, and the three error subclasses in
+section 8. Optional fields are omitted, rather than returned with `undefined`.
 
 ```ts
-type AgentPluginTrust = 'trusted' | 'untrusted'
-type AgentPluginTransport = 'stdio' | 'streamable-http'
+import type {
+  McpBinding,
+  McpToolOptions,
+  ModelSchema,
+  Schema,
+  SkillRuntimeId,
+} from '@purista/harness'
+import { defineMcpServer, defineSkill } from '@purista/harness'
 
-interface AgentPluginSource {
-  root: string
-  trust?: AgentPluginTrust
-  dataDirectory?: string
-  expectedDigest?: string
+export const AGENT_PLUGIN_MANIFEST_SCHEMA:
+  'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json'
+export const AGENT_PLUGIN_MCP_SCHEMA:
+  'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json'
+export const AGENT_PLUGIN_DEFAULT_MAX_FILE_BYTES: 2_097_152
+export const AGENT_PLUGIN_DEFAULT_MAX_PACKAGE_BYTES: 104_857_600
+export const AGENT_PLUGIN_MAX_FILE_BYTES: 16_777_216
+export const AGENT_PLUGIN_MAX_PACKAGE_BYTES: 536_870_912
+export const AGENT_PLUGIN_MAX_ENTRIES: 20_000
+export const AGENT_PLUGIN_MAX_DEPTH: 64
+export const AGENT_PLUGIN_MAX_PATH_BYTES: 1_024
+
+export type AgentPluginTrust = 'trusted' | 'untrusted'
+export type AgentPluginTransport = 'stdio' | 'streamable-http'
+
+export interface AgentPluginSource {
+  readonly root: string
+  readonly trust?: AgentPluginTrust
+  readonly expectedDigest?: string
 }
 
-interface ApprovedAgentPluginSource extends AgentPluginSource {
-  expectedDigest: string
+export interface ApprovedAgentPluginSource extends AgentPluginSource {
+  readonly expectedDigest: string
 }
 
-interface AgentPluginLoadOptions {
-  plugins: readonly ApprovedAgentPluginSource[]
-  trustedRoots?: readonly string[]
-  supportedTransports?: readonly AgentPluginTransport[]
-  validationMode?: 'strict' | 'lenient'
+export interface InspectAgentPluginOptions {
+  readonly maxFileBytes?: number       // default 2 MiB
+  readonly maxPackageBytes?: number    // default 100 MiB
 }
 
-interface AgentPluginToolBinding {
-  server: string
-  tool: string
-  description: string
+export interface AgentPluginLoadOptions extends InspectAgentPluginOptions {
+  readonly plugins: readonly [
+    ApprovedAgentPluginSource,
+    ...ApprovedAgentPluginSource[],
+  ]
+  readonly trustedRoots?: readonly string[]
 }
 
-interface AgentPluginBindings {
-  skills: SkillsConfig
-  tools: ToolsConfig
-  diagnostics: readonly AgentPluginDiagnostic[]
-  provenance: readonly AgentPluginProvenance[]
+export interface AgentPluginAuthor {
+  readonly name?: string
+  readonly email?: string
+  readonly url?: string
 }
 
-interface LoadedAgentPlugin {
-  inspection: AgentPluginInspection
-  bindings(options: {
-    skills?: Readonly<Record<string, string>>
-    tools?: Readonly<Record<string, AgentPluginToolBinding>>
-  }): AgentPluginBindings
+export interface AgentPluginManifestSummary {
+  readonly $schema: typeof AGENT_PLUGIN_MANIFEST_SCHEMA
+  readonly name: string
+  readonly version?: string
+  readonly description?: string
+  readonly author?: AgentPluginAuthor
+  readonly homepage?: string
+  readonly repository?: string
+  readonly license?: string
+  readonly keywords?: readonly string[]
 }
 
-function inspectAgentPlugin(source: AgentPluginSource): Promise<AgentPluginInspection>
-function loadAgentPlugins(options: AgentPluginLoadOptions): Promise<readonly LoadedAgentPlugin[]>
+export interface AgentPluginSkill {
+  readonly name: string
+  readonly description: string
+}
+
+export type AgentPluginMcpServerSummary =
+  | Readonly<{
+      name: string
+      transport: 'streamable-http'
+      supported: true
+    }>
+  | Readonly<{
+      name: string
+      transport: 'stdio'
+      supported: false
+    }>
+
+export type AgentPluginDiagnosticCode =
+  | 'plugin_root_invalid'
+  | 'manifest_missing'
+  | 'manifest_invalid'
+  | 'manifest_unknown_field'
+  | 'manifest_extensions_ignored'
+  | 'schema_unsupported'
+  | 'path_escape'
+  | 'untrusted'
+  | 'digest_invalid'
+  | 'digest_mismatch'
+  | 'package_too_large'
+  | 'component_invalid'
+  | 'skill_invalid'
+  | 'skill_duplicate'
+  | 'mcp_config_invalid'
+  | 'transport_unsupported'
+  | 'server_invalid'
+
+export interface AgentPluginDiagnostic {
+  readonly level: 'warn' | 'error'
+  readonly code: AgentPluginDiagnosticCode
+  readonly message: string
+  readonly pluginName?: string
+  readonly component?: 'skills' | 'mcp'
+  readonly item?: string
+}
+
+export interface AgentPluginInspection {
+  readonly valid: boolean
+  readonly manifest?: AgentPluginManifestSummary
+  readonly trust: AgentPluginTrust
+  readonly digest?: string
+  readonly skills: readonly AgentPluginSkill[]
+  readonly mcpServers: readonly AgentPluginMcpServerSummary[]
+  readonly diagnostics: readonly AgentPluginDiagnostic[]
+}
+
+export interface AgentPluginSkillSelection<
+  Runtimes extends readonly SkillRuntimeId[] = readonly SkillRuntimeId[],
+> {
+  readonly runtimes: Runtimes
+}
+
+export type AgentPluginSkillSelections = Readonly<
+  Record<string, AgentPluginSkillSelection>
+>
+
+export interface AgentPluginHttpMcpServerSelection<
+  Tools extends Readonly<
+    Record<string, McpToolOptions<ModelSchema, Schema>>
+  > = Readonly<Record<string, McpToolOptions<ModelSchema, Schema>>>,
+> {
+  /** Exact server name from the portable mcp.json inventory. */
+  readonly server: string
+  /** Caller-owned local tool ids, descriptions, remote names, and schemas. */
+  readonly tools: Tools
+  /** Caller-owned runtime headers, including credentials and explicit overrides. */
+  readonly headers?: Readonly<Record<string, string>>
+}
+
+export type AgentPluginHttpMcpServerSelections = Readonly<
+  Record<string, AgentPluginHttpMcpServerSelection>
+>
+
+export type ProjectedAgentPluginSkills<
+  Skills extends AgentPluginSkillSelections,
+> = Readonly<{
+  [Id in keyof Skills & string]: ReturnType<
+    typeof defineSkill<Id, Skills[Id]['runtimes']>
+  >
+}>
+
+export type ProjectedAgentPluginMcpServers<
+  Servers extends AgentPluginHttpMcpServerSelections,
+> = Readonly<{
+  [Id in keyof Servers & string]: ReturnType<
+    typeof defineMcpServer<Id, Servers[Id]['tools']>
+  >
+}>
+
+export type AgentPluginHttpMcpBinding = Extract<McpBinding, { transport: 'http' }>
+
+export type ProjectedAgentPluginMcpBindings<
+  Servers extends AgentPluginHttpMcpServerSelections,
+> = Readonly<{
+  [Id in keyof Servers & string]: AgentPluginHttpMcpBinding
+}>
+
+export interface AgentPluginComponentProvenance {
+  readonly pluginName: string
+  readonly version?: string
+  readonly digest: string
+}
+
+export type AgentPluginBindingProvenance<
+  Skills extends AgentPluginSkillSelections,
+  Servers extends AgentPluginHttpMcpServerSelections,
+> = Readonly<{
+  skills: Readonly<{
+    [Id in keyof Skills & string]: AgentPluginComponentProvenance & Readonly<{
+      component: 'skill'
+      skillId: Id
+    }>
+  }>
+  mcpServers: Readonly<{
+    [Id in keyof Servers & string]: AgentPluginComponentProvenance & Readonly<{
+      component: 'mcp-server'
+      localServerId: Id
+      pluginServerName: Servers[Id]['server']
+      tools: Readonly<{
+        [ToolId in keyof Servers[Id]['tools'] & string]:
+          AgentPluginComponentProvenance & Readonly<{
+            component: 'mcp-tool'
+            localToolId: ToolId
+            remoteName: Servers[Id]['tools'][ToolId]['remoteName']
+          }>
+      }>
+    }>
+  }>
+}>
+
+export interface AgentPluginBindings<
+  Skills extends AgentPluginSkillSelections,
+  Servers extends AgentPluginHttpMcpServerSelections,
+> {
+  readonly skills: ProjectedAgentPluginSkills<Skills>
+  readonly mcpServers: ProjectedAgentPluginMcpServers<Servers>
+  readonly mcp: ProjectedAgentPluginMcpBindings<Servers>
+  readonly provenance: AgentPluginBindingProvenance<Skills, Servers>
+}
+
+export interface LoadedAgentPlugin {
+  readonly inspection: AgentPluginInspection
+  bindings<
+    const Skills extends AgentPluginSkillSelections,
+    const Servers extends AgentPluginHttpMcpServerSelections,
+  >(options: Readonly<{
+    skills: Skills
+    mcpServers: Servers
+  }>): AgentPluginBindings<Skills, Servers>
+}
+
+export declare function inspectAgentPluginSync(
+  source: AgentPluginSource,
+  options?: InspectAgentPluginOptions,
+): AgentPluginInspection
+
+export declare function inspectAgentPlugin(
+  source: AgentPluginSource,
+  options?: InspectAgentPluginOptions,
+): Promise<AgentPluginInspection>
+
+export declare function loadAgentPlugins(
+  options: AgentPluginLoadOptions,
+): Promise<readonly [LoadedAgentPlugin, ...LoadedAgentPlugin[]]>
+
+export type AgentPluginLoadErrorReason =
+  | 'skill_not_found'
+  | 'mcp_server_not_found'
+  | 'transport_unsupported'
+  | 'duplicate_selection'
+  | 'invalid_selection'
+  | 'invalid_http_headers'
+
+export type AgentPluginManifestErrorReason =
+  | 'plugin_root_invalid'
+  | 'manifest_missing'
+  | 'manifest_invalid'
+  | 'schema_unsupported'
+  | 'package_too_large'
+
+export type AgentPluginTrustErrorReason =
+  | 'untrusted'
+  | 'digest_invalid'
+  | 'digest_mismatch'
+
+export declare class AgentPluginError extends Error {}
+export declare class AgentPluginManifestError extends AgentPluginError {
+  constructor(reason: AgentPluginManifestErrorReason)
+  readonly reason: AgentPluginManifestErrorReason
+}
+export declare class AgentPluginTrustError extends AgentPluginError {
+  constructor(reason: AgentPluginTrustErrorReason)
+  readonly reason: AgentPluginTrustErrorReason
+}
+export declare class AgentPluginLoadError extends AgentPluginError {
+  constructor(reason: AgentPluginLoadErrorReason)
+  readonly reason: AgentPluginLoadErrorReason
+}
 ```
 
-`inspectAgentPlugin` is read-only and never starts an MCP server, opens a
-network connection, writes a data directory, mounts files, or expands
-placeholders. It reports manifest/component validity and `untrusted` inventory
-when safe to do so. A malformed/unsupported manifest returns an inspection
-with a fatal diagnostic rather than partially usable bindings. `loadAgentPlugins`
-performs the same parsing and lock/trust checks and returns no loadable entry
-for a rejected plugin. Neither function fetches `$schema` URLs.
+The mapped return types above are normative. The implementation MUST call the
+public `defineSkill` and `defineMcpServer` factories and return their actual
+frozen, identity-bearing values. It MUST NOT reproduce their visible shapes,
+cast unbranded objects into their types, or attach addon fields to core
+definitions or runtime bindings.
 
-`LoadedAgentPlugin.bindings()` is synchronous and pure after loading. It is the
-deliberate typed boundary: local aliases are caller-owned literal keys, while
-plugin names, server names, and runtime `tools/list` data are untyped external
-data. An agent can therefore allowlist normal aliases such as `search_docs`,
-not an open-ended plugin server. Unknown selected skill/server/tool names fail
-before `defineHarness().build()`. A skill alias maps a caller-owned harness
-skill key to a discovered Agent Skills frontmatter name. A tool alias maps one
-caller-owned harness tool key to one `(server, upstream tool)` pair.
+Both selection maps are required, including when empty. Their literal keys are
+preserved exactly in the corresponding return maps. The addon does not merge
+bindings from multiple loaded plugins; the application composes each result
+into its own definition graph and resolves cross-plugin id collisions there.
+
+## 3. Inspection and portable-format validation
+
+Inspection is read-only. It starts no process, opens no network connection,
+writes no file, expands no placeholder, and creates no core definition or
+runtime binding. For the same bytes and options, the synchronous and
+asynchronous functions return deeply equal frozen values; object identity is
+not promised. The asynchronous form is a convenience for callers with async
+setup.
+
+The following format rules are required:
+
+- `plugin.json` must be a regular file at the resolved plugin root and use the
+  locally recognized Agent Plugins 1.0.0 schema identifier. Invalid required
+  fields invalidate the plugin. Unknown top-level fields are diagnosed and
+  ignored; an invalid `extensions` member is diagnosed and ignored.
+- Discovery is limited to immediate `skills/*/SKILL.md` children and root
+  `mcp.json`. Missing component locations are valid. A malformed Skill removes
+  only that Skill from the usable inventory. An invalid `mcp.json` removes all
+  MCP servers; an invalid server removes only that server.
+- Skill validation applies the exact core Agent Skills rules in spec 42. A
+  usable Skill name equals its frontmatter `name` and directory basename.
+  Inspection exposes its name and description, never its body or path.
+- `mcp.json` and each server use the bundled Agent Plugins 1.0.0 schemas.
+  `streamable-http` and `stdio` are inventoried. Legacy `sse` receives
+  `transport_unsupported` and is not included in the usable inventory. Schema
+  URLs are identifiers only and are never fetched.
+- An MCP server summary contains its declared name, transport, and
+  `supported: true` only for `streamable-http`. A valid `stdio` entry is
+  retained with `supported: false` and a `transport_unsupported` diagnostic.
+
+`AgentPluginInspection` is a frozen record containing `valid`, the recognized
+manifest fields when available, resolved trust state, package digest when
+calculable, Skill summaries, MCP server summaries, and diagnostics. Recognized
+manifest metadata is untrusted package input returned only to the caller; the
+addon never logs it or records it in telemetry. The ignored `extensions` value
+is not returned.
+`valid` means that the root and manifest are loadable and the package digest was
+calculated within the configured limits. A rejected optional Skill or MCP
+component remains visible as a diagnostic but does not make the whole plugin
+invalid. Trust and expected-digest comparison are separate load decisions and
+also do not change this format-validity flag.
+Returned component summaries never contain a resolved path, MCP endpoint URL,
+command, argument, environment value, header, file body, schema, or credential.
+
+Every public array is deterministic. `skills` sorts by normalized Skill id;
+`mcpServers` sorts by portable server name and then transport. Both use unsigned
+UTF-8 byte order. Diagnostics sort by the tuple error-before-warning, `code`,
+`component` (absent first), `item` (absent first), `pluginName` (absent first),
+then `message`, with string members compared by unsigned UTF-8 bytes. Duplicate
+equal diagnostics collapse to one entry.
+
+## 4. Trust, digest, and filesystem safety
+
+Plugin data is untrusted by default. Loading requires both:
+
+1. `trust: 'trusted'` on the source or containment of the resolved source root
+   within one of the application-owned `trustedRoots`; and
+2. a lowercase SHA-256 `expectedDigest` equal to the digest calculated from the
+   package being loaded.
+
+At public function entry the implementation captures `process.cwd()` once.
+Every relative `source.root` and `trustedRoots` member is resolved against that
+same absolute base; absolute inputs remain absolute. Empty/NUL-containing paths
+are invalid. The scanner then resolves the existing real path and performs all
+containment checks against real absolute paths. A trusted root must itself be an
+existing real directory; equality or descendant containment grants location
+trust, while lexical prefixes do not. Later process working-directory changes
+cannot affect the call.
+
+Manifest metadata, author fields, a package location, and a matching digest do
+not grant trust. A digest records reviewed bytes; the application owns any
+lockfile or approval store. `loadAgentPlugins` validates sources in input order
+and is atomic: the first manifest, trust, or digest failure throws its typed,
+content-free error and returns no loaded plugins. A successful call returns one
+loaded plugin for every input source in the same order. Callers use inspection
+before loading when they need the complete diagnostic inventory.
+
+The canonical digest is a lowercase 64-character SHA-256 hexadecimal string.
+It covers every regular file below the resolved plugin root, including
+`plugin.json`, `mcp.json`, Skills, ignored extensions, documentation, and
+license files; there is no exclusion list. Empty directories do not contribute.
+The scanner reads POSIX directory names as raw bytes and decodes strict UTF-8;
+on Windows it rejects lone UTF-16 surrogates. It converts platform separators
+to `/`, normalizes every Unicode scalar sequence to NFC, then encodes UTF-8.
+It rejects an empty, `.`, `..`, backslash, absolute, or control-character
+segment and rejects two entries that collapse to the same normalized byte path.
+Files are sorted by unsigned raw UTF-8 path bytes. The hash transcript is
+exactly:
+
+1. UTF-8 bytes `PURISTA_AGENT_PLUGIN_DIGEST_V1\0`;
+2. for each sorted file, the normalized-path byte length as an unsigned
+   64-bit big-endian integer, then the path bytes; and
+3. the file-content byte length in the same encoding, then the exact file
+   bytes.
+
+The scan permits at most `AGENT_PLUGIN_MAX_ENTRIES` filesystem entries,
+`AGENT_PLUGIN_MAX_DEPTH` path segments, and
+`AGENT_PLUGIN_MAX_PATH_BYTES` UTF-8 bytes per normalized relative path.
+`maxFileBytes` defaults to `AGENT_PLUGIN_DEFAULT_MAX_FILE_BYTES` and cannot
+exceed `AGENT_PLUGIN_MAX_FILE_BYTES`; `maxPackageBytes` defaults to
+`AGENT_PLUGIN_DEFAULT_MAX_PACKAGE_BYTES` and cannot exceed
+`AGENT_PLUGIN_MAX_PACKAGE_BYTES`. Both options must be positive safe integers,
+and `maxFileBytes` cannot exceed `maxPackageBytes`. The aggregate counts the
+content bytes of all regular files. An invalid option is a
+`manifest_invalid` inspection diagnostic and a
+`AgentPluginManifestError('manifest_invalid')` during load; exceeding any scan,
+path, file, or package bound is `package_too_large`.
+
+One scan produces one private immutable snapshot containing normalized names and
+exact file bytes. Manifest/component parsing, inventory, diagnostics, and the
+digest are all derived from that snapshot; a file is never parsed from a second
+read. The scanner records identity, type, size, and modification metadata before
+and after each read and rechecks the directory inventory. A change retries the
+complete scan once; another change is `manifest_invalid`. Thus returned digest,
+summaries, and later provenance always describe the same snapshot.
+
+All reads use real filesystem containment. Traversal, symlinks,
+junctions/reparse points, case-normalized Windows drive escapes, UNC escapes,
+non-regular manifests, and special devices are rejected before their targets
+are read. Component errors use the narrow failure boundary from section 3.
+
+The digest is checked during loading and again by `bindings()`. Core later reads
+each selected Skill into its own immutable byte snapshot during Harness instance
+creation. The application owns the interval between binding and that snapshot:
+it must keep the reviewed plugin root immutable, for example through a
+read-only deployment image or an application-owned installation directory. The
+addon makes no claim that a caller-writable or externally shared directory is a
+trusted package store. HTTP URL and header data are copied during loading and
+do not depend on later filesystem reads.
+
+## 5. Binding contract
+
+`LoadedAgentPlugin.bindings()` is synchronous and has no runtime side effects.
+It first creates another complete immutable snapshot, compares its digest with
+the loaded snapshot, and validates the entire request against the new snapshot
+before creating the result. A changed package throws
+`AgentPluginTrustError{reason:'digest_mismatch'}`. If any selected entry is
+invalid, it throws one content-free `AgentPluginLoadError` and returns no
+partial definitions, bindings, provenance, or diagnostics.
+
+### 5.1 Skills
+
+Each key in `skills` MUST be the exact discovered Skill id. Skill aliases are
+not supported because core requires the definition id, directory basename,
+and `SKILL.md` name to match. The caller supplies an explicit frozen-compatible
+`runtimes` list, including `[]` for a guidance-only Skill. Values are validated
+against `SkillRuntimeId`; duplicates are rejected. The addon calls
+`defineSkill(skillId, { directory, runtimes })` with the contained discovered
+directory and returns the resulting definition under the same key.
+
+Selecting an unknown or invalid Skill fails the whole call. Object-keyed Skill
+selection cannot represent the same Skill twice. The
+plugin cannot declare runtimes for the application. Runtime requirements do
+not grant tools, process execution, filesystem mutation, or network access;
+core compiles and validates them under spec 42.
+
+### 5.2 MCP servers and tools
+
+Each `mcpServers` key is a caller-owned local server id accepted by
+`defineMcpServer`. `server` is the exact portable server name. Each nested
+`tools` key is a caller-owned local tool id. For every tool, the caller owns
+the exact `remoteName`, `description`, input model schema, and output Standard
+Schema required by `McpToolOptions`. Plugin data supplies none of those type or
+validation contracts.
+
+The addon rejects an unknown server, a server not using
+`streamable-http`, an empty selected tool map, a duplicate selected plugin
+server, or duplicate `remoteName` values within one selected server. It also
+rejects any local id, description, remote name, or schema that the corresponding
+core factory rejects. After validation it calls
+`defineMcpServer(localServerId, { tools })` and returns the exact resulting
+server definition.
+
+For each selected server the matching `mcp` entry is exactly:
 
 ```ts
-const [plugin] = await loadAgentPlugins({
-  plugins: [{ root: './plugins/research', trust: 'trusted', expectedDigest: reviewedDigest }]
-})
-const bindings = plugin.bindings({
-  skills: { research_playbook: 'research-playbook' },
-  tools: { search_docs: { server: 'knowledge', tool: 'search', description: 'Search approved knowledge.' } }
-})
-
-const harness = defineHarness()
-  .skills(bindings.skills)
-  .tools(bindings.tools)
-  .agents(({ agent }) => ({ researcher: agent({ /* tools: ['search_docs'] */ }) }))
-  .build()
+{
+  transport: 'http',
+  url: portableServer.url,
+  ...(mergedHeaders === undefined ? {} : { headers: mergedHeaders }),
+}
 ```
 
-The addon exports its declared interfaces, diagnostics, provenance records, and
-`AgentPluginError` subclasses. It does not re-export all core types; consumers
-import `SkillsConfig`, `ToolsConfig`, and `defineHarness` from
-`@purista/harness`.
+The portable URL must be an absolute `https:` URL, except that the exact hosts
+`localhost`, `127.0.0.1`, and `[::1]` may use `http:`. A port is allowed;
+subdomains, alternative IPv4 spellings, and other addresses are not treated as
+loopback. The serialized URL contains at most 8,192 UTF-8 bytes and has no user
+information, query, or fragment. The
+portable and caller header records are independently copied, validated, and
+merged case-insensitively into one frozen record. Portable headers may contain
+untrusted server configuration, but are never treated as proof that a value is
+non-secret: `authorization`, `cookie`, and `x-api-key` are rejected in portable
+input to prevent the common embedded-credential cases. The application must
+still review every portable name and value before trusting the package digest.
+Each source may contain at most 64 headers. A name contains at most 256 UTF-8
+bytes and a value at most 8,192 UTF-8 bytes; each source and the merged record
+may contain at most 32,768 UTF-8 bytes in total. The aggregate is the sum, for
+every entry, of the UTF-8 byte length of its normalized lowercase name plus the
+UTF-8 byte length of its value; separators and object syntax contribute no
+bytes. Both sources reject `accept`, `content-type`,
+`content-length`, `host`, `connection`, `keep-alive`, `proxy-authenticate`,
+`proxy-authorization`, `set-cookie`, `te`, `trailer`, `transfer-encoding`,
+`upgrade`, `mcp-protocol-version`, `mcp-session-id`, and `last-event-id` because
+the HTTP stack or Core owns them. Caller headers may carry `authorization`,
+`cookie`, or `x-api-key`. Invalid HTTP token names, non-string values, control
+characters, or case-insensitive duplicates within either source fail. Names are
+normalized to lowercase and bytewise sorted. A caller header replaces a
+portable header with the same normalized name; otherwise the portable header is
+preserved. The binding omits `headers` only when the merged record is empty.
+Neither source is logged or recorded in telemetry, and redirects cannot forward
+the merged record to another origin.
 
-## Portable format and validation
+The returned HTTP binding contains no provenance or addon-only field. Core
+connects and performs `tools/list` only when the server enters the compiled
+Harness graph, verifies every declared remote tool and input schema, ignores
+undeclared upstream tools, and applies the ordinary tool validation, policy,
+approval, timeout, cancellation, telemetry, and shutdown pipeline.
 
-The loader SHALL implement the following Agent Plugins 1.0.0 contract:
+### 5.3 Selected-only behavior
 
-- `plugin.json` is a regular file in the resolved plugin root. It contains a
-  locally recognized canonical `$schema` and a valid `name`. Invalid required
-  fields reject the full plugin. Unknown top-level manifest fields are reported
-  and ignored; a non-object `extensions` field is reported and ignored.
-- Manifest names permit periods, but harness aliases retain the existing
-  `/^[a-z][a-z0-9_]*$/` rule. The package never derives a public harness key
-  from a manifest, skill, server, or upstream tool name.
-- Component discovery is fixed: immediate `skills/*/SKILL.md` children and
-  root `mcp.json`. Missing component locations are valid. A malformed skill
-  skips only that skill. An invalid `mcp.json` disables only MCP for that
-  plugin. An invalid/unsupported server skips only that server.
-- Agent Skills validation and file-limit enforcement reuse the core loader;
-  the package adds plugin-root containment before passing a directory to it.
-  Skills are mounted and progressively disclosed by core exactly like direct
-  `.skills(...)` bindings. Their body, resources, and absolute source path are
-  never injected into prompts, logs, events, inspection, or telemetry.
-- `mcp.json` is validated against the locally vendored Agent Plugins 1.0.0
-  schema and individual server definitions against its local server schema.
-  It supports `stdio` and `streamable-http`; legacy `sse` entries are reported
-  as unsupported and skipped. An MCP config schema version must equal the
-  manifest version.
-- The package ships the exact supported JSON schemas as versioned assets and
-  validates locally. It never performs a schema network fetch or trusts a
-  package-supplied schema file.
+Loading alone creates no Skill definition, MCP definition, runtime binding, or
+agent capability. Binding materializes only the keys named in the two required
+selection maps; empty maps return empty frozen maps. A projected definition
+still grants no capability until an agent references that exact Skill or MCP
+tool definition. An unselected Skill, server, remote tool, or newly discovered
+upstream tool never enters the graph or callable registry.
 
-Returned inspection/provenance may contain plugin name, declared version,
-component names, transport, diagnostic code, and stable SHA-256 digests. It
-MUST NOT reveal absolute paths, headers, env values, command arguments, file
-content, skill content, tool schemas, credentials, or plugin data paths.
+## 6. Portable stdio behavior
 
-## Filesystem and data semantics
+This release inventories but does not project portable `stdio` servers. A
+valid stdio entry appears in inspection as `supported: false` with
+`transport_unsupported`. Selecting it in `bindings()` fails the entire call
+with `AgentPluginLoadError` reason `transport_unsupported`.
 
-All package file access starts by resolving the plugin root using the host
-filesystem. Every manifest, fixed component location, immediate skill child,
-plugin-relative command, and plugin-relative working directory is resolved
-with real filesystem semantics and must remain under that resolved root.
-Symlinks on POSIX, NTFS junctions/reparse points, drive-letter case differences,
-and UNC paths on Windows are therefore checked after resolution, not through
-string-prefix comparison. Component-specific failures follow the narrow failure
-boundaries above. Traversal, a symlink/junction escape, a non-regular manifest,
-or a special device is rejected; the loader never follows an escape merely to
-produce a diagnostic.
+The addon does not create a process binding, stage a package, manage a writable
+plugin data directory, expand `PLUGIN_ROOT` or `PLUGIN_DATA`, synchronize
+state, choose a working directory, or acquire lifecycle locks. The current
+public stdio `McpBinding` requires a caller-owned `SpawnCapableSandbox` and has
+no portable immutable-package/data-lifecycle contract. Portable stdio support
+therefore requires a separate approved core contract and implementation before
+this addon may return such a binding.
 
-Path configuration accepted by Agent Plugins is portable `/`-separated text;
-the loader converts it using the host path implementation only after validating
-the required `./` or placeholder prefix. It does not interpret command
-arguments or environment values as paths except for the standard `cwd` forms.
-It preserves `command` as one token and passes `args` separately. On Windows,
-`.cmd`/`.bat` launch is allowed only through the sandbox/runtime's
-platform-specific executable mechanism; no shell string concatenation or
-`shell: true` is permitted.
+## 7. Provenance and privacy
 
-Every approved stdio plugin receives an existing application-managed data
-directory unique to the installed plugin identity. Its resolved path must not
-overlap the resolved plugin root; access is serialized from staging through
-synchronization, so two server aliases cannot race a shared durable store. It
-is writable only in the plugin runtime boundary, persists across replacements
-of the plugin root, and may be deleted only by an explicit application
-uninstall operation. The package verifies the data directory itself and its
-resolved parents against the configured data root; a plugin cannot choose
-another plugin's data path.
+Provenance is returned only through `AgentPluginBindings.provenance`. Its maps
+have the same literal keys as the selected definition maps and contain plugin
+name, optional declared version, reviewed digest, component kind, portable
+source name, and caller-owned local id where applicable. It is deeply frozen.
+It is not attached to a core definition or `McpBinding`, and this addon makes no
+claim that core inspection, events, logs, metrics, or spans contain plugin
+provenance.
 
-Core gains a generic, MCP-only prepared-launch contract so an addon can stage a
-read-only package root and writable data directory for the current sandbox
-session without reimplementing the MCP runner. The contract returns sandbox
-paths and an env overlay only; it cannot replace command validation, alter
-agent permissions, access host processes directly, or register shutdown hooks.
-Core closes prepared launches with the owning MCP runner/session. The default
-in-memory sandbox reports that it cannot execute stdio plugins. A compatible
-exec sandbox stages files with the appropriate host-independent path mapping;
-host-directory/production sandboxes implement the same contract explicitly.
-The built-in local host-directory sandbox deliberately does **not** implement
-that contract: POSIX file modes are mutable by the plugin process owner and
-therefore are not an immutable package boundary.
+Diagnostics may contain a stable code, plugin name when known, component
+kind/name when known, and a safe explanatory message. Errors expose only their
+stable reason and fixed message. Neither diagnostics nor errors may contain
+absolute paths, URLs, commands, arguments, environment values,
+headers, schemas, file content, prompts, tool inputs/results, or credentials.
+Normal core Skill and MCP execution retains the telemetry and no-content rules
+defined by core.
 
-For `stdio`, the addon supplies `PLUGIN_ROOT` and `PLUGIN_DATA` itself after
-single, non-recursive expansion in `args`, env **values**, and `cwd`. It rejects
-plugin env keys equivalent to either reserved name according to platform
-environment-name rules (case-insensitive on Windows), then overwrites any
-ambient values. `command`, env keys, URLs, headers, and fixed paths never use
-placeholder expansion. Omitted `cwd` means the staged plugin root.
+## 8. Diagnostics and errors
 
-## Trust, locking, and network policy
+`AgentPluginDiagnostic` has `level: 'warn' | 'error'`, a stable `code`, and the
+content-free metadata described in section 7. The stable inspection codes are:
 
-Plugin data is untrusted by default. Explicit `trust: 'trusted'` or an entry
-whose resolved root is within a configured `trustedRoots` is necessary before
-the addon returns bindings. Trust is an application policy decision; neither
-plugin metadata, a digest, a manifest `author`, nor a package location grants
-trust. Inspection remains available for review.
+`plugin_root_invalid`, `manifest_missing`, `manifest_invalid`,
+`manifest_unknown_field`, `manifest_extensions_ignored`, `schema_unsupported`,
+`path_escape`, `untrusted`, `digest_invalid`, `digest_mismatch`,
+`package_too_large`, `component_invalid`,
+`skill_invalid`, `skill_duplicate`, `mcp_config_invalid`,
+`transport_unsupported`, and `server_invalid`.
 
-Before loading, a trusted plugin's canonical package digest is compared with a
-required `expectedDigest`. The digest covers normalized relative file names and
-bytes from the plugin root, excludes the client-managed data directory, and
-has deterministic cross-platform ordering. A missing, malformed, or mismatched
-digest rejects the plugin. Applications own storage/review of a lockfile; this
-package exports the digest/provenance needed to implement one and documents a
-reference lockfile format. Silent auto-updates are forbidden.
+The diagnostic mapping is exact. Its message is always
+`Agent Plugin diagnostic: <code>.`, where `<code>` is the public code verbatim;
+no package value is interpolated. Equal code/metadata tuples therefore have the
+same message.
 
-For each stdio server, command/cwd containment, placeholder expansion, launch
-capabilities, and package digest are checked before start. The subprocess is
-created only through the current sandbox, with the existing timeout,
-cancellation, process-death, reconnect, and shutdown protections.
-
-For each HTTP server:
-
-- URL must be absolute HTTP(S), contain no userinfo/fragment, and use HTTPS
-  except exact loopback hosts; redirects never forward plugin headers to a new
-  origin without an explicit application authorization decision.
-- Package headers are static public configuration, not credentials. Duplicate
-  case-insensitive names are invalid; credential-bearing, hop-by-hop, and MCP
-  protocol headers are rejected case-insensitively. Application-owned
-  authorization and MCP protocol headers take precedence, and credentials are
-  supplied only through core's existing host-owned MCP auth configuration.
-- No portable OAuth, secret-reference, ambient-environment, or header
-  interpolation mechanism is implemented. Authorization failure is a server
-  connection failure, not a manifest failure.
-
-All selected tools continue through existing per-agent exposure, permissions,
-governance/approval, input/output schema validation, tool timeout, run abort,
-and session isolation. Plugin identity is available to policy/audit as
-content-free provenance but does not bypass any existing decision.
-
-## MCP execution and current protocol behavior
-
-The addon converts a selected portable server to the existing `mcp_stdio` or
-`mcp_http` tool definition through the generic prepared-launch bridge. It does
-not duplicate MCP JSON-schema validation, dynamic import, runner caching,
-output normalization, or shutdown behavior. Upstream `tools/list` discovery
-continues to validate the tool selected by the caller before model exposure.
-
-The core MCP runner uses the `2026-07-28` stateless transport only. For
-Streamable HTTP it sends required routing/protocol headers and invalidates a
-cached catalog on a protocol invalidation/error. MCP Tasks are not exposed by
-this release: the runner does not claim task polling, cancellation, or task
-result projection semantics. Supporting Tasks requires explicit polling,
-abort/shutdown cancellation, and fixtures before it can be claimed. Unsupported
-server-to-client requests are returned as safely normalized
-`McpProtocolError`/`ToolError` results, never as an automatic user prompt or a
-hidden credential flow.
-
-## Diagnostics, errors, inspection, and OpenTelemetry
-
-Diagnostics are stable records with `level`, `code`, plugin name/version when
-known, component kind/name when known, and a human-readable message. They use
-component-scoped failures such as `manifest_invalid`, `schema_unsupported`,
-`path_escape`, `untrusted`, `digest_mismatch`, `skill_invalid`,
-`mcp_config_invalid`, `server_invalid`, `transport_unsupported`,
-`connection_failed`, and `tool_not_selected`. They do not include sensitive
-values. Fatal package errors use `AgentPluginManifestError`,
-`AgentPluginTrustError`, or `AgentPluginLoadError`, all extending
-`AgentPluginError`; execution errors continue to use the existing core error
-catalog.
-
-`AgentPluginProvenance` is attached to every projected skill/tool and includes
-only plugin name, declared version when present, package digest, component kind,
-component name, and transport when relevant. `harness.inspect()` gains no
-runtime plugin scanning; it may report the data-only provenance of already
-bound tools/skills through the existing inspection shape.
-
-The addon and core emit the existing skill/tool/MCP spans and metrics, never a
-second tracing pipeline. Tool spans add only these content-free attributes when
-plugin-derived:
-
-| Attribute | Type | Value |
+| Code | Level | Condition |
 | --- | --- | --- |
-| `harness.plugin.name` | string | manifest name |
-| `harness.plugin.version` | string | declared version when present |
-| `harness.plugin.digest` | string | package SHA-256 |
-| `harness.plugin.component` | string | `skill` or `mcp` |
+| `plugin_root_invalid` | error | root is missing, not a directory, unreadable, or fails real-path containment safety |
+| `manifest_missing` | error | regular root `plugin.json` is absent |
+| `manifest_invalid` | error | manifest, inspection options, normalized paths, or stable snapshot is invalid |
+| `manifest_unknown_field` | warn | unknown manifest field is ignored |
+| `manifest_extensions_ignored` | warn | present `extensions` content is not interpreted |
+| `schema_unsupported` | error | manifest schema identifier is unsupported |
+| `path_escape` | error | traversal, link, reparse point, drive, UNC, or normalized collision violates containment |
+| `untrusted` | error | source has no explicit or trusted-root grant |
+| `digest_invalid` | error | supplied expected digest syntax is invalid |
+| `digest_mismatch` | error | supplied expected digest differs from the snapshot digest |
+| `package_too_large` | error | an entry, path, file, or aggregate scan bound is exceeded |
+| `component_invalid` | error | a component container cannot be safely inventoried |
+| `skill_invalid` | error | one Skill fails the Core Agent Skill rules |
+| `skill_duplicate` | error | two discovered Skills declare the same id |
+| `mcp_config_invalid` | error | root MCP configuration fails its bundled schema |
+| `transport_unsupported` | warn | a recognized stdio server is inventory-only or a legacy transport is skipped |
+| `server_invalid` | error | one MCP server entry fails its bundled schema or uniqueness rules |
 
-The addon intentionally creates no inspection/loading spans because inspection
-is a standalone data-only package API with no harness telemetry context. Core
-tool spans carry the plugin provenance attributes above; no paths, commands,
-arguments, environment values, URLs, headers, schemas, prompts, files, tool
-inputs/results, or credentials are emitted.
+The binding failure reasons on `AgentPluginLoadError` are:
 
-## Testing, examples, release, and documentation
+`skill_not_found`, `mcp_server_not_found`, `transport_unsupported`,
+`duplicate_selection`, `invalid_selection`, and `invalid_http_headers`.
 
-The addon has hermetic fixtures and contract tests covering:
+`AgentPluginError` is the base class. `AgentPluginManifestError` represents an
+invalid source encountered during an atomic load;
+`AgentPluginTrustError` represents an untrusted, malformed-digest, or
+digest-mismatched source during that load; and
+`AgentPluginLoadError` represents an invalid explicit binding request. Core
+initialization and execution failures continue to use the core error catalog.
+Each error message is a fixed safe description selected by its subclass. These
+errors retain no underlying cause, path, expected or actual digest, manifest
+field value, URL, header, schema, or plugin content.
+The exact messages are `Agent Plugin package is invalid.`, `Agent Plugin trust
+verification failed.`, and `Agent Plugin binding selection is invalid.` for
+the manifest, trust, and load subclasses respectively; a reason does not insert
+package content into the message.
 
-1. exact valid/invalid Agent Plugins 1.0.0 manifest and MCP schema fixtures;
-   unknown-field and extension failure boundaries; no schema network fetch;
-2. POSIX symlink and Windows junction/drive/UNC containment behavior through
-   a filesystem abstraction or platform-gated native fixture;
-3. malformed/missing components and per-skill/per-server isolation;
-4. trust defaults, trusted roots, digest mismatch, deterministic digest, and
-   lockfile review flow;
-5. mounted plugin skills and unchanged progressive disclosure/privacy;
-6. caller-owned aliases, type-level allowlists, duplicate/collision rejection,
-   and no automatic tool exposure;
-7. stdio placeholder/reserved-env/cwd rules, persistent data across update,
-   sandbox-only launch, close/cancellation/process-death behavior; and
-8. HTTP URL/header/redirect/auth policy plus stdio and Streamable HTTP
-   `2026-07-28` stateless fixtures. Tasks remain explicitly unsupported.
+The terminal mapping is exhaustive:
 
-Core MCP contract tests must run against the pinned current MCP SDK without an
-external server. They reject legacy protocol/transport configuration and verify
-the current protocol features above. Existing non-plugin MCP, skills, static modules, telemetry,
-governance, durable workspace, session shutdown, and no-content tests remain
-unchanged and must stay green.
+| Operation and condition | Error class and reason |
+| --- | --- |
+| load: invalid root or containment escape | `AgentPluginManifestError('plugin_root_invalid')` |
+| load: missing root manifest | `AgentPluginManifestError('manifest_missing')` |
+| load: malformed manifest, invalid load options, or invalid manifest fields | `AgentPluginManifestError('manifest_invalid')` |
+| load: unsupported manifest schema identifier | `AgentPluginManifestError('schema_unsupported')` |
+| load or binding recheck: scan, depth, path, file, or package bound exceeded | `AgentPluginManifestError('package_too_large')` |
+| binding recheck: root/containment/type safety fails or package becomes unreadable | `AgentPluginManifestError('plugin_root_invalid')` |
+| binding recheck: normalized-path collision or repeated scan instability | `AgentPluginManifestError('manifest_invalid')` |
+| load: source is not explicitly trusted or contained by a trusted root | `AgentPluginTrustError('untrusted')` |
+| load: expected digest is not lowercase 64-character SHA-256 hex | `AgentPluginTrustError('digest_invalid')` |
+| load or binding recheck: expected digest differs from canonical digest | `AgentPluginTrustError('digest_mismatch')` |
+| binding: selected Skill is absent/unusable | `AgentPluginLoadError('skill_not_found')` |
+| binding: selected portable server is absent/unusable | `AgentPluginLoadError('mcp_server_not_found')` |
+| binding: selected server transport is unsupported | `AgentPluginLoadError('transport_unsupported')` |
+| binding: one portable server is selected more than once or remote names repeat within a server | `AgentPluginLoadError('duplicate_selection')` |
+| binding: closed selection shape, local id, description, remote name, schema, runtime list, URL, or other non-header field is invalid | `AgentPluginLoadError('invalid_selection')` |
+| binding: portable or caller header record is invalid | `AgentPluginLoadError('invalid_http_headers')` |
 
-Add a private `examples/agent-plugins/` workspace using fake/local fixture
-plugins: a skills-only plugin, a streamable-HTTP plugin, and a reviewed stdio
-plugin. It demonstrates inspection, a trust/digest decision, explicit alias
-binding, per-agent allowlists, graceful component diagnostics, and shutdown.
-It must not require network access, real credentials, or a host shell outside
-the configured sandbox.
+Inspection never throws one of these domain errors for ordinary invalid package
+input. It returns the corresponding diagnostics. Only ambient programmer or
+platform failures outside the specified domain, such as memory exhaustion, may
+escape unchanged.
 
-The package README, root README, handbook, public API reference, AI Harness
-skill, release workflow, package-content verification, Dependabot workspace
-coverage, and versioning/release notes SHALL be updated in the implementation
-wave. Documentation must distinguish Agent Plugins from static modules, explain
-the trust review and explicit tool selection, list supported transports/MCP
-version behavior, and state that UI-specific MCP Apps and plugin extensions are
-not enabled by the library.
+When several conditions fail, inspection reports every safely discoverable
+diagnostic and returns them in the order above. Atomic load examines plugin
+sources in caller order and, within one source, uses this precedence:
+closed load options/trusted roots; root and containment; scan limits and
+stability; manifest presence/shape/schema; trust; expected-digest syntax; digest
+equality. `bindings()` first performs the complete snapshot/recheck precedence,
+then validates the closed top-level shape and required maps, Skill keys in
+unsigned UTF-8 order, and MCP local-server keys in unsigned UTF-8 order. Within
+one MCP selection the precedence is local shape/id, portable server existence,
+transport support, duplicate portable-server selection, nonempty tool map,
+tool ids and definitions in unsigned UTF-8 order, duplicate remote names, URL,
+portable headers, then caller headers. The first failure throws the mapped
+reason in the table; no lower-precedence check creates definitions or returns a
+partial result.
 
-## Acceptance
+## 9. Example
 
-The feature is ready only when the package contents publish cleanly with the
-core release workflow, documented APIs/types match generated declarations, the
-new example is hermetic in CI, all stated contract suites pass on Linux and
-Windows, and the Agent Plugins client conformance checklist is recorded against
-the exact supported component/transport set. The project may claim
-“Agent Plugins compatible” only for the tested Agent Plugins 1.0.0 scope and
-must disclose unsupported optional transports/features.
+```ts
+import { defineAgent, defineHarness } from '@purista/harness'
+import {
+  inspectAgentPluginSync,
+  loadAgentPlugins,
+} from '@purista/harness-agent-plugins'
+import { z } from 'zod'
 
-## Cross-references
+const source = { root: './plugins/research', trust: 'trusted' as const }
+const inspection = inspectAgentPluginSync(source)
+if (!inspection.valid || inspection.digest === undefined) {
+  throw new Error('The plugin is not ready for review.')
+}
+
+const [plugin] = await loadAgentPlugins({
+  plugins: [{ ...source, expectedDigest: inspection.digest }],
+})
+
+const knowledgeToken = process.env.KNOWLEDGE_TOKEN
+if (knowledgeToken === undefined) {
+  throw new Error('KNOWLEDGE_TOKEN is required.')
+}
+
+const selected = plugin.bindings({
+  skills: {
+    'research-playbook': { runtimes: [] },
+  },
+  mcpServers: {
+    knowledge: {
+      server: 'remoteKnowledge',
+      headers: { Authorization: `Bearer ${knowledgeToken}` },
+      tools: {
+        searchDocs: {
+          remoteName: 'search',
+          description: 'Search approved knowledge.',
+          input: z.object({ query: z.string() }),
+          output: z.object({ matches: z.array(z.string()) }),
+        },
+      },
+    },
+  },
+})
+
+const researcher = defineAgent('researcher', {
+  model: 'chat',
+  instructions: 'Research only approved knowledge sources.',
+  skills: [selected.skills['research-playbook']],
+  tools: [selected.mcpServers.knowledge.tools.searchDocs],
+})
+
+const definition = defineHarness({ name: 'researchHarness' })
+  .addAgent(researcher)
+
+const instance = await definition.getInstance({
+  models: { chat: { provider, model: 'gpt-5' } },
+  mcp: selected.mcp,
+})
+```
+
+The application supplies the reviewed digest through its own lock/review
+process and closes the instance through the lifecycle in spec 42.
+
+## 10. Verification and acceptance
+
+Hermetic tests SHALL cover:
+
+1. valid and invalid Agent Plugins 1.0.0 manifests and bundled schemas, unknown
+   fields, ignored extensions, size limits, and proof that no schema is fetched;
+2. POSIX symlink and Windows junction, drive, case, and UNC containment through
+   native or platform-gated fixtures;
+3. missing/malformed components and the package, Skill, MCP file, and individual
+   server failure boundaries;
+4. trust defaults, trusted roots, malformed and mismatched digests, deterministic
+   digest calculation, input-order preservation, and redacted output;
+5. exact Skill ids and directories, caller-owned runtime tuples, actual branded
+   `defineSkill` results, and empty/unknown selection behavior;
+6. exact local server/tool literal types, caller-owned schemas/descriptions and
+   remote names, actual branded `defineMcpServer` results, duplicate portable
+   server and remote-name rejection, and no automatic exposure;
+7. exact HTTP binding maps, URL and both header-source validation, safe portable
+   header preservation, caller override precedence, credential/protocol-header
+   rejection, and core runtime discovery/schema validation with a
+   credential-free fake HTTP server;
+8. stdio inventory with `supported: false`, deterministic selection failure,
+   and proof that inspection/loading starts no process and creates no data; and
+9. all-or-nothing binding failure, deep freezing, separate exact provenance,
+   and no sensitive content in inspection, diagnostics, errors, or provenance.
+
+Type tests MUST prove that literal selection keys and schemas flow to exact
+Skill, MCP server, and MCP tool definitions, that returned values are accepted
+by `defineAgent`, and that unknown output keys or structurally forged branded
+definitions are rejected. Existing core Skill, MCP, governance, cancellation,
+telemetry, and shutdown suites remain green.
+
+The package README, root documentation, public API reference, AI Harness skill,
+release workflow, package-content checks, workspace dependency automation, and
+a hermetic local example SHALL be updated in the implementation wave. The
+documentation must state the trust/digest review, explicit selected-only model,
+caller-owned schemas and credential headers, safe portable-header merge,
+Streamable HTTP support, and portable stdio non-support.
+
+The feature is accepted only when declarations match this API, package contents
+publish through the normal release workflow, all tests pass on Linux and
+Windows, and conformance is recorded for exactly the Agent Plugins 1.0.0
+components claimed here. No broader Agent Plugins conformance may be claimed.
+
+## 11. Cross-references
 
 - [Agent Plugins Specification 1.0.0](https://agent-plugins.org/specification)
-  — portable package and client conformance requirements.
-- [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28)
-  — required current protocol baseline.
+  — portable package and client conformance requirements, reviewed 2026-09-05.
+- Bundled reviewed schema artifacts:
+  `schemas/1.0.0/plugin.schema.json` SHA-256
+  `fd74dfcbccea4a5b8768d9bc87b9da27449213ca5d464ace724ca48ec4bc074b`
+  and `schemas/1.0.0/mcp.schema.json` SHA-256
+  `9b9863a18c18c2a4c53772e6099b13ae3c2e7eab1bd5330e9b98dca59af71e5f`.
+  Tests load these package-owned bytes and never fetch schemas at runtime.
+- [42-composable-definitions-and-catalogs](./42-composable-definitions-and-catalogs.md)
+  sections 3.3, 4, 8, 9, 13, and 14 — v4 MCP/Skill definitions, graph
+  compilation, instance bindings, lifecycle, and inspection.
 - [01-architecture](./01-architecture.md) — addon boundary and dependency direction.
-- [05-sandbox](./05-sandbox.md) — sandbox execution/staging contract.
-- [07-tools](./07-tools.md) — MCP execution, validation, cancellation, and shutdown.
-- [08-skills](./08-skills.md) — Agent Skills loading and progressive disclosure.
-- [13-public-api](./13-public-api.md) — published addon surface.
-- [14-otel-conventions](./14-otel-conventions.md) — canonical telemetry names.
+- [05-sandbox](./05-sandbox.md) — sandbox ownership and capability contracts.
+- [07-tools](./07-tools.md) — common tool execution and MCP behavior.
+- [08-skills](./08-skills.md) — Agent Skills format and progressive disclosure.
+- [13-public-api](./13-public-api.md) — published package surface.
 - [15-error-catalog](./15-error-catalog.md) — core execution errors.
-- [16-testing](./16-testing.md) — fixtures and CI gates.
-- [25-static-harness-modules](./25-static-harness-modules.md) — trusted module boundary.
+- [16-testing](./16-testing.md) — hermetic fixtures and CI gates.

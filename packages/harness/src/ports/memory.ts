@@ -1,3 +1,4 @@
 export * from './memory/types.js'
-export { validateMemoryAdapter } from './memory/validation.js'
+export * from './memory/config.js'
+export { validateMemoryEngine } from './memory/validation.js'
 export { createMemoryFacade, createSessionMemory } from './memory/facade.js'

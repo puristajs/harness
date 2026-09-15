@@ -1,0 +1,67 @@
+catalog_version: 1
+applicability:
+  status: applicable
+  scope_refs: [CAP-SBX-IDENTITY, CAP-SBX-OPEN, CAP-SBX-OBSERVE, CAP-SBX-DOCKER]
+shapes:
+  - shape_id: sandbox.docker-options
+    representation_class: boundary
+    canonical_source: 03-contracts/contracts.yaml#CTR-SBX-DOCKER
+    owner: harness_docker_addon
+    stability: versioned
+    open_policy: closed
+    allowed_consumers: [application_composition, docker_adapter, contract_tests]
+    source_contract_refs: [CTR-SBX-DOCKER]
+    mapping_refs: []
+  - shape_id: sandbox.session-context
+    representation_class: domain
+    canonical_source: 03-contracts/contracts.yaml#CTR-SBX-SCOPE
+    owner: harness_core
+    stability: internal
+    open_policy: closed
+    allowed_consumers: [session_orchestration, durable_runtime]
+    source_contract_refs: [CTR-SBX-SCOPE]
+    mapping_refs: [MAP-SBX-SCOPE]
+  - shape_id: sandbox.logical-scope
+    representation_class: boundary
+    canonical_source: 03-contracts/contracts.yaml#CTR-SBX-SCOPE
+    owner: harness_core
+    stability: versioned
+    open_policy: closed
+    allowed_consumers: [sandbox_adapter, contract_tests]
+    source_contract_refs: [CTR-SBX-SCOPE]
+    mapping_refs: [MAP-SBX-SCOPE]
+  - shape_id: sandbox.open-result
+    representation_class: boundary
+    canonical_source: 03-contracts/contracts.yaml#CTR-SBX-OPEN
+    owner: sandbox_adapter
+    stability: versioned
+    open_policy: closed
+    allowed_consumers: [harness_core, contract_tests]
+    source_contract_refs: [CTR-SBX-OPEN]
+    mapping_refs: [MAP-SBX-TELEMETRY]
+  - shape_id: sandbox.telemetry-projection
+    representation_class: projection
+    canonical_source: 04-nfr/requirements.md#telemetry
+    owner: harness_core
+    stability: internal
+    open_policy: closed
+    allowed_consumers: [logger, telemetry]
+    source_contract_refs: [CTR-SBX-OPEN]
+    mapping_refs: [MAP-SBX-TELEMETRY]
+mappings:
+  - mapping_id: MAP-SBX-SCOPE
+    from_shape: sandbox.session-context
+    to_shape: sandbox.logical-scope
+    direction: domain_to_boundary
+    allowed_differences: [omit_non_scope_runtime_fields]
+    redaction_or_loss_policy: Only the exact fields declared by SandboxScope are projected.
+    field_operations: ["harness_name:copy", "session_id:copy", "session_instance_id:copy", "identity:copy_exact_optional", "lifetime:derive", "run_id:copy_when_run", "role:derive"]
+    verification: [scope construction unit tests, public type tests]
+  - mapping_id: MAP-SBX-TELEMETRY
+    from_shape: sandbox.open-result
+    to_shape: sandbox.telemetry-projection
+    direction: custom
+    allowed_differences: [retain_only_low_cardinality_operation_outcome]
+    redaction_or_loss_policy: Scope values and every provider coordination content or credential field are discarded.
+    field_operations: ["operation:copy", "adapter_id:copy", "disposition:copy_when_open", "live_process_state:copy_when_open", "status:derive", "error_type:normalize"]
+    verification: [NO_CONTENT telemetry snapshot tests]

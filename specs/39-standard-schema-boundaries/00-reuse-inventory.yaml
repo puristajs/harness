@@ -1,0 +1,59 @@
+reuse_inventory_version: 1
+discovery_revision: 74838ca875cb55df016f0ee47a9e5da569207823 plus preserved working tree inspected 2026-08-28
+assets:
+  - asset_id: core.purista-standard-schema
+    kind: pattern
+    path: purista/packages/core/src/schema/standardSchema.ts
+    public_export: Schema, Infer, InferIn, validate, toJSONSchema
+    owner: purista_core
+    stability: existing
+    consumers: [CAP-SS-TYPES, CAP-SS-VALIDATION, CAP-SS-CONSUMERS]
+    extension_policy: reuse naming and async validation semantics; Harness keeps its JSON-only and model-specific constraints
+  - asset_id: harness.json
+    kind: module
+    path: ai-harness/packages/harness/src/models/json.ts
+    public_export: JsonValue, isJsonValue
+    owner: harness_core
+    stability: existing
+    consumers: [CAP-SS-TYPES, CAP-SS-VALIDATION, CAP-SS-PROJECTION, CAP-SS-PROVIDERS]
+    extension_policy: canonical JSON check; no duplicate JSON type or stringify probe
+  - asset_id: harness.definitions
+    kind: module
+    path: ai-harness/packages/harness/src/harness/defineHarness.ts
+    public_export: agent, tool, workflow definitions and nested inference
+    owner: harness_core
+    stability: replace_public_zod_contract
+    consumers: [CAP-SS-TYPES, CAP-SS-PROJECTION, CAP-SS-CLEANUP]
+    extension_policy: rebuild generics schema-first and delete erased/legacy paths
+  - asset_id: harness.provider-port
+    kind: module
+    path: ai-harness/packages/harness/src/ports/model-provider.ts
+    public_export: ModelToolSpec.parameters, ObjectRequest.schema
+    owner: harness_core
+    stability: existing
+    consumers: [CAP-SS-PROJECTION, CAP-SS-PROVIDERS]
+    extension_policy: retain plain JsonValue JSON Schema boundary
+  - asset_id: harness.errors
+    kind: module
+    path: ai-harness/packages/harness/src/errors
+    public_export: HarnessConfigError, ValidationError, InternalError, serializeError
+    owner: harness_core
+    stability: existing
+    consumers: [CAP-SS-VALIDATION, CAP-SS-PROJECTION, CAP-SS-CLEANUP]
+    extension_policy: extend closed metadata reasons; no parallel error family
+  - asset_id: harness.docs-skill
+    kind: documentation
+    path: ai-harness/docs and ai-harness/skills/ai-harness
+    public_export: Harness guides and canonical skill
+    owner: harness_docs
+    stability: existing
+    consumers: [CAP-SS-CONSUMERS]
+    extension_policy: update existing routes and sync checks; no duplicate guide tree
+  - asset_id: purista.website-skills
+    kind: documentation
+    path: purista/web and purista/skills
+    public_export: handbook, website and canonical PURISTA skills
+    owner: purista
+    stability: existing
+    consumers: [CAP-SS-CONSUMERS]
+    extension_policy: update existing Harness projections and terminology only

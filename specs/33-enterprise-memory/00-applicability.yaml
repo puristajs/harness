@@ -1,0 +1,40 @@
+applicability_version: 1
+concerns:
+  - concern_id: backend_runtime
+    status: applicable
+    scope_refs:
+      - 00-architecture-overview.md
+  - concern_id: data_persistence
+    status: applicable
+    scope_refs:
+      - 03-contracts/contracts.yaml
+  - concern_id: identity_isolation
+    status: applicable
+    scope_refs:
+      - 00-architecture-overview.md
+  - concern_id: ai_model_calls
+    status: applicable
+    scope_refs:
+      - 03-contracts/contracts.yaml
+  - concern_id: observability
+    status: applicable
+    scope_refs:
+      - 04-nfr/requirements.md
+  - concern_id: runtime_compatibility
+    status: applicable
+    scope_refs:
+      - 00-stack.md
+  - concern_id: frontend_application_ui
+    status: not_applicable
+    rationale: The deliverable changes developer documentation and a marketing architecture page but introduces no interactive application screen or user workflow.
+    scope_refs:
+      - 00-file-structure.md
+  - concern_id: async_transport
+    status: not_applicable
+    rationale: The implementation creates no event transport, queue protocol, webhook, or background worker.
+    scope_refs:
+      - 00-architecture-overview.md
+  - concern_id: representation_reuse
+    status: applicable
+    scope_refs:
+      - 03-contracts/representation-catalog.yaml

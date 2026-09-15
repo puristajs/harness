@@ -1,0 +1,40 @@
+decision_authority_version: 1
+default_allowed_classes:
+  - "D0"
+  - "D1"
+decisions:
+  - decision_id: "DEC-DB-CLEAN"
+    class: "D2"
+    authority: "repository-owner task 01a03d51-6262-7480-89eb-baa163905ef6 approved 2026-08-26"
+    scope_refs:
+      - "CAP-DB-FOUNDATION"
+      - "CAP-DB-GOVERNANCE"
+      - "CAP-DB-PROVIDERS"
+      - "CAP-DB-TOOLS"
+      - "CAP-DB-RAILS"
+      - "CAP-DB-WAITS"
+      - "CAP-DB-REVIEW"
+      - "CAP-DB-CONSUMERS"
+      - "CAP-DB-DOCS"
+      - "CAP-DB-CLEANUP"
+    source_refs:
+      - "00-vision.md"
+      - "03-contracts/decisions.md"
+      - "04-delivery/clean-cut.md"
+  - decision_id: "DEC-DB-OWNERSHIP"
+    class: "D2"
+    authority: "repository-owner same approved refactor"
+    scope_refs:
+      - "CAP-DB-FOUNDATION"
+      - "CAP-DB-GOVERNANCE"
+      - "CAP-DB-PROVIDERS"
+      - "CAP-DB-TOOLS"
+      - "CAP-DB-RAILS"
+      - "CAP-DB-WAITS"
+      - "CAP-DB-REVIEW"
+      - "CAP-DB-CONSUMERS"
+      - "CAP-DB-DOCS"
+      - "CAP-DB-CLEANUP"
+    source_refs:
+      - "00-module-boundaries.yaml"
+      - "00-reuse-inventory.yaml"

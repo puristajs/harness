@@ -1,8 +1,6 @@
 import { expect, it } from 'vitest'
-import { FakeLogger, FakeModelProvider } from '@purista/harness/testing'
+import { FakeLogger, FakeModelProvider, textReply } from '@purista/harness/testing'
 import { createSupportHarness } from './createSupportHarness.js'
-
-const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
 
 it('allows an ordinary request and returns the scripted result', async () => {
   const provider = new FakeModelProvider()
@@ -11,7 +9,7 @@ it('allows an ordinary request and returns the scripted result', async () => {
     model: 'scripted-support-model',
     provider,
   })
-  provider.enqueueText({ content: 'Order demo-42 is ready.', usage, finishReason: 'stop' })
+  provider.enqueueText(textReply('Order demo-42 is ready.'))
   const session = await harness.getSession('allowed-test')
 
   try {

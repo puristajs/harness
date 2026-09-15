@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { toNodeHandler } from '@modelcontextprotocol/node'
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
-import { FakeModelProvider } from '@purista/harness/testing'
+import { FakeModelProvider, objectReply } from '@purista/harness/testing'
 import { describe, expect, test } from 'vitest'
 import * as z from 'zod/v4'
 import { createLivingWikiHarness, createScriptedLivingWikiProvider } from './harness.js'
@@ -142,22 +142,15 @@ describe('living wiki harness workflows', () => {
     const calls: Array<{ title: string; nodes: string[] }> = []
     const mcp = await startDrawioMcpServer(calls)
     const provider = new FakeModelProvider({ strict: true })
-    const usage = { inputTokens: 3, outputTokens: 4, totalTokens: 7 }
-    provider.enqueueObject({
-      object: null,
+    provider.enqueueObject(objectReply(null, {
       toolCalls: [{
         id: 'drawio-call',
         name: 'createDrawioDiagram',
         arguments: { title: 'Trace flow', nodes: ['API', 'Harness', 'Jaeger'] },
       }],
-      usage,
       finishReason: 'tool_calls',
-    })
-    provider.enqueueObject({
-      object: architectureReviewResult(),
-      usage,
-      finishReason: 'stop',
-    })
+    }))
+    provider.enqueueObject(objectReply(architectureReviewResult()))
     const { harness, storage } = await createLivingWikiHarness({
       dataRoot: fixture.dataRoot,
       provider,

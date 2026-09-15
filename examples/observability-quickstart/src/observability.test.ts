@@ -1,6 +1,6 @@
 import { AggregationTemporality, InMemoryMetricExporter } from '@opentelemetry/sdk-metrics'
 import { InMemorySpanExporter } from '@opentelemetry/sdk-trace-base'
-import { FakeModelProvider } from '@purista/harness/testing'
+import { FakeModelProvider, objectReply } from '@purista/harness/testing'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { createObservedHarness } from './harness.js'
@@ -20,11 +20,10 @@ afterAll(async () => telemetry.shutdown())
 describe('observability quickstart', () => {
   it('exports Harness spans, application metrics, and correlated safe logs', async () => {
     const provider = new FakeModelProvider({ strict: true })
-    provider.enqueueObject({
-      object: { answer: 'Open Billing and choose Edit address.' },
-      usage: { inputTokens: 8, outputTokens: 7, totalTokens: 15 },
-      finishReason: 'stop',
-    })
+    provider.enqueueObject(objectReply(
+      { answer: 'Open Billing and choose Edit address.' },
+      { usage: { inputTokens: 8, outputTokens: 7, totalTokens: 15 } },
+    ))
     const logLines: string[] = []
     const harness = await createObservedHarness({
       provider,

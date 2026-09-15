@@ -1,8 +1,7 @@
 import { defineAgent, defineHarness, defineWorkflow } from '@purista/harness'
-import { FakeModelProvider } from '@purista/harness/testing'
+import { FakeModelProvider, objectReply, textReply } from '@purista/harness/testing'
 import { z } from 'zod'
 
-const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
 const reviewInput = z.object({ documentId: z.string() })
 const reviewOutput = z.object({ documentId: z.string(), verdict: z.string() })
 
@@ -56,9 +55,9 @@ const reviewHarness = defineHarness({ name: 'workflowChildTasksExample' })
 /** Creates the runnable child-task example with deterministic model responses. */
 export function createReviewHarness() {
   const provider = new FakeModelProvider({ strict: true })
-  provider.enqueueObject({ object: { documentId: 'DOC-42', verdict: 'approved' }, usage, finishReason: 'stop' })
-  provider.enqueueText({ content: 'first response', usage, finishReason: 'stop' })
-  provider.enqueueText({ content: 'follow-up response', usage, finishReason: 'stop' })
+  provider.enqueueObject(objectReply({ documentId: 'DOC-42', verdict: 'approved' }))
+  provider.enqueueText(textReply('first response'))
+  provider.enqueueText(textReply('follow-up response'))
   return reviewHarness.getInstance({ models: { chat: { provider, model: 'example' } } })
 }
 

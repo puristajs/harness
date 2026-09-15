@@ -1,15 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { FakeModelProvider } from '@purista/harness/testing'
+import { FakeModelProvider, objectReply } from '@purista/harness/testing'
 import { createQuickstartHarness } from './index.js'
 
 describe('quickstart', () => {
   it('runs the typed quickstart agent with an injected provider', async () => {
     const provider = new FakeModelProvider({ strict: true })
-    provider.enqueueObject({
-      object: { answer: 'A harness wires providers, agents, workflows, and sessions behind typed boundaries.' },
-      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-      finishReason: 'stop',
-    })
+    provider.enqueueObject(objectReply({
+      answer: 'A harness wires providers, agents, workflows, and sessions behind typed boundaries.',
+    }))
     const harness = await createQuickstartHarness(provider)
 
     try {

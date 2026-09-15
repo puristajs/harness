@@ -1,10 +1,8 @@
 import { defineAgent, defineHarness, defineTool } from '@purista/harness'
-import { FakeModelProvider } from '@purista/harness/testing'
+import { FakeModelProvider, textReply } from '@purista/harness/testing'
 import { z } from 'zod'
 
 import { TrackedFilesystemSandbox } from './trackedFilesystemSandbox.js'
-
-const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
 
 export function createReportHarness() {
   const provider = new FakeModelProvider({ strict: true })
@@ -40,17 +38,15 @@ export function createReportHarness() {
 export async function runCustomSandboxExample() {
   const { harness: harnessPromise, provider, sandbox } = createReportHarness()
   const harness = await harnessPromise
-  provider.enqueueText({
-    content: '',
+  provider.enqueueText(textReply('', {
     toolCalls: [{
       id: 'create-report-1',
       name: 'createReport',
       arguments: { content: 'Synthetic quarterly report.' },
     }],
-    usage,
     finishReason: 'tool_calls',
-  })
-  provider.enqueueText({ content: 'report ready', usage, finishReason: 'stop' })
+  }))
+  provider.enqueueText(textReply('report ready'))
   const session = await harness.getSession('report-42')
 
   try {

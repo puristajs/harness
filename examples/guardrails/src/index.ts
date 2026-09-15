@@ -11,7 +11,7 @@ import {
   type ToolApprovalRequest,
   sqliteHarnessStorage,
 } from '@purista/harness'
-import { FakeModelProvider } from '@purista/harness/testing'
+import { FakeModelProvider, textReply } from '@purista/harness/testing'
 import {
   createSensitiveDataActions,
   defineGuardrailAction,
@@ -41,18 +41,15 @@ export interface GuardrailsExamplePreflight {
  */
 export async function createGuardrailsExample(options: GuardrailsExampleOptions = {}) {
   const provider = new FakeModelProvider()
-  const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
-  provider.enqueueText({
-    content: '',
-    usage,
+  provider.enqueueText(textReply('', {
     finishReason: 'tool_calls',
     toolCalls: [
       { id: 'call_lookup', name: 'lookupStatus', arguments: { ticket: 'DEMO' } },
       { id: 'call_publish', name: 'publishNote', arguments: { message: '[secret]', visibility: 'internal' } },
       { id: 'call_write', name: 'write', arguments: { path: '/workspace/note.txt', content: 'Reviewed note.' } },
     ],
-  })
-  provider.enqueueText({ content: 'The [secret] answer.', usage, finishReason: 'stop' })
+  }))
+  provider.enqueueText(textReply('The [secret] answer.'))
   const approvalRequests: ToolApprovalRequest[] = []
   const handledNotes: string[] = []
   const lifecycle: string[] = []

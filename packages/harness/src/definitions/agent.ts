@@ -16,6 +16,7 @@ import {
 	attachDefinitionInference,
 	createDefinitionIdentity,
 	freezeDefinition,
+	getDefinitionIdentity,
 	registerHarnessTargetContract,
 } from './identity.js'
 import type {
@@ -62,8 +63,8 @@ type ResolvedGovernance<Value> = ResolvedAgentGovernance<Value extends (...args:
  * Defines one standard bounded model-loop agent.
  *
  * Every agent selects an application-defined model alias explicitly. Omit
- * schemas for a string-to-string agent. Supplying an input schema requires a pure prompt mapper, and supplying any
- * output schema selects structured generation and object-snapshot updates.
+ * schemas for a string-to-string agent. Structured input is serialized as canonical JSON unless a pure prompt mapper
+ * is supplied. A non-string output schema selects structured generation and object-snapshot updates.
  *
  * @example
  * ```ts
@@ -134,7 +135,7 @@ export function defineAgent<
 	assertModelSchema(input, 'agent.input', id)
 	assertModelSchema(output, 'agent.output', id)
 	if ((options.inputCapabilities?.length ?? 0) > 0 && typeof options.prompt !== 'function') {
-		throw new HarnessConfigError('An agent with an input schema requires a prompt mapper.', {
+		throw new HarnessConfigError('An agent with media input capabilities requires a prompt mapper.', {
 			reason: 'missing_agent_prompt', path: 'agent.prompt', id,
 		})
 	}
@@ -144,14 +145,15 @@ export function defineAgent<
 		? defaultPrompt as unknown as AgentPrompt<Infer<ResolvedInput<Input>>, Capabilities>
 		: wrapPrompt(options.prompt as unknown as AgentPrompt<unknown, readonly AgentInputCapability[]>, capabilities ?? [], id)
 	const updates = resolveUpdates(output, options.responseMode, id) as ResolvedUpdates<Output, ResponseMode>
-	const tools = options.tools === undefined ? undefined : Object.freeze([...options.tools]) as Tools
-	const skills = options.skills === undefined ? undefined : Object.freeze([...options.skills]) as Skills
-	const subagents = copySubagents(options.subagents, id) as Subagents
+	const tools = copyAgentTools(options.tools, id) as Tools
+	const skills = copyAgentSkills(options.skills, id) as Skills
+	const subagents = copySubagents(options.subagents, id, new Set((tools ?? []).map(tool => tool.id))) as Subagents
 	const loop = copyLoop(options.loop, id)
 	const memory = copyMemory(options.memory, id) as Memory
 	const permissions = snapshotPermissions(options.permissions, id) as Permissions
 	const sandbox = snapshotSandboxPolicy(options.sandbox, id)
 	const guardrails = snapshotGuardrails(options.guardrails, id) as Guardrails
+	validateGuardrailRequirements(guardrails, tools, id)
 	const governance = resolveGovernance(options.governance, id, new Set([
 		...(tools ?? []).map(tool => tool.id),
 		...((skills?.length ?? 0) > 0 ? ['read_skill'] : []),
@@ -374,11 +376,73 @@ function invalidPrompt(id: string): HarnessConfigError {
 	})
 }
 
-function copySubagents<S extends AgentSubagentMap>(subagents: S | undefined, id: string): S | undefined {
+function copyAgentTools<T extends readonly AnyToolDefinition[]>(tools: T | undefined, agentId: string): T | undefined {
+	if (tools === undefined) return undefined
+	if (!Array.isArray(tools) || tools.length === 0) throw invalidAgentDependency(agentId, 'tools')
+	const names = new Set<string>()
+	for (const tool of tools) {
+		const identity = getDefinitionIdentity(tool)
+		if (
+			identity === undefined
+			|| !['tool', 'built-in-tool', 'host-tool', 'mcp-tool'].includes(identity.kind)
+			|| tool.id !== identity.id
+			|| !Object.isFrozen(tool)
+		) {
+			throw foreignAgentDependency(agentId, 'tools')
+		}
+		if (names.has(tool.id)) throw modelNameCollision(agentId, tool.id, `tool.${tool.id}`)
+		names.add(tool.id)
+	}
+	return Object.freeze([...tools]) as unknown as T
+}
+
+function copyAgentSkills<S extends readonly SkillDefinition[]>(skills: S | undefined, agentId: string): S | undefined {
+	if (skills === undefined) return undefined
+	if (!Array.isArray(skills) || skills.length === 0) throw invalidAgentDependency(agentId, 'skills')
+	const ids = new Set<string>()
+	for (const skill of skills) {
+		const identity = getDefinitionIdentity(skill)
+		if (identity?.kind !== 'skill' || skill.id !== identity.id || !Object.isFrozen(skill)) {
+			throw foreignAgentDependency(agentId, 'skills')
+		}
+		if (ids.has(skill.id)) {
+			throw new HarnessConfigError('Agent Skill definition identity is duplicated.', {
+				reason: 'duplicate_definition', path: `agent.${agentId}.skills.${skill.id}`, id: skill.id,
+			})
+		}
+		ids.add(skill.id)
+	}
+	return Object.freeze([...skills]) as unknown as S
+}
+
+function copySubagents<S extends AgentSubagentMap>(
+	subagents: S | undefined,
+	id: string,
+	modelNames: Set<string>,
+): S | undefined {
 	if (subagents === undefined) return undefined
+	if (typeof subagents !== 'object' || subagents === null || Array.isArray(subagents) || Object.keys(subagents).length === 0) {
+		throw invalidAgentDependency(id, 'subagents')
+	}
 	const copy: Record<string, unknown> = {}
 	for (const [name, reference] of Object.entries(subagents)) {
 		assertDefinitionId(name, `agent.${id}.subagents`)
+		if (modelNames.has(name)) throw modelNameCollision(id, name, `subagent.${name}`)
+		modelNames.add(name)
+		const agent = typeof reference === 'object' && reference !== null && 'agent' in reference ? reference.agent : reference
+		const identity = getDefinitionIdentity(agent)
+		if (
+			identity?.kind !== 'agent'
+			|| typeof agent !== 'object'
+			|| agent === null
+			|| !('contract' in agent)
+			|| !('id' in agent)
+			|| agent.id !== identity.id
+			|| getDefinitionIdentity(agent.contract)?.token !== identity.token
+			|| !Object.isFrozen(agent)
+		) {
+			throw foreignAgentDependency(id, `subagents.${name}`)
+		}
 		if (typeof reference === 'object' && reference !== null && 'agent' in reference) {
 			assertKnownFields(reference, ['agent', 'description'], `agent.${id}.subagents.${name}`, id)
 			if (reference.description !== undefined) assertNonemptyText(reference.description, `agent.${id}.subagents.${name}.description`, id)
@@ -388,6 +452,43 @@ function copySubagents<S extends AgentSubagentMap>(subagents: S | undefined, id:
 		}
 	}
 	return Object.freeze(copy) as S
+}
+
+function validateGuardrailRequirements(
+	guardrails: AgentGuardrailsBinding<any> | undefined,
+	tools: readonly AnyToolDefinition[] | undefined,
+	agentId: string,
+): void {
+	const requirements = guardrails?.[agentGuardrailsBinding].requirements
+	if (requirements === undefined) return
+	const parsed = agentExecutionRequirementsSchema.safeParse(requirements)
+	if (!parsed.success) throw invalidAgentDependency(agentId, 'guardrails.requirements')
+	const available = new Set((tools ?? []).map(tool => tool.id))
+	for (const required of parsed.data.tools ?? []) {
+		if (!available.has(required)) {
+			throw new HarnessConfigError('Agent Guardrail requirements reference an unavailable tool.', {
+				reason: 'invalid_agent', path: `agent.${agentId}.guardrails.requirements.tools.${required}`, id: required,
+			})
+		}
+	}
+}
+
+function invalidAgentDependency(agentId: string, field: string): HarnessConfigError {
+	return new HarnessConfigError('Agent dependency collections must be non-empty and valid.', {
+		reason: 'invalid_agent', path: `agent.${agentId}.${field}`, id: agentId,
+	})
+}
+
+function foreignAgentDependency(agentId: string, field: string): HarnessConfigError {
+	return new HarnessConfigError('Agent dependencies must be exact package-owned definitions.', {
+		reason: 'foreign_definition', path: `agent.${agentId}.${field}`, id: agentId,
+	})
+}
+
+function modelNameCollision(agentId: string, name: string, origin: string): HarnessConfigError {
+	return new HarnessConfigError('Agent model-facing tool and subagent names must be unique.', {
+		reason: 'model_name_collision', path: `agent.${agentId}.${name}`, id: origin,
+	})
 }
 
 function copyLoop(loop: AgentOptions<any, any, any, any, any, any, any, any>['loop'], id: string) {

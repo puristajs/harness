@@ -1,10 +1,18 @@
 // Fakes
-export { FakeModelProvider, type FakeModelProviderOptions } from './fakeModelProvider.js'
+export {
+  FakeModelProvider,
+  objectReply,
+  textReply,
+  type FakeModelProviderOptions,
+  type FakeObjectReplyOptions,
+  type FakeTextReplyOptions,
+} from './fakeModelProvider.js'
 export { FakeHarnessStorage, type FakeHarnessStorageOp } from './fakeHarnessStorage.js'
 export { FakeSandbox, type FakeSandboxOptions } from './fakeSandbox.js'
 export { FakeLogger, type FakeLogRecord } from './fakeLogger.js'
 export { RecordingTelemetry, type RecordedTelemetryMetric, type RecordedTelemetrySpan } from './recordingTelemetry.js'
 export { FakeMemoryEngine, memoryEngineContract } from './fakeMemoryEngine.js'
+export { createToolTestContext, type ToolTestContext, type ToolTestContextOptions } from './toolTestContext.js'
 export { InMemoryDurableWorkspace, inMemoryDurableWorkspace } from '../workspace/index.js'
 export { adapterCapabilitiesContract, fakeCapabilityAdapter, type FakeCapabilityAdapter } from './capabilities.js'
 export { fakeSnapshotSandbox, sandboxSnapshotContract } from './sandboxSnapshot.js'

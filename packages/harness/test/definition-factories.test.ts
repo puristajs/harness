@@ -347,8 +347,50 @@ describe('composable definition factories', () => {
 		expect(skill.runtimes).toEqual(['python', 'shell'])
 		expect(Object.isFrozen(skill.runtimes)).toBe(true)
 		expect(() => defineSkill('invalid-runtime', {
-			directory: new URL('./fixture/', import.meta.url), runtimes: ['ruby' as never],
+			directory: new URL('./invalid-runtime/', import.meta.url), runtimes: ['ruby' as never],
 		})).toThrow(HarnessConfigError)
+		expect(() => defineSkill('empty-runtime', {
+			directory: new URL('./empty-runtime/', import.meta.url), runtimes: [],
+		})).toThrow(HarnessConfigError)
+		expect(() => defineSkill('duplicate-runtime', {
+			directory: new URL('./duplicate-runtime/', import.meta.url), runtimes: ['node', 'node'],
+		})).toThrow(HarnessConfigError)
+	})
+
+	it('validates the complete Skill URL at definition time', () => {
+		expect(() => defineSkill('remote', { directory: new URL('https://example.test/remote') }))
+			.toThrow(expect.objectContaining({ meta: expect.objectContaining({ reason: 'invalid_skill_url' }) }))
+		expect(() => defineSkill('expected', { directory: new URL('./different/', import.meta.url) }))
+			.toThrow(expect.objectContaining({ meta: expect.objectContaining({ reason: 'invalid_skill_url' }) }))
+		expect(() => defineSkill('expected', { directory: new URL('./expected/?version=1', import.meta.url) }))
+			.toThrow(expect.objectContaining({ meta: expect.objectContaining({ reason: 'invalid_skill_url' }) }))
+		expect(() => defineSkill('expected', { directory: new URL('./expected/#section', import.meta.url) }))
+			.toThrow(expect.objectContaining({ meta: expect.objectContaining({ reason: 'invalid_skill_url' }) }))
+	})
+
+	it('rejects invalid agent dependencies and model-facing name collisions at defineAgent', () => {
+		const tool = defineTool('helper', {
+			description: 'Help.', input: inputSchema, output: outputSchema,
+			async handler(_context, input) { return { answer: input.message } },
+		})
+		const helper = defineAgent('helperAgent', { model: 'chat', instructions: 'Help.' })
+		const skill = defineSkill('support-policy', { directory: new URL('./support-policy/', import.meta.url) })
+
+		expect(() => defineAgent('copiedToolAgent', {
+			model: 'chat', instructions: 'Use tools.', tools: [{ ...tool }] as never,
+		})).toThrow(expect.objectContaining({ meta: expect.objectContaining({ reason: 'foreign_definition' }) }))
+		expect(() => defineAgent('copiedSkillAgent', {
+			model: 'chat', instructions: 'Use skills.', skills: [{ ...skill }] as never,
+		})).toThrow(expect.objectContaining({ meta: expect.objectContaining({ reason: 'foreign_definition' }) }))
+		expect(() => defineAgent('copiedSubagentAgent', {
+			model: 'chat', instructions: 'Delegate.', subagents: { helper: { ...helper } } as never,
+		})).toThrow(expect.objectContaining({ meta: expect.objectContaining({ reason: 'foreign_definition' }) }))
+		expect(() => defineAgent('nameCollisionAgent', {
+			model: 'chat', instructions: 'Use or delegate.', tools: [tool], subagents: { helper },
+		})).toThrow(expect.objectContaining({ meta: expect.objectContaining({ reason: 'model_name_collision' }) }))
+		expect(() => defineAgent('duplicateSkillAgent', {
+			model: 'chat', instructions: 'Read.', skills: [skill, skill],
+		})).toThrow(expect.objectContaining({ meta: expect.objectContaining({ reason: 'duplicate_definition' }) }))
 	})
 
 	it('snapshots a Skill directory URL without exposing mutable definition state', () => {

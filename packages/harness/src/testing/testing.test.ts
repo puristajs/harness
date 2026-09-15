@@ -1,6 +1,7 @@
 import { Writable } from 'node:stream'
 
 import { describe, expect, it } from 'vitest'
+import { z } from 'zod'
 
 import { JsonLogger } from '../logger/index.js'
 import { BaseModelProvider } from '../ports/base-model-provider.js'
@@ -27,8 +28,11 @@ import { FakeModelProvider } from './fakeModelProvider.js'
 import { loggerContract } from './loggerContract.js'
 import { modelProviderContract } from './modelProviderContract.js'
 import { recordEvents } from './recordEvents.js'
+import { createToolTestContext } from './toolTestContext.js'
+import { objectReply, textReply } from './fakeModelProvider.js'
 import { sandboxActorBarrierContract, sandboxContract, sandboxTextSearchContract } from './sandboxContract.js'
 import { harnessStorageContract } from './harnessStorageContract.js'
+import { defineTool } from '../definitions/tool.js'
 
 const fakeScope = {
   owner: { namespace: 'fake-test', id: 's1', instanceId: '01J00000000000000000000000' },
@@ -158,6 +162,13 @@ describe('FakeHarnessStorage inspection helpers', () => {
 })
 
 describe('FakeModelProvider strict fixtures', () => {
+	it('creates concise complete text and object replies', () => {
+		expect(textReply('done')).toEqual({ content: 'done', usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, finishReason: 'stop' })
+		expect(objectReply({ status: 'ready' }, { finishReason: 'length' })).toEqual({
+			object: { status: 'ready' }, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, finishReason: 'length',
+		})
+	})
+
   it('rejects missing and mismatched scripted responses', async () => {
     const missing = new FakeModelProvider({ strict: true })
     await expect(missing.object({ model: 'fake', messages: [], signal: new AbortController().signal })).rejects.toThrow(
@@ -181,6 +192,26 @@ describe('FakeModelProvider strict fixtures', () => {
     expect(() => provider.assertExhausted()).not.toThrow()
     expect(provider.requests).toHaveLength(1)
   })
+})
+
+describe('createToolTestContext', () => {
+	it('creates a frozen deterministic context for direct Tool handler tests', async () => {
+		const tool = defineTool('uppercase', {
+			description: 'Uppercase text.', input: z.object({ value: z.string() }), output: z.string(),
+			async handler(context, input) {
+				context.logger.info('called')
+				return input.value.toUpperCase()
+			},
+		})
+		const context = createToolTestContext(tool, { identity: { tenantId: 'tenant-1' } })
+
+		await expect(tool.handler(context, { value: 'hello' })).resolves.toBe('HELLO')
+		expect(context).toMatchObject({
+			toolId: 'uppercase', sessionId: 'testSession', runId: 'testRun',
+			caller: { kind: 'agent', agentId: 'testAgent' }, identity: { tenantId: 'tenant-1' },
+		})
+		expect(Object.isFrozen(context)).toBe(true)
+	})
 })
 
 describe('FakeSandbox executor', () => {

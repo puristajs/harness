@@ -39,6 +39,18 @@ interaction. Strict mode rejects an unqueued request or a queued response for a
 different operation. The default remains non-strict for compatibility with
 existing low-level tests that intentionally use deterministic fallback values.
 
+`textReply(content, options?)` and `objectReply(object, options?)` create
+complete deterministic provider responses with zero-token usage and `stop`
+defaults. `FakeModelProvider` exposes only operation-specific queue methods;
+there is no ambiguous generic `enqueue` alias.
+
+Application Tool unit tests SHOULD call handlers with
+`createToolTestContext(tool, options?)`. The factory provides deterministic
+correlation ids, cancellation, logging, metrics, and telemetry. Its options and
+return type follow the exact Tool definition: a Tool that declares memory or
+sandbox requirements requires the corresponding narrowed facade, while an
+undeclared capability is absent at compile time.
+
 There is no `streamContract` — streaming is internal to the harness; see "Streaming generator" in the core test catalog below.
 
 `@purista/harness-policy-opa/testing` exports the strict `FakeOpaDataApi`

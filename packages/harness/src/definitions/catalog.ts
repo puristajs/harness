@@ -121,20 +121,27 @@ export type HarnessCatalogDefinition<
 	readonly $infer: HarnessInfer<View['contracts'], View['requirements']>
 }> & View & DefinitionReference<'catalog', Id> & HarnessCatalogBrand<Id>
 
-/** Concise array authoring input for one reusable catalog. */
-export interface CatalogOptions<
+type ExecutableCatalogRoots<
+	Agents extends readonly AnyAgentDefinition[] | undefined,
+	Workflows extends readonly AnyWorkflowDefinition[] | undefined,
+> = Agents extends readonly [AnyAgentDefinition, ...AnyAgentDefinition[]]
+	? Readonly<{ agents: Agents; workflows?: Workflows }>
+	: Workflows extends readonly [AnyWorkflowDefinition, ...AnyWorkflowDefinition[]]
+		? Readonly<{ agents?: Agents; workflows: Workflows }>
+		: never
+
+/** Concise array authoring input for one reusable executable-target bundle. */
+export type CatalogOptions<
 	Tools extends readonly AnyNonMcpToolDefinition[] | undefined = undefined,
 	Skills extends readonly SkillDefinition[] | undefined = undefined,
 	McpServers extends readonly McpServerDefinition<any, any>[] | undefined = undefined,
 	Agents extends readonly AnyAgentDefinition[] | undefined = undefined,
 	Workflows extends readonly AnyWorkflowDefinition[] | undefined = undefined,
-> {
+> = Readonly<{
 	readonly tools?: Tools
 	readonly skills?: Skills
 	readonly mcpServers?: McpServers
-	readonly agents?: Agents
-	readonly workflows?: Workflows
-}
+}> & ExecutableCatalogRoots<Agents, Workflows>
 
 export type CatalogViewForRoots<
 	Tools extends readonly AnyNonMcpToolDefinition[] | undefined,
@@ -200,6 +207,11 @@ export function defineCatalog<
 				reason: 'foreign_definition', path: `catalog.${field}`, id,
 			})
 		}
+	}
+	if ((options.agents?.length ?? 0) === 0 && (options.workflows?.length ?? 0) === 0) {
+		throw new HarnessConfigError('A catalog must expose at least one agent or workflow.', {
+			reason: 'catalog_has_no_targets', path: 'catalog', id,
+		})
 	}
 	const graph = compileDefinitionGraph(options as DefinitionGraphRoots)
 	const value = { kind: 'catalog' as const, id, ...createCatalogView(graph, options as DefinitionGraphRoots) }

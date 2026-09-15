@@ -60,7 +60,9 @@ describe('v4 Agent Skill snapshots', () => {
 	})
 
 	it('rejects non-file URLs, symlink roots, invalid UTF-8, and cancellation', async () => {
-		await expect(loadSkillSnapshots([defineSkill('remote', { directory: new URL('https://example.test/skill') })])).rejects.toMatchObject({ meta: { reason: 'invalid_skill_url' } })
+		expect(() => defineSkill('remote', { directory: new URL('https://example.test/remote') })).toThrow(expect.objectContaining({
+			meta: expect.objectContaining({ reason: 'invalid_skill_url' }),
+		}))
 		const definition = await skill('demo')
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'h4-link-')); roots.push(root)
 		const link = path.join(root, 'demo'); await fs.symlink(new URL(definition.directory), link)

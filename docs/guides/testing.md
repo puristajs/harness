@@ -32,12 +32,10 @@ core gate is statements `80`, branches `75`, functions `80`, and lines `80`.
 ## Test With A Fake Model Provider
 
 ```ts
+import { FakeModelProvider, objectReply } from '@purista/harness/testing'
+
 const provider = new FakeModelProvider({ strict: true })
-provider.enqueueObject({
-	object: { answer: 'fake answer', citations: [] },
-	usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-	finishReason: 'stop',
-})
+provider.enqueueObject(objectReply({ answer: 'fake answer', citations: [] }))
 
 const instance = await definition.getInstance({
 	models: { chat: { provider, model: 'fake' } },
@@ -82,7 +80,19 @@ HTTP/SSE boundary.
 
 ## Test Tools
 
-Call TypeScript tool handlers with a small context object and a temporary store.
+Call TypeScript tool handlers with the capability-aware test context factory.
+It supplies deterministic correlation ids, logging, metrics, telemetry, and
+cancellation. If a Tool declares memory or sandbox requirements, TypeScript
+requires the matching fake facade in the options.
+
+```ts
+import { createToolTestContext } from '@purista/harness/testing'
+
+const context = createToolTestContext(findOrder)
+await expect(findOrder.handler(context, { orderId: 'order-1' }))
+	.resolves.toEqual({ status: 'ready' })
+```
+
 Assert both successful output and validation failure behavior.
 
 ## Test Sandbox Adapters

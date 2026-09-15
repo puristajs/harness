@@ -13,6 +13,32 @@ import type {
 } from '../ports/model-provider.js'
 import type { JsonValue } from '../models/json.js'
 
+/** Optional normalized fields for a deterministic text reply. */
+export type FakeTextReplyOptions = Readonly<Omit<Partial<TextResponse>, 'content'>>
+
+/** Optional normalized fields for a deterministic structured reply. */
+export type FakeObjectReplyOptions<T extends JsonValue> = Readonly<Omit<Partial<ObjectResponse<T>>, 'object'>>
+
+/** Creates a complete deterministic text response without token-accounting boilerplate. */
+export function textReply(content: string, options: FakeTextReplyOptions = {}): TextResponse {
+  return {
+    content,
+    usage: options.usage ?? emptyUsage(),
+    finishReason: options.finishReason ?? 'stop',
+    ...options,
+  }
+}
+
+/** Creates a complete deterministic structured response without token-accounting boilerplate. */
+export function objectReply<T extends JsonValue>(object: T, options: FakeObjectReplyOptions<T> = {}): ObjectResponse<T> {
+  return {
+    object,
+    usage: options.usage ?? emptyUsage(),
+    finishReason: options.finishReason ?? 'stop',
+    ...options,
+  }
+}
+
 type ScriptedResponse =
   | { method: 'text'; response: TextResponse }
   | { method: 'object'; response: ObjectResponse }
@@ -35,7 +61,7 @@ export interface FakeModelProviderOptions {
  * @example
  * ```ts
  * const provider = new FakeModelProvider({ strict: true })
- * provider.enqueueObject({ object: { priority: 'high' }, finishReason: 'stop' })
+ * provider.enqueueObject(objectReply({ priority: 'high' }))
  * // Run the Harness interaction, then verify every fixture was consumed.
  * provider.assertExhausted()
  * ```
@@ -77,11 +103,6 @@ export class FakeModelProvider implements ModelProvider {
   /** Queues the chunks returned by the next object-stream request. */
   enqueueObjectStream(chunks: ObjectStreamChunk[]): void {
     this.objectStreamQueue.push(chunks)
-  }
-
-  /** Backward-compatible helper for older tests during the object migration. */
-  enqueue(response: ObjectResponse): void {
-    this.enqueueObject(response)
   }
 
   /**

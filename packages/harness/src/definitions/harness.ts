@@ -102,6 +102,18 @@ type WithAgent<Catalog extends HarnessCatalogView, Agent extends AnyAgentDefinit
 type WithWorkflow<Catalog extends HarnessCatalogView, Workflow extends AnyWorkflowDefinition> = MergeCatalogViews<
 	Catalog, CatalogViewForRoots<undefined, undefined, undefined, undefined, readonly [Workflow]>
 >
+type WithAgents<
+	Catalog extends HarnessCatalogView,
+	Agents extends readonly AnyAgentDefinition[],
+> = Agents extends readonly [infer Agent extends AnyAgentDefinition, ...infer Rest extends readonly AnyAgentDefinition[]]
+	? WithAgents<WithAgent<Catalog, Agent>, Rest>
+	: Catalog
+type WithWorkflows<
+	Catalog extends HarnessCatalogView,
+	Workflows extends readonly AnyWorkflowDefinition[],
+> = Workflows extends readonly [infer Workflow extends AnyWorkflowDefinition, ...infer Rest extends readonly AnyWorkflowDefinition[]]
+	? WithWorkflows<WithWorkflow<Catalog, Workflow>, Rest>
+	: Catalog
 type HasExplicitRoot<Roots extends Readonly<Record<string, AnyAgentDefinition | AnyWorkflowDefinition>>> = [keyof Roots] extends [never]
 	? false
 	: string extends keyof Roots ? false : true
@@ -113,8 +125,29 @@ type EveryCatalogHasExecutableRoot<Catalog extends HarnessCatalogView> = [Catalo
 	: [CatalogHasExecutableRoot<Catalog>] extends [true] ? true : false
 type ExecutableCatalogDefinition<Id extends string, Catalog extends HarnessCatalogView> =
 	EveryCatalogHasExecutableRoot<Catalog> extends true ? HarnessCatalogDefinition<Id, Catalog> : never
-type UsedCatalogDefinition<Catalog extends HarnessCatalogView, Other extends HarnessCatalogView, Name extends string> =
-	Other extends HarnessCatalogView ? HarnessDefinition<MergeCatalogViews<Catalog, Other>, Name> : never
+type MergeCatalogUnion<Left, Right> = Left extends HarnessCatalogView
+	? Right extends HarnessCatalogView ? MergeCatalogViews<Left, Right> : never
+	: never
+type MergeCatalogDefinition<Catalog, Definition> = Definition extends HarnessCatalogDefinition<string, infer View>
+	? MergeCatalogUnion<Catalog, View>
+	: never
+type WithCatalogs<
+	Catalog extends HarnessCatalogView,
+	Definitions extends readonly HarnessCatalogDefinition<string, HarnessCatalogView>[],
+> = Definitions extends readonly [
+	infer Definition extends HarnessCatalogDefinition<string, HarnessCatalogView>,
+	...infer Rest extends readonly HarnessCatalogDefinition<string, HarnessCatalogView>[],
+]
+	? WithCatalogs<MergeCatalogDefinition<Catalog, Definition>, Rest>
+	: Catalog
+type ExecutableCatalogTuple<Definitions extends readonly HarnessCatalogDefinition<string, HarnessCatalogView>[]> = {
+	readonly [Index in keyof Definitions]: Definitions[Index] extends HarnessCatalogDefinition<infer Id, infer View>
+		? ExecutableCatalogDefinition<Id, View>
+		: never
+}
+type HarnessForCatalog<Catalog, Name extends string> = Catalog extends HarnessCatalogView
+	? HarnessDefinition<Catalog, Name>
+	: never
 
 type EmptyCatalogView = HarnessCatalogView<
 	Readonly<Record<never, never>>, Readonly<Record<never, never>>, Readonly<Record<never, never>>,
@@ -133,6 +166,7 @@ export interface HarnessTargetInspection {
 	readonly executionModes: readonly ['run', 'stream']
 	readonly updates: HarnessOutputUpdateKind
 	readonly interrupts: readonly HarnessInterruptKind[]
+	readonly durable: boolean
 }
 
 /** Sanitized immutable definition and requirement projection. */
@@ -172,11 +206,16 @@ export type HarnessDefinition<
 	getInstance(
 		config: HarnessInstanceConfig<Catalog['requirements']>,
 	): Promise<HarnessInstance<Catalog['contracts'], Catalog['requirements']>>
-	use<Other extends HarnessCatalogView>(
-		catalog: ExecutableCatalogDefinition<string, Other>,
-	): UsedCatalogDefinition<Catalog, Other, Name>
-	addAgent<Agent extends AnyAgentDefinition>(agent: Agent): HarnessDefinition<WithAgent<Catalog, Agent>, Name>
-	addWorkflow<Workflow extends AnyWorkflowDefinition>(workflow: Workflow): HarnessDefinition<WithWorkflow<Catalog, Workflow>, Name>
+	use<const Definitions extends readonly [
+		HarnessCatalogDefinition<string, HarnessCatalogView>,
+		...HarnessCatalogDefinition<string, HarnessCatalogView>[],
+	]>(...catalogs: Definitions & ExecutableCatalogTuple<Definitions>): HarnessForCatalog<WithCatalogs<Catalog, Definitions>, Name>
+	addAgent<const Agents extends readonly [AnyAgentDefinition, ...AnyAgentDefinition[]]>(
+		...agents: Agents
+	): HarnessDefinition<WithAgents<Catalog, Agents>, Name>
+	addWorkflow<const Workflows extends readonly [AnyWorkflowDefinition, ...AnyWorkflowDefinition[]]>(
+		...workflows: Workflows
+	): HarnessDefinition<WithWorkflows<Catalog, Workflows>, Name>
 } & DefinitionReference<'harness', Name> & HarnessDefinitionBrand<Name>
 
 /** Definition-time Harness options. */
@@ -250,14 +289,18 @@ function createHarnessDefinition<Catalog extends HarnessCatalogView, Name extend
 			name, ...(revision === undefined ? {} : { revision }), defaults, graph,
 			bindings: validateHarnessInstanceConfig(graph.requirements, config),
 		}) as Promise<HarnessInstance<Catalog['contracts'], Catalog['requirements']>>,
-		use: (other: HarnessCatalogDefinition<string, HarnessCatalogView>) => {
-			const identity = getDefinitionIdentity(other)
-			if (identity?.kind !== 'catalog' || !Object.isFrozen(other)) throw foreignCatalog()
-			if (Object.keys(other.agents).length === 0 && Object.keys(other.workflows).length === 0) throw emptyCatalog()
-			return withRoots(catalogRoots(other), addCatalogProvenance(catalogProvenance, other)) as never
+		use: (...others: readonly HarnessCatalogDefinition<string, HarnessCatalogView>[]) => {
+			let provenance = catalogProvenance
+			for (const other of others) {
+				const identity = getDefinitionIdentity(other)
+				if (identity?.kind !== 'catalog' || !Object.isFrozen(other)) throw foreignCatalog()
+				if (Object.keys(other.agents).length === 0 && Object.keys(other.workflows).length === 0) throw emptyCatalog()
+				provenance = addCatalogProvenance(provenance, other)
+			}
+			return withRoots(mergeCatalogRoots(others), provenance) as never
 		},
-		addAgent: (agent: AnyAgentDefinition) => withRoots({ agents: [agent] }) as never,
-		addWorkflow: (workflow: AnyWorkflowDefinition) => withRoots({ workflows: [workflow] }) as never,
+		addAgent: (...agents: readonly AnyAgentDefinition[]) => withRoots({ agents }) as never,
+		addWorkflow: (...workflows: readonly AnyWorkflowDefinition[]) => withRoots({ workflows }) as never,
 	}
 	attachDefinitionInference(value)
 	const blueprint = Object.freeze({ name, ...(revision === undefined ? {} : { revision }), defaults, graph })
@@ -288,6 +331,13 @@ function catalogRoots(catalog: HarnessCatalogView): DefinitionGraphRoots {
 	}
 }
 
+function mergeCatalogRoots(catalogs: readonly HarnessCatalogView[]): DefinitionGraphRoots {
+	return {
+		agents: catalogs.flatMap(catalog => Object.values(catalog.agents)),
+		workflows: catalogs.flatMap(catalog => Object.values(catalog.workflows)),
+	}
+}
+
 function mergeRoots(catalog: HarnessCatalogView, addition: DefinitionGraphRoots): DefinitionGraphRoots {
 	const roots = catalogRoots(catalog)
 	return {
@@ -307,7 +357,8 @@ function inspectHarness<Requirements extends RuntimeRequirements>(
 			id: contract.id,
 			executionModes: Object.freeze([...contract.executionModes].sort()) as unknown as readonly ['run', 'stream'],
 			updates: contract.updates,
-			interrupts: Object.freeze([...contract.interrupts].sort()),
+				interrupts: Object.freeze([...contract.interrupts].sort()),
+				durable: contract.durable,
 		})),
 	)
 	return Object.freeze({

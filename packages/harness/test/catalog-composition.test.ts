@@ -84,21 +84,11 @@ describe('catalog composition and graph compilation', () => {
 			'workflow', 'digestWorkflow', [null, null], null, ['group', 'workflow-scope'], false, true,
 		])
 	})
-	it('creates a valid frozen empty catalog', () => {
-		const catalog = defineCatalog('empty', {})
+	it('rejects catalogs without an executable target', () => {
 		const harness = defineHarness({ name: 'emptyHarness' })
 
-		expect(catalog).toMatchObject({ kind: 'catalog', id: 'empty' })
-		for (const map of [catalog.tools, catalog.skills, catalog.mcpServers, catalog.agents, catalog.workflows]) {
-			expect(map).toEqual({})
-			expect(Object.isFrozen(map)).toBe(true)
-		}
-		expect(Object.isFrozen(catalog)).toBe(true)
-		expect(Object.isFrozen(catalog.contracts)).toBe(true)
-		expect(Object.isFrozen(catalog.requirements)).toBe(true)
-		expect(hasDefinitionIdentity(catalog)).toBe(true)
+		expect(reasonOf(() => defineCatalog('empty', {} as never))).toBe('catalog_has_no_targets')
 		expect(hasDefinitionIdentity(harness)).toBe(true)
-		expect(hasDefinitionIdentity({ ...catalog })).toBe(false)
 		expect(hasDefinitionIdentity({ ...harness })).toBe(false)
 		expect(harness.requirements.storage.durable).toBe(false)
 		expect(harness.requirements.workspace).toBe(false)
@@ -106,12 +96,13 @@ describe('catalog composition and graph compilation', () => {
 	})
 
 	it('rejects structural and spread catalog copies at the Harness boundary', () => {
-		const catalog = defineCatalog('authentic', {})
+		const root = defineAgent('authenticRoot', { model: 'chat', instructions: 'Answer.' })
+		const catalog = defineCatalog('authentic', { agents: [root] })
 		const harness = defineHarness({ name: 'consumer' })
 		expect(reasonOf(() => harness.use({ ...catalog } as never))).toBe('foreign_definition')
 		expect(reasonOf(() => harness.use({ kind: 'catalog', id: 'fake', ...catalog } as never))).toBe('foreign_definition')
 		expect(reasonOf(() => harness.use(Object.freeze(Object.create(catalog)) as never))).toBe('foreign_definition')
-		expect(() => harness.use(catalog)).toThrow(expect.objectContaining({ meta: expect.objectContaining({ reason: 'catalog_has_no_targets' }) }))
+		expect(() => harness.use(catalog)).not.toThrow()
 	})
 
 	it('retains catalog identity provenance across immutable Harness composition', () => {
@@ -123,6 +114,26 @@ describe('catalog composition and graph compilation', () => {
 		expect(() => harness.use(first)).not.toThrow()
 		expect(reasonOf(() => harness.use(conflicting))).toBe('duplicate_definition')
 		expect(() => harness.use(conflicting)).toThrow(HarnessConfigError)
+	})
+
+	it('adds multiple targets and catalogs in one immutable composition step', () => {
+		const first = defineAgent('firstAgent', { model: 'chat', instructions: 'First.' })
+		const second = defineAgent('secondAgent', { model: 'chat', instructions: 'Second.' })
+		const firstWorkflow = defineWorkflow('firstWorkflow', { async handler({ input }) { return input } })
+		const secondWorkflow = defineWorkflow('secondWorkflow', { async handler({ input }) { return input } })
+		const agents = defineCatalog('agentBundle', { agents: [first] })
+		const workflows = defineCatalog('workflowBundle', { workflows: [firstWorkflow] })
+		const base = defineHarness({ name: 'variadicComposition' })
+		const direct = base.addAgent(first, second).addWorkflow(firstWorkflow, secondWorkflow)
+		const packaged = base.use(agents, workflows)
+
+		expect(Object.keys(base.contracts.agents)).toEqual([])
+		expect(Object.keys(direct.contracts.agents)).toEqual(['firstAgent', 'secondAgent'])
+		expect(Object.keys(direct.contracts.workflows)).toEqual(['firstWorkflow', 'secondWorkflow'])
+		expect(Object.keys(packaged.contracts.agents)).toEqual(['firstAgent'])
+		expect(Object.keys(packaged.contracts.workflows)).toEqual(['firstWorkflow'])
+		expect(Object.isFrozen(direct)).toBe(true)
+		expect(Object.isFrozen(packaged)).toBe(true)
 	})
 
 	it('keeps catalog exports explicit and exposes Harness roots without a public closure', () => {
@@ -287,7 +298,8 @@ describe('catalog composition and graph compilation', () => {
 	it('allows equal MCP local names on distinct owning servers and preserves both owners', () => {
 		const first = defineMcpServer('first', { tools: { search: { remoteName: 'one', description: 'One.', input, output } } })
 		const second = defineMcpServer('second', { tools: { search: { remoteName: 'two', description: 'Two.', input, output } } })
-		const catalog = defineCatalog('servers', { mcpServers: [second, first] })
+		const root = defineAgent('serverCatalogRoot', { model: 'chat', instructions: 'Answer.' })
+		const catalog = defineCatalog('servers', { mcpServers: [second, first], agents: [root] })
 
 		expect(catalog.mcpServers.first.tools.search).toBe(first.tools.search)
 		expect(catalog.mcpServers.second.tools.search).toBe(second.tools.search)
@@ -321,7 +333,8 @@ describe('catalog composition and graph compilation', () => {
 				async handler(_context: unknown, value: { message: string }) { return { answer: value.message } },
 			}, createDefinitionIdentity('host-tool', 'sameTool'))
 			Object.freeze(host)
-			return defineCatalog('toolKinds', { tools: [portable, host as never] })
+			const root = defineAgent('toolKindsRoot', { model: 'chat', instructions: 'Answer.' })
+			return defineCatalog('toolKinds', { tools: [portable, host as never], agents: [root] })
 		}],
 		['model_name_collision', () => {
 			const tool = defineTool('helper', { description: 'Tool.', input, output, async handler(_context, value) { return { answer: value.message } } })
@@ -340,12 +353,10 @@ describe('catalog composition and graph compilation', () => {
 	})
 
 	it('reports an absent Guardrail tool under the agent requirements path', () => {
-		const guarded = defineAgent('guarded', {
-			model: 'chat',
-			instructions: 'Guarded.',
+		expect(() => defineAgent('guarded', {
+			model: 'chat', instructions: 'Guarded.',
 			guardrails: { [agentGuardrailsBinding]: { id: 'requiresMissing', requirements: { tools: ['missing'] } } },
-		})
-		expect(() => defineCatalog('missingGuardrailTool', { agents: [guarded] })).toThrow(expect.objectContaining({
+		})).toThrow(expect.objectContaining({
 			meta: {
 				reason: 'invalid_agent',
 				path: 'agent.guarded.guardrails.requirements.tools.missing',

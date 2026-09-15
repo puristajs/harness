@@ -410,26 +410,16 @@ catalog.tools.searchKnowledge
 // @ts-expect-error catalogs accept definitions rather than structural string references
 defineCatalog('invalidCatalog', { agents: ['classify'] })
 
-const emptyLeafCatalog = defineCatalog('emptyLeafCatalog', {})
-const toolsOnlyCatalog = defineCatalog('toolsOnlyCatalog', { tools: [lookup] })
-const skillsOnlyCatalog = defineCatalog('skillsOnlyCatalog', { skills: [skill] })
-const mcpOnlyCatalog = defineCatalog('mcpOnlyCatalog', { mcpServers: [mcp] })
-const combinedLeafCatalog = defineCatalog('combinedLeafCatalog', { tools: [lookup], skills: [skill], mcpServers: [mcp] })
-void emptyLeafCatalog
-void toolsOnlyCatalog
-void skillsOnlyCatalog
-void mcpOnlyCatalog
-void combinedLeafCatalog
-// @ts-expect-error empty catalogs cannot supply executable Harness roots
-defineHarness({ name: 'emptyLeafConsumer' }).use(emptyLeafCatalog)
-// @ts-expect-error tools-only catalogs cannot supply executable Harness roots
-defineHarness({ name: 'toolsOnlyConsumer' }).use(toolsOnlyCatalog)
-// @ts-expect-error skills-only catalogs cannot supply executable Harness roots
-defineHarness({ name: 'skillsOnlyConsumer' }).use(skillsOnlyCatalog)
-// @ts-expect-error MCP-only catalogs cannot supply executable Harness roots
-defineHarness({ name: 'mcpOnlyConsumer' }).use(mcpOnlyCatalog)
-// @ts-expect-error combined leaf-only catalogs cannot supply executable Harness roots
-defineHarness({ name: 'combinedLeafConsumer' }).use(combinedLeafCatalog)
+// @ts-expect-error catalogs package at least one executable agent or workflow
+defineCatalog('emptyLeafCatalog', {})
+// @ts-expect-error tools alone are ordinary exports rather than a Harness catalog
+defineCatalog('toolsOnlyCatalog', { tools: [lookup] })
+// @ts-expect-error skills alone are ordinary exports rather than a Harness catalog
+defineCatalog('skillsOnlyCatalog', { skills: [skill] })
+// @ts-expect-error MCP servers alone are ordinary exports rather than a Harness catalog
+defineCatalog('mcpOnlyCatalog', { mcpServers: [mcp] })
+// @ts-expect-error leaf-only catalogs do not form executable target bundles
+defineCatalog('combinedLeafCatalog', { tools: [lookup], skills: [skill], mcpServers: [mcp] })
 
 const durableRootWorkflow = defineWorkflow('durableRootWorkflow', {
 	durable: true,
@@ -444,18 +434,14 @@ type _AgentRootCatalogHasNoWorkflow = Expect<Equal<keyof typeof agentRootHarness
 type _WorkflowRootCatalogInference = Expect<Equal<keyof typeof workflowRootHarness.$infer.workflows, 'durableRootWorkflow'>>
 type _WorkflowRootCatalogHasNoAgent = Expect<Equal<keyof typeof workflowRootHarness.$infer.agents, never>>
 
-const widenedEmptyAgentCatalog = defineCatalog('widenedEmptyAgentCatalog', {
+// @ts-expect-error a widened agent array does not prove a non-empty executable root
+defineCatalog('widenedEmptyAgentCatalog', {
 	agents: [] as readonly AnyAgentDefinition[],
 })
 declare const broadCatalog: HarnessCatalogDefinition<string, HarnessCatalogView>
 declare const catalogBranch: boolean
-const mixedLeafRootCatalog = catalogBranch ? emptyLeafCatalog : agentRootCatalog
-// @ts-expect-error a widened empty agent array does not prove an executable root
-defineHarness({ name: 'widenedEmptyAgentConsumer' }).use(widenedEmptyAgentCatalog)
 // @ts-expect-error a broad catalog view has indeterminate string keys rather than a proven root
 defineHarness({ name: 'broadCatalogConsumer' }).use(broadCatalog)
-// @ts-expect-error every member of a catalog union must prove an executable root
-defineHarness({ name: 'mixedLeafRootConsumer' }).use(mixedLeafRootCatalog)
 
 const disjointRootedCatalog = catalogBranch ? agentRootCatalog : workflowRootCatalog
 const rootedUnionBase = defineHarness({ name: 'rootedUnionConsumer', revision: 'v1' })
@@ -474,6 +460,20 @@ type _DisjointRootedInference = Expect<Equal<
 	typeof disjointRootedHarness.$infer,
 	typeof exactAgentRootHarness.$infer | typeof exactWorkflowRootHarness.$infer
 >>
+
+const plainAgent = defineAgent('plain', { model: 'chat', instructions: 'Answer.' })
+const variadicHarness = defineHarness({ name: 'variadic', revision: 'v1' })
+	.addAgent(structuredAgent, plainAgent)
+	.addWorkflow(workflow, durableRootWorkflow)
+	.use(agentRootCatalog, workflowRootCatalog)
+type _VariadicAgentIds = Expect<Equal<keyof typeof variadicHarness.contracts.agents, 'classify' | 'plain'>>
+type _VariadicWorkflowIds = Expect<Equal<keyof typeof variadicHarness.contracts.workflows, 'resolveCase' | 'durableRootWorkflow'>>
+// @ts-expect-error composition methods require at least one value
+defineHarness({ name: 'noAgent' }).addAgent()
+// @ts-expect-error composition methods require at least one value
+defineHarness({ name: 'noWorkflow' }).addWorkflow()
+// @ts-expect-error composition methods require at least one value
+defineHarness({ name: 'noCatalog' }).use()
 type RootInterruptTuples<Contracts> = Contracts extends {
 	readonly agents: infer Agents extends Readonly<Record<string, { readonly interrupts: readonly string[] }>>
 	readonly workflows: infer Workflows extends Readonly<Record<string, { readonly interrupts: readonly string[] }>>

@@ -13,7 +13,7 @@ definition graph.
 | `defineMcpServer(id, options)` | Transport-free MCP server and selected typed tools. |
 | `defineAgent(id, options)` | Standard bounded agent loop with tools, skills, subagents, policy, and guardrails. |
 | `defineWorkflow(id, options)` | Typed application orchestration over exact agent and model references. |
-| `defineCatalog(id, options)` | Optional reusable package of explicitly exported definitions. |
+| `defineCatalog(id, options)` | Optional reusable bundle with at least one executable agent or workflow. |
 | `defineHarness(options)` | Root definition with composition, inspection, and runtime creation. |
 
 Definitions are frozen identity-bearing values. Use direct references throughout
@@ -40,16 +40,17 @@ const definition = defineHarness({ name: 'knowledge' }).addAgent(answer)
 ```
 
 `defineAgent` requires an application-defined model alias and defaults to string
-input, string output, and text-delta streaming. Supplying an input schema also requires a pure `prompt`
-mapper. Supplying an output schema selects structured generation and
-`output.object.snapshot` updates.
+input, string output, and text-delta streaming. Structured input is serialized
+as canonical JSON by default; use a pure `prompt` mapper for a different message
+shape or media input. A non-string output schema selects structured generation
+and `output.object.snapshot` updates.
 
 ## Harness definition
 
 `HarnessDefinition` exposes:
 
-- `.addAgent(agent)` and `.addWorkflow(workflow)` for direct executable roots;
-- `.use(catalog)` for reusable definition packages;
+- `.addAgent(...agents)` and `.addWorkflow(...workflows)` for one or more direct executable roots;
+- `.use(...catalogs)` for one or more reusable executable-target bundles;
 - `.inspect()` for a sanitized definition and requirement projection;
 - `.contracts`, `.requirements`, and type-only `.$infer`;
 - `.getInstance(config)` to validate runtime bindings and create an executable instance.

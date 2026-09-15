@@ -1,3 +1,6 @@
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 import { HarnessConfigError } from '../errors/index.js'
 import {
 	assertKnownFields,
@@ -43,8 +46,15 @@ export function defineSkill<
 			reason: 'invalid_skill_directory', path: 'skill.directory', id,
 		})
 	}
+	if (!isValidSkillDirectory(options.directory, id)) {
+		throw new HarnessConfigError('Skill directory must be a local file URL whose basename matches the Skill id.', {
+			reason: 'invalid_skill_url', path: 'skill.directory', id,
+		})
+	}
 	if (options.runtimes !== undefined && (
 		!Array.isArray(options.runtimes)
+		|| options.runtimes.length === 0
+		|| new Set(options.runtimes).size !== options.runtimes.length
 		|| options.runtimes.some(runtime => !skillRuntimeIds.includes(runtime))
 	)) {
 		throw new HarnessConfigError('Skill runtime must be node, python, or shell.', {
@@ -62,6 +72,15 @@ export function defineSkill<
 	}
 	attachDefinitionInference(value)
 	return freezeDefinition(value, createDefinitionIdentity('skill', id)) as ReturnTypeShape<Id, Runtimes>
+}
+
+function isValidSkillDirectory(directory: URL, id: string): boolean {
+	if (directory.protocol !== 'file:' || directory.search.length > 0 || directory.hash.length > 0) return false
+	try {
+		return path.basename(fileURLToPath(directory)) === id
+	} catch {
+		return false
+	}
 }
 
 type ResolvedSkillRuntimes<Runtimes extends readonly SkillRuntimeId[] | undefined> =

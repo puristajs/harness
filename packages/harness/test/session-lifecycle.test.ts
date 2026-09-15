@@ -137,7 +137,7 @@ async function buildLifecycleHarness(
 describe('v4 session lifecycle', () => {
 	it('rolls back owned resources when startup fails after resource initialization', async () => {
 		const close = vi.spyOn(InMemoryHarnessStorage.prototype, 'close')
-		const missing = defineSkill('missing-startup-skill', { directory: new URL('./fixtures/does-not-exist/', import.meta.url) })
+		const missing = defineSkill('missing-startup-skill', { directory: new URL('./fixtures/missing-startup-skill/', import.meta.url) })
 		const agent = defineAgent('startupFailure', { model: 'chat', instructions: 'Fail while loading the Skill.', skills: [missing] })
 		try {
 			await expect(defineHarness({ name: 'startupRollback' }).addAgent(agent).getInstance({
@@ -166,7 +166,7 @@ describe('v4 session lifecycle', () => {
 			close.mockRestore()
 		}
 
-		const initializerFailure = defineSkill('aggregate-startup-failure', { directory: new URL('./fixtures/also-missing/', import.meta.url) })
+		const initializerFailure = defineSkill('aggregate-startup-failure', { directory: new URL('./fixtures/aggregate-startup-failure/', import.meta.url) })
 		const aggregateAgent = defineAgent('aggregateStartupFailure', { model: 'chat', instructions: 'Fail while loading.', skills: [initializerFailure] })
 		const cleanupFailure = new Error('owned storage cleanup failed')
 		const failingClose = vi.spyOn(InMemoryHarnessStorage.prototype, 'close').mockRejectedValueOnce(cleanupFailure)
